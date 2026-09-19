@@ -21,6 +21,10 @@ def main():
     ap.add_argument('--data-dir', default=os.path.join(os.path.dirname(__file__), 'data'))
     ap.add_argument('--results-dir', default=os.path.join(os.path.dirname(__file__), 'results_multitf'))
     ap.add_argument('--capital', type=float, default=10000.0)
+    ap.add_argument('--latency', type=float, default=0.0,
+                     help='Simulated order-transmission delay in seconds: an entry '
+                          'trigger fills at the price of the first tick at/after '
+                          'trigger_time + latency, not the triggering tick itself.')
     args = ap.parse_args()
     os.makedirs(args.results_dir, exist_ok=True)
 
@@ -29,7 +33,7 @@ def main():
         print(f"No tick files found in {args.data_dir}")
         return 1
 
-    runner = MultiTFRunner()
+    runner = MultiTFRunner(latency_seconds=args.latency)
     t0 = _time.time()
     total_ticks = 0
     for path in files:

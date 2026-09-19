@@ -10,7 +10,20 @@ different bar sizes.
 
 Both use the same signal parameters as the live EAs: BB(20,2.0,Close) +
 BB(4,4.0,Open), ExtensionR=0.95, PullbackR=0.10, 72h expiries.
+
+`latency_seconds` (default 0) simulates real order-transmission delay: a
+pullback-confirmation event is not acted on at the tick that fired it, but
+held until a later tick at/after (event_time + latency_seconds), and the
+entry is filled at THAT later tick's bid/ask -- i.e. whatever the market
+has actually done during the delay, not the price at the moment the
+condition was satisfied. This matters a lot here because the extension/
+pullback reversal itself typically resolves within ~10-30 seconds
+regardless of the nominal bar timeframe (measured separately), so a
+few seconds of realistic execution latency consumes a large fraction of
+the shorter timeframes' signal distance.
 """
+
+from collections import deque
 
 from .bars import BarBuilder
 from .bbands import DualBB
@@ -36,7 +49,8 @@ def make_007style(tf_label):
 
 
 class MultiTFRunner:
-    def __init__(self, timeframes=TIMEFRAMES):
+    def __init__(self, timeframes=TIMEFRAMES, latency_seconds=0):
+        self.latency = latency_seconds
         self.tfs = []
         for label, secs in timeframes:
             self.tfs.append({
@@ -47,6 +61,7 @@ class MultiTFRunner:
                 'signals': SignalTracker(secs, 0.95, 0.10, 72, 72),
                 's005': make_005style(label),
                 's007': make_007style(label),
+                'pending': deque(),  # (ready_ts, event)
             })
         self.trades = []
         self.n_ticks = 0
@@ -60,10 +75,22 @@ class MultiTFRunner:
                 tf['signals'].on_bar_close(bar, bands)
 
             for ev in tf['signals'].on_tick(ts, bid, ask):
-                if tf['s005'].try_enter(ev, ts, bid, ask):
-                    tf['s005'].manage(ts, bid, ask, self.trades)
-                if tf['s007'].try_enter(ev, ts, bid, ask):
-                    tf['s007'].manage(ts, bid, ask, self.trades)
+                if self.latency > 0:
+                    tf['pending'].append((ts + self.latency, ev))
+                else:
+                    if tf['s005'].try_enter(ev, ts, bid, ask):
+                        tf['s005'].manage(ts, bid, ask, self.trades)
+                    if tf['s007'].try_enter(ev, ts, bid, ask):
+                        tf['s007'].manage(ts, bid, ask, self.trades)
+
+            if self.latency > 0:
+                pending = tf['pending']
+                while pending and pending[0][0] <= ts:
+                    _, ev = pending.popleft()
+                    if tf['s005'].try_enter(ev, ts, bid, ask):
+                        tf['s005'].manage(ts, bid, ask, self.trades)
+                    if tf['s007'].try_enter(ev, ts, bid, ask):
+                        tf['s007'].manage(ts, bid, ask, self.trades)
 
             tf['s005'].manage(ts, bid, ask, self.trades)
             tf['s007'].manage(ts, bid, ask, self.trades)
