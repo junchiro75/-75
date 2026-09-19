@@ -1,4 +1,4 @@
 __pycache__/
 *.pyc
 backtest/results/
-backtest/results_multitf/
+backtest/results_multitf*/
