@@ -3,6 +3,7 @@
 from datetime import datetime, timezone
 import math
 
+import numpy as np
 import pandas as pd
 
 
@@ -26,23 +27,30 @@ def equity_curve(df: pd.DataFrame, initial_capital: float) -> pd.Series:
 
 
 def max_drawdown(equity: pd.Series):
+    """Position-based (not .loc-based) so duplicate index labels -- multiple
+    trades closing at the exact same timestamp -- can't cause ambiguous
+    label lookups."""
     if equity.empty:
         return 0.0, 0.0, pd.Timedelta(0)
-    running_max = equity.cummax()
-    dd = equity - running_max
-    dd_pct = dd / running_max
-    trough_idx = dd.idxmin()
-    mdd_abs = dd.loc[trough_idx]
-    mdd_pct = dd_pct.loc[trough_idx]
+    values = equity.to_numpy()
+    idx = equity.index
+    running_max = np.maximum.accumulate(values)
+    dd = values - running_max
+    trough_pos = int(dd.argmin())
+    mdd_abs = dd[trough_pos]
+    peak_val = running_max[trough_pos]
+    mdd_pct = mdd_abs / peak_val if peak_val else 0.0
 
-    peak_idx = equity.loc[:trough_idx].idxmax()
-    after_peak = equity.loc[peak_idx:]
-    recovery = after_peak[after_peak >= equity.loc[peak_idx]]
-    if len(recovery) > 1:
-        recovery_idx = recovery.index[1]
-        duration = recovery_idx - peak_idx
+    peak_candidates = np.where(values[:trough_pos + 1] == peak_val)[0]
+    peak_pos = int(peak_candidates[-1]) if len(peak_candidates) else 0
+
+    after_peak = values[peak_pos:]
+    recovered = np.where(after_peak >= peak_val)[0]
+    if len(recovered) > 1:
+        recovery_pos = peak_pos + int(recovered[1])
+        duration = idx[recovery_pos] - idx[peak_pos]
     else:
-        duration = equity.index[-1] - peak_idx  # not yet recovered
+        duration = idx[-1] - idx[peak_pos]  # not yet recovered
     return mdd_abs, mdd_pct, duration
 
 
