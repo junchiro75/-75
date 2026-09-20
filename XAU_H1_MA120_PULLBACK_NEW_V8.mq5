@@ -1,15 +1,20 @@
 //+------------------------------------------------------------------+
-//| XAU_H1_MA120_PULLBACK_NEW_V7.mq5                                 |
+//| XAU_H1_MA120_PULLBACK_NEW_V8.mq5                                 |
 //| V5: order comment tags which band (BB20/BB4) and timeframe        |
 //| triggered entry, e.g. "MA120_M2_BB20".                             |
 //| V6: tried forcing BB20-only entry (AllowBB4Entry=false) based on   |
 //| V5's retrospective band split -- made results WORSE (-\$742 vs     |
 //| -\$516 at SL=3R), since skipping BB4 delays entry to a wider/worse |
 //| R rather than reproducing the same trades. Reverted to true.      |
-//| V7: added TP_OppositeBB4 -- instead of TP at MA_Short(20), ride    |
-//| the full range: BUY entered at lower BB20/BB4 -> TP at the         |
-//| OPPOSITE upper BB4; SELL mirrors. Toggle vs the original MA_Short  |
-//| TP to compare.                                                     |
+//| V7: added TP_OppositeBB4 -- ride the full range instead of TP at   |
+//| MA_Short(20): BUY entered at lower BB20/BB4 -> TP at the OPPOSITE  |
+//| upper BB4; SELL mirrors. At SL=3R this turned the strategy GROSS   |
+//| profitable for the first time (+\$108, PF 1.05 before commission)  |
+//| -- net still -\$203 purely from \$309.60 of commission on 2064      |
+//| trades, not from bad signals.                                      |
+//| V8: added UseM1/UseM2/UseM3 toggles to disable a timeframe's       |
+//| setups entirely (e.g. M1 off to cut trade count/commission while   |
+//| keeping the slower, presumably higher-quality M2/M3 setups).       |
 //| NEW strategy (user-designed), trend-following (NOT countertrend):|
 //|                                                                    |
 //| 1) H1 signal filter: same dual-BB breakout used elsewhere in this |
@@ -81,6 +86,9 @@ input bool   TP_OppositeBB4       = false; // false = TP at MA_Short (20) as bef
                                             // just back to the middle.
 input int    MaxSetupHours        = 72;   // how long a per-timeframe setup stays valid waiting for a touch
 input int    MaxPositionHours     = 72;   // safety timeout force-close (not explicitly requested)
+input bool   UseM1                = true;  // set false to disable M1 setups entirely (still lets M2/M3 run)
+input bool   UseM2                = true;
+input bool   UseM3                = true;
 input double Lots                 = 0.01; // PER TIMEFRAME -- up to 3x this can be open at once (M1+M2+M3)
 input bool   EnableLiveOrders     = false; // SAFETY: set true only after checks
 input ulong  MagicNumber          = 95014101; // base magic; M1/M2/M3 use MagicNumber+0/+1/+2
@@ -88,6 +96,7 @@ input int    MaxDeviationPts      = 50;
 
 #define N_TF 3
 ENUM_TIMEFRAMES ENTRY_TFS[N_TF]={PERIOD_M1,PERIOD_M2,PERIOD_M3};
+bool TFEnabled[N_TF]; // set from UseM1/UseM2/UseM3 in OnInit
 
 int hH1_20=INVALID_HANDLE,hH1_4=INVALID_HANDLE;
 int hE_20[N_TF],hE_4[N_TF],hE_MAL[N_TF],hE_MAS[N_TF];
@@ -178,6 +187,7 @@ void CheckH1Signal()
    datetime expire=t+MaxSetupHours*3600;
    for(int k=0;k<N_TF;k++)
    {
+      if(!TFEnabled[k]) continue;
       int n=ArraySize(setups); ArrayResize(setups,n+1);
       setups[n].signal_time=sig;
       setups[n].expire_time=expire;
@@ -186,7 +196,7 @@ void CheckH1Signal()
       setups[n].phase=PHASE_WAIT_MA120;
    }
    Log("SETUP_ARMED",(dir==1?"BUY":"SELL")+string(" from H1 ")+(dir==1?"BULL":"BEAR")+
-       " | M1+M2+M3 independently watching for MA"+IntegerToString(MA_Long)+" touch");
+       " | watching enabled timeframes for MA"+IntegerToString(MA_Long)+" touch");
 }
 
 bool OpenAtBB(int dir,int tf,double maLongAtTouch,string bandLabel,datetime setup_expire,MqlTick &tick)
@@ -350,6 +360,8 @@ int OnInit()
       return INIT_FAILED;
    }
 
+   TFEnabled[0]=UseM1; TFEnabled[1]=UseM2; TFEnabled[2]=UseM3;
+
    hH1_20=iBands(_Symbol,PERIOD_H1,20,0,BB20_Dev,PRICE_CLOSE);
    hH1_4 =iBands(_Symbol,PERIOD_H1,4,0,BB4_Dev,PRICE_OPEN);
    if(hH1_20==INVALID_HANDLE||hH1_4==INVALID_HANDLE) return INIT_FAILED;
@@ -366,8 +378,10 @@ int OnInit()
       managed[k]=false; managed_ticket[k]=0; managed_dir[k]=0; managed_entry[k]=0;
    }
 
-   Log("START","BUILD=v7_opposite_bb4_tp | EntryTFs=M1+M2+M3 (all independent) | MA_Long="+IntegerToString(MA_Long)+
+   Log("START","BUILD=v8_tf_toggle | EntryTFs(enabled)="+(UseM1?"M1 ":"")+(UseM2?"M2 ":"")+(UseM3?"M3":"")+
+       " | MA_Long="+IntegerToString(MA_Long)+
        " | MA_Short="+IntegerToString(MA_Short)+" | StopLoss_R="+DoubleToString(StopLoss_R,2)+
+       " | Lots="+DoubleToString(Lots,2)+
        " | AllowBB4Entry="+(AllowBB4Entry?"true":"false")+" | TP_OppositeBB4="+(TP_OppositeBB4?"true":"false")+
        " | BaseMagic="+IntegerToString((int)MagicNumber)+" (M1/M2/M3 = base+0/+1/+2)"+
        " | orders="+(EnableLiveOrders?"ENABLED":"DRY"));
