@@ -22,6 +22,10 @@ input int    MaxVirtualExitHours  = 168;
 input ulong  MagicNumber          = 95012001;
 input int    MaxDeviationPts      = 50;
 input bool   EnableLiveOrders     = false; // SAFETY: set true only after checks
+input bool   AllowShort           = false; // Ground-truth MT5 tick backtest (2025.01-2026.09) showed
+                                            // SELL entries net -$540.86 vs BUY entries net +$1,697.03 --
+                                            // in a secular gold uptrend, fading rallies (SELL) loses to
+                                            // fading dips (BUY). Default false: BUY-only.
 
 int hBB20=INVALID_HANDLE,hBB4=INVALID_HANDLE;
 datetime last_m2_bar=0;
@@ -203,6 +207,11 @@ bool OpenCountertrend(Setup &s,MqlTick &tick)
    }
 
    int dir=-s.sigdir; // bull signal -> SELL, bear signal -> BUY
+   if(dir==-1 && !AllowShort)
+   {
+      Log("ENTRY_SKIPPED","SELL disabled by AllowShort=false (data-driven direction filter)");
+      return false;
+   }
    if(!EnableLiveOrders)
    {
       v_open=true; v_tp1=false; v_dir=dir; v_R=s.R;

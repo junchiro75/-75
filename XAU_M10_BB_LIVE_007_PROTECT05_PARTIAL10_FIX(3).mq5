@@ -22,6 +22,9 @@ input double SignalOppositeTP_R=0.90;
 input int MaxExtensionHours=72;
 input int MaxPullbackHours=72;
 input int MaxPositionHours=168;
+input bool AllowShort=false; // Ground-truth MT5 tick backtest (2025.01-2026.09) showed SELL
+                             // entries net -$1,196.19 vs BUY entries net -$185.63 (both negative,
+                             // but SELL far worse) in a secular gold uptrend. Default false: BUY-only.
 
 int h20=INVALID_HANDLE,h4=INVALID_HANDLE;
 datetime lastbar=0;
@@ -106,6 +109,10 @@ void NewBar(){
 bool SendEntry(int i,MqlTick &tk){
  ulong old; if(OwnPosition(old)){DS(i);return false;} // strict own-Magic MAX1; consume setup
  int dir=-S[i].sd; double R=S[i].R;
+ if(dir==-1 && !AllowShort){
+  Print("LIVE007 | SKIP | SELL disabled by AllowShort=false (data-driven direction filter)");
+  DS(i);return false;
+ }
  double entry=(dir==1?tk.ask:tk.bid);
  double sl=entry-dir*InitialSL_R*R;
  double finaltp=S[i].c+dir*SignalOppositeTP_R*R;
