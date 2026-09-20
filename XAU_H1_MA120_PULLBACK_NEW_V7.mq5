@@ -1,13 +1,15 @@
 //+------------------------------------------------------------------+
-//| XAU_H1_MA120_PULLBACK_NEW_V6.mq5                                 |
-//| V5: order comment now tags which band (BB20 or BB4) triggered    |
-//| entry and which timeframe, e.g. "MA120_M2_BB20".                  |
-//| V6: V5's band-tagged results showed BB20 entries beat BB4 entries |
-//| at both SL=2R and SL=3R (higher profit factor, less negative avg  |
-//| P&L). Added AllowBB4Entry (default false) -- BB20 always has      |
-//| priority; BB4 is a fallback only when it triggers without BB20    |
-//| also being touched, and only used at all if AllowBB4Entry=true.   |
-//| Test StopLoss_R=4.0 too by just changing that input.               |
+//| XAU_H1_MA120_PULLBACK_NEW_V7.mq5                                 |
+//| V5: order comment tags which band (BB20/BB4) and timeframe        |
+//| triggered entry, e.g. "MA120_M2_BB20".                             |
+//| V6: tried forcing BB20-only entry (AllowBB4Entry=false) based on   |
+//| V5's retrospective band split -- made results WORSE (-\$742 vs     |
+//| -\$516 at SL=3R), since skipping BB4 delays entry to a wider/worse |
+//| R rather than reproducing the same trades. Reverted to true.      |
+//| V7: added TP_OppositeBB4 -- instead of TP at MA_Short(20), ride    |
+//| the full range: BUY entered at lower BB20/BB4 -> TP at the         |
+//| OPPOSITE upper BB4; SELL mirrors. Toggle vs the original MA_Short  |
+//| TP to compare.                                                     |
 //| NEW strategy (user-designed), trend-following (NOT countertrend):|
 //|                                                                    |
 //| 1) H1 signal filter: same dual-BB breakout used elsewhere in this |
@@ -67,10 +69,16 @@ input int    MA_Short             = 20;
 input double BB20_Dev             = 2.0;
 input double BB4_Dev              = 4.0;
 input double StopLoss_R           = 2.0;  // SL = entry -+ StopLoss_R * R, R = |MA_Long - entry price| at entry
-input bool   AllowBB4Entry        = false; // false = only enter at BB20 (never wait for the deeper BB4).
-                                            // V5 band-tagged results showed BB4 entries consistently
-                                            // underperform BB20 entries (lower PF, more negative avg) at
-                                            // both SL=2R and SL=3R -- default false skips BB4 entirely.
+input bool   AllowBB4Entry        = true;  // V6 test: forcing BB20-only (false) made results WORSE, not
+                                            // better, than mixed entry (-\$742 vs -\$516 at SL=3R) -- the
+                                            // earlier BB20-vs-BB4 split was retrospective/observational,
+                                            // not causal (skipping BB4 delays entry to a wider, worse R
+                                            // rather than reproducing the same "good" BB20 trades).
+                                            // Default back to true (mixed entry, whichever touches first).
+input bool   TP_OppositeBB4       = false; // false = TP at MA_Short (20) as before. true = TP at the
+                                            // OPPOSITE band's BB4 (BUY entered at lower BB20/BB4 -> TP at
+                                            // upper BB4; SELL mirrors) -- ride the full range instead of
+                                            // just back to the middle.
 input int    MaxSetupHours        = 72;   // how long a per-timeframe setup stays valid waiting for a touch
 input int    MaxPositionHours     = 72;   // safety timeout force-close (not explicitly requested)
 input double Lots                 = 0.01; // PER TIMEFRAME -- up to 3x this can be open at once (M1+M2+M3)
@@ -307,8 +315,18 @@ void ManageOpenPositions(MqlTick &tick)
       if(now>managed_entry_time[tf]+MaxPositionHours*3600) { ClosePosition(tf,"TIMEOUT"); continue; }
 
       double px=(managed_dir[tf]==+1?tick.bid:tick.ask);
-      bool tp_hit=(managed_dir[tf]==+1 ? px>=cur_ma_short[tf] : px<=cur_ma_short[tf]);
-      if(tp_hit){ ClosePosition(tf,"TP_MA_SHORT"); continue; }
+      if(TP_OppositeBB4)
+      {
+         // BUY entered at lower BB20 -> TP at upper BB4 (opposite extreme). SELL mirrors.
+         double target=(managed_dir[tf]==+1?cur_e_u4[tf]:cur_e_l4[tf]);
+         bool tp_hit=(managed_dir[tf]==+1 ? px>=target : px<=target);
+         if(tp_hit){ ClosePosition(tf,"TP_OPPOSITE_BB4"); continue; }
+      }
+      else
+      {
+         bool tp_hit=(managed_dir[tf]==+1 ? px>=cur_ma_short[tf] : px<=cur_ma_short[tf]);
+         if(tp_hit){ ClosePosition(tf,"TP_MA_SHORT"); continue; }
+      }
    }
 }
 
@@ -348,9 +366,9 @@ int OnInit()
       managed[k]=false; managed_ticket[k]=0; managed_dir[k]=0; managed_entry[k]=0;
    }
 
-   Log("START","BUILD=v6_bb20_priority | EntryTFs=M1+M2+M3 (all independent) | MA_Long="+IntegerToString(MA_Long)+
+   Log("START","BUILD=v7_opposite_bb4_tp | EntryTFs=M1+M2+M3 (all independent) | MA_Long="+IntegerToString(MA_Long)+
        " | MA_Short="+IntegerToString(MA_Short)+" | StopLoss_R="+DoubleToString(StopLoss_R,2)+
-       " | AllowBB4Entry="+(AllowBB4Entry?"true":"false")+
+       " | AllowBB4Entry="+(AllowBB4Entry?"true":"false")+" | TP_OppositeBB4="+(TP_OppositeBB4?"true":"false")+
        " | BaseMagic="+IntegerToString((int)MagicNumber)+" (M1/M2/M3 = base+0/+1/+2)"+
        " | orders="+(EnableLiveOrders?"ENABLED":"DRY"));
    return INIT_SUCCEEDED;
