@@ -69,10 +69,14 @@ input double Lots                 = 0.01; // PER TIMEFRAME -- up to 3x this can 
 input bool   EnableLiveOrders     = false; // SAFETY: set true only after checks
 input ulong  MagicNumber          = 95014101; // base magic; M1/M2/M3 use MagicNumber+0/+1/+2
 input int    MaxDeviationPts      = 50;
-input double EmergencySL_BandMult = 3.0;  // broker-side backstop SL, set at (outer band half-width * this
-                                           // multiple) from entry -- should rarely be hit; the REAL exit
-                                           // is the EA-managed bar-close BB4 rule above. Pure protection
-                                           // against the platform/EA being offline.
+input int    EmergencySL_Points    = 5000; // broker-side backstop SL, this many points from entry.
+                                           // Fixed and NOT band-relative on purpose: BB4's own width is
+                                           // often just a few dollars (a handful of recent bars), so an
+                                           // earlier band-relative backstop ended up TIGHTER than the
+                                           // real intended SL_BAND rule and fired almost immediately on
+                                           // most trades. This should rarely if ever be hit; the REAL
+                                           // exit is the EA-managed bar-close BB4 rule above. Pure
+                                           // protection against the platform/EA being offline.
 
 #define N_TF 3
 ENUM_TIMEFRAMES ENTRY_TFS[N_TF]={PERIOD_M1,PERIOD_M2,PERIOD_M3};
@@ -199,9 +203,7 @@ bool OpenFromSetup(int dir,int tf,bool fromBB,datetime setup_expire,MqlTick &tic
       return true;
    }
 
-   double half_width=MathMax(cur_e_u4[tf]-cur_e_l4[tf],0.0)/2.0;
-   double backstop=half_width*EmergencySL_BandMult;
-   double sl=(backstop>0 ? entry-dir*backstop : 0.0);
+   double sl=entry-dir*EmergencySL_Points*_Point;
    if(sl>0) sl=NormalizeDouble(sl,_Digits);
 
    bool ok=(dir==+1 ? trade.Buy(Lots,_Symbol,0.0,sl,0.0,"MA120PULLBACK_"+EnumToString(ENTRY_TFS[tf]))
