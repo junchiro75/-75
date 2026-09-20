@@ -1,5 +1,10 @@
 //+------------------------------------------------------------------+
-//| XAU_H1_MA120_PULLBACK_NEW_V4.mq5                                 |
+//| XAU_H1_MA120_PULLBACK_NEW_V5.mq5                                 |
+//| V5: order comment now tags which band (BB20 or BB4) triggered    |
+//| entry and which timeframe, e.g. "MA120_M2_BB20" -- so results can |
+//| be split by entry band in the Deals report. No logic change from |
+//| V4 otherwise (same MA120-arm + BB-entry + StopLoss_R design; test |
+//| StopLoss_R=3.0 by just changing that input, no code change needed)|
 //| NEW strategy (user-designed), trend-following (NOT countertrend):|
 //|                                                                    |
 //| 1) H1 signal filter: same dual-BB breakout used elsewhere in this |
@@ -169,7 +174,7 @@ void CheckH1Signal()
        " | M1+M2+M3 independently watching for MA"+IntegerToString(MA_Long)+" touch");
 }
 
-bool OpenAtBB(int dir,int tf,double maLongAtTouch,datetime setup_expire,MqlTick &tick)
+bool OpenAtBB(int dir,int tf,double maLongAtTouch,string bandLabel,datetime setup_expire,MqlTick &tick)
 {
    ulong old; if(OwnPosition(tf,old)) return false; // MAX1 per timeframe
 
@@ -181,6 +186,7 @@ bool OpenAtBB(int dir,int tf,double maLongAtTouch,datetime setup_expire,MqlTick 
       return false;
    }
    double sl=entry-dir*StopLoss_R*R;
+   string tag="M"+IntegerToString((int)PeriodSeconds(ENTRY_TFS[tf])/60)+"_"+bandLabel; // e.g. M1_BB20
 
    ulong magic=MagicFor(tf);
    trade.SetExpertMagicNumber(magic);
@@ -190,16 +196,15 @@ bool OpenAtBB(int dir,int tf,double maLongAtTouch,datetime setup_expire,MqlTick 
    if(!EnableLiveOrders)
    {
       Log("DRY_ENTRY",(dir==1?"BUY":"SELL")+string(" @~")+DoubleToString(entry,_Digits)+
-          " R="+DoubleToString(R,_Digits)+" SL="+DoubleToString(sl,_Digits)+
-          " | tf="+EnumToString(ENTRY_TFS[tf]));
+          " R="+DoubleToString(R,_Digits)+" SL="+DoubleToString(sl,_Digits)+" | "+tag);
       managed[tf]=true; managed_ticket[tf]=0; managed_dir[tf]=dir; managed_entry[tf]=entry;
       managed_entry_time[tf]=(datetime)(tick.time_msc/1000);
       return true;
    }
 
    sl=NormalizeDouble(sl,_Digits);
-   bool ok=(dir==+1 ? trade.Buy(Lots,_Symbol,0.0,sl,0.0,"MA120PULLBACK_"+EnumToString(ENTRY_TFS[tf]))
-                    : trade.Sell(Lots,_Symbol,0.0,sl,0.0,"MA120PULLBACK_"+EnumToString(ENTRY_TFS[tf])));
+   bool ok=(dir==+1 ? trade.Buy(Lots,_Symbol,0.0,sl,0.0,"MA120_"+tag)
+                    : trade.Sell(Lots,_Symbol,0.0,sl,0.0,"MA120_"+tag));
    if(!ok)
    {
       Log("ORDER_FAIL",IntegerToString((int)trade.ResultRetcode())+" | "+trade.ResultRetcodeDescription());
@@ -218,8 +223,7 @@ bool OpenAtBB(int dir,int tf,double maLongAtTouch,datetime setup_expire,MqlTick 
       managed_entry_time[tf]=(datetime)(tick.time_msc/1000);
    }
    Log("ENTRY_OK",(dir==1?"BUY":"SELL")+string(" entry=")+DoubleToString(managed_entry[tf],_Digits)+
-       " R="+DoubleToString(R,_Digits)+" SL="+DoubleToString(sl,_Digits)+
-       " | tf="+EnumToString(ENTRY_TFS[tf]));
+       " R="+DoubleToString(R,_Digits)+" SL="+DoubleToString(sl,_Digits)+" | "+tag);
    return true;
 }
 
@@ -262,13 +266,16 @@ void CheckSetups(MqlTick &tick)
          // fall through: price may have already reached the band on this very same tick
       }
 
-      // PHASE_WAIT_BB
-      bool touchedBB=(dir==+1 ? (tick.bid<=cur_e_l20[tf] || tick.bid<=cur_e_l4[tf])
-                               : (tick.ask>=cur_e_u20[tf] || tick.ask>=cur_e_u4[tf]));
-      if(touchedBB)
+      // PHASE_WAIT_BB. Check the wider BB4 first: if it's touched, BB20 (narrower) is
+      // necessarily touched too, so checking BB4 first correctly labels the rarer
+      // "price skipped straight past BB20" case instead of always reporting BB20.
+      bool touchedBB4=(dir==+1 ? tick.bid<=cur_e_l4[tf] : tick.ask>=cur_e_u4[tf]);
+      bool touchedBB20=(dir==+1 ? tick.bid<=cur_e_l20[tf] : tick.ask>=cur_e_u20[tf]);
+      if(touchedBB4 || touchedBB20)
       {
-         Log("BB_TOUCH",TS(setups[i].signal_time)+" tf="+EnumToString(ENTRY_TFS[tf]));
-         if(OpenAtBB(dir,tf,cur_ma_long[tf],setups[i].expire_time,tick)) RemoveSetup(i);
+         string bandLabel=touchedBB4?"BB4":"BB20";
+         Log("BB_TOUCH",TS(setups[i].signal_time)+" tf="+EnumToString(ENTRY_TFS[tf])+" band="+bandLabel);
+         if(OpenAtBB(dir,tf,cur_ma_long[tf],bandLabel,setups[i].expire_time,tick)) RemoveSetup(i);
       }
    }
 }
@@ -330,7 +337,7 @@ int OnInit()
       managed[k]=false; managed_ticket[k]=0; managed_dir[k]=0; managed_entry[k]=0;
    }
 
-   Log("START","BUILD=v4_bb_entry_2R_sl | EntryTFs=M1+M2+M3 (all independent) | MA_Long="+IntegerToString(MA_Long)+
+   Log("START","BUILD=v5_band_tagged | EntryTFs=M1+M2+M3 (all independent) | MA_Long="+IntegerToString(MA_Long)+
        " | MA_Short="+IntegerToString(MA_Short)+" | StopLoss_R="+DoubleToString(StopLoss_R,2)+
        " | BaseMagic="+IntegerToString((int)MagicNumber)+" (M1/M2/M3 = base+0/+1/+2)"+
        " | orders="+(EnableLiveOrders?"ENABLED":"DRY"));
