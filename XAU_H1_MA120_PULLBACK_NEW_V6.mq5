@@ -1,10 +1,13 @@
 //+------------------------------------------------------------------+
-//| XAU_H1_MA120_PULLBACK_NEW_V5.mq5                                 |
+//| XAU_H1_MA120_PULLBACK_NEW_V6.mq5                                 |
 //| V5: order comment now tags which band (BB20 or BB4) triggered    |
-//| entry and which timeframe, e.g. "MA120_M2_BB20" -- so results can |
-//| be split by entry band in the Deals report. No logic change from |
-//| V4 otherwise (same MA120-arm + BB-entry + StopLoss_R design; test |
-//| StopLoss_R=3.0 by just changing that input, no code change needed)|
+//| entry and which timeframe, e.g. "MA120_M2_BB20".                  |
+//| V6: V5's band-tagged results showed BB20 entries beat BB4 entries |
+//| at both SL=2R and SL=3R (higher profit factor, less negative avg  |
+//| P&L). Added AllowBB4Entry (default false) -- BB20 always has      |
+//| priority; BB4 is a fallback only when it triggers without BB20    |
+//| also being touched, and only used at all if AllowBB4Entry=true.   |
+//| Test StopLoss_R=4.0 too by just changing that input.               |
 //| NEW strategy (user-designed), trend-following (NOT countertrend):|
 //|                                                                    |
 //| 1) H1 signal filter: same dual-BB breakout used elsewhere in this |
@@ -64,6 +67,10 @@ input int    MA_Short             = 20;
 input double BB20_Dev             = 2.0;
 input double BB4_Dev              = 4.0;
 input double StopLoss_R           = 2.0;  // SL = entry -+ StopLoss_R * R, R = |MA_Long - entry price| at entry
+input bool   AllowBB4Entry        = false; // false = only enter at BB20 (never wait for the deeper BB4).
+                                            // V5 band-tagged results showed BB4 entries consistently
+                                            // underperform BB20 entries (lower PF, more negative avg) at
+                                            // both SL=2R and SL=3R -- default false skips BB4 entirely.
 input int    MaxSetupHours        = 72;   // how long a per-timeframe setup stays valid waiting for a touch
 input int    MaxPositionHours     = 72;   // safety timeout force-close (not explicitly requested)
 input double Lots                 = 0.01; // PER TIMEFRAME -- up to 3x this can be open at once (M1+M2+M3)
@@ -266,14 +273,18 @@ void CheckSetups(MqlTick &tick)
          // fall through: price may have already reached the band on this very same tick
       }
 
-      // PHASE_WAIT_BB. Check the wider BB4 first: if it's touched, BB20 (narrower) is
-      // necessarily touched too, so checking BB4 first correctly labels the rarer
-      // "price skipped straight past BB20" case instead of always reporting BB20.
-      bool touchedBB4=(dir==+1 ? tick.bid<=cur_e_l4[tf] : tick.ask>=cur_e_u4[tf]);
+      // PHASE_WAIT_BB. BB4 (4-bar, dev4.0) is NOT always the wider/farther band -- with only
+      // 4 bars of history its width floats independently of BB20's (20-bar, dev2.0), so either
+      // one can be nearer at a given moment. V5's band-tagged results showed BB4 entries
+      // consistently underperform BB20 entries, so BB20 always has priority; BB4 is only used
+      // as a fallback (and only if AllowBB4Entry=true) when it triggers WITHOUT BB20 also being
+      // touched at that moment.
       bool touchedBB20=(dir==+1 ? tick.bid<=cur_e_l20[tf] : tick.ask>=cur_e_u20[tf]);
-      if(touchedBB4 || touchedBB20)
+      bool touchedBB4=(dir==+1 ? tick.bid<=cur_e_l4[tf] : tick.ask>=cur_e_u4[tf]);
+      bool enter=touchedBB20 || (AllowBB4Entry && touchedBB4);
+      if(enter)
       {
-         string bandLabel=touchedBB4?"BB4":"BB20";
+         string bandLabel=touchedBB20?"BB20":"BB4";
          Log("BB_TOUCH",TS(setups[i].signal_time)+" tf="+EnumToString(ENTRY_TFS[tf])+" band="+bandLabel);
          if(OpenAtBB(dir,tf,cur_ma_long[tf],bandLabel,setups[i].expire_time,tick)) RemoveSetup(i);
       }
@@ -337,8 +348,9 @@ int OnInit()
       managed[k]=false; managed_ticket[k]=0; managed_dir[k]=0; managed_entry[k]=0;
    }
 
-   Log("START","BUILD=v5_band_tagged | EntryTFs=M1+M2+M3 (all independent) | MA_Long="+IntegerToString(MA_Long)+
+   Log("START","BUILD=v6_bb20_priority | EntryTFs=M1+M2+M3 (all independent) | MA_Long="+IntegerToString(MA_Long)+
        " | MA_Short="+IntegerToString(MA_Short)+" | StopLoss_R="+DoubleToString(StopLoss_R,2)+
+       " | AllowBB4Entry="+(AllowBB4Entry?"true":"false")+
        " | BaseMagic="+IntegerToString((int)MagicNumber)+" (M1/M2/M3 = base+0/+1/+2)"+
        " | orders="+(EnableLiveOrders?"ENABLED":"DRY"));
    return INIT_SUCCEEDED;
