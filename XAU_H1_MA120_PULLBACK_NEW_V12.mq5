@@ -1,5 +1,5 @@
 //+------------------------------------------------------------------+
-//| XAU_H1_MA120_PULLBACK_NEW_V11.mq5                                |
+//| XAU_H1_MA120_PULLBACK_NEW_V12.mq5                                |
 //| V5: order comment tags which band (BB20/BB4) and timeframe        |
 //| triggered entry, e.g. "MA120_M2_BB20".                             |
 //| V6: tried forcing BB20-only entry (AllowBB4Entry=false) based on   |
@@ -33,7 +33,18 @@
 //| V11: added TP_OppositeFarther -- instead of hard-coding which       |
 //| opposite band to target, dynamically pick whichever of BB20/BB4 is  |
 //| currently FARTHER away, re-evaluated every bar. Takes priority over |
-//| TP_OppositeBB20 and TP_OppositeBB4 if true.                         |
+//| TP_OppositeBB20 and TP_OppositeBB4 if true. Also: StopLoss_R=3.5 +   |
+//| MaxSetupHours=1 + MinR_Points=350 produced the first NET PROFITABLE |
+//| result in this whole design line (M2: +\$234.79, PF 1.69). Follow-up |
+//| tests with per-timeframe windows (M2=2h/M3=6h/M5=4h, run as three   |
+//| separate single-timeframe instances) were even better and net      |
+//| profitable individually (+\$307/+\$284/+\$155), with LOW cross-       |
+//| correlation (0.07-0.27) -- combined Sharpe (1.55) beats any single  |
+//| timeframe alone.                                                    |
+//| V12: added per-timeframe MaxSetupHours_M1/M2/M3/M5 (replacing the    |
+//| single shared MaxSetupHours) so ONE instance can run M1/M2/M3/M5    |
+//| together, each with its own tuned window, instead of needing        |
+//| separate instances per timeframe.                                   |
 //| NEW strategy (user-designed), trend-following (NOT countertrend):|
 //|                                                                    |
 //| 1) H1 signal filter: same dual-BB breakout used elsewhere in this |
@@ -113,7 +124,10 @@ input bool   TP_OppositeFarther   = false; // true = TP at whichever of the oppo
                                             // away right now, recomputed every bar (since which one is
                                             // farther can flip over time). Takes priority over both of
                                             // the above if true.
-input int    MaxSetupHours        = 72;   // how long a per-timeframe setup stays valid waiting for a touch
+input int    MaxSetupHours_M1     = 72;   // how long an M1 setup stays valid waiting for a touch
+input int    MaxSetupHours_M2     = 72;   // (each timeframe gets its OWN window -- e.g. tests found
+input int    MaxSetupHours_M3     = 72;   // M2=2h/M3=6h/M5=4h all net-profitable and low-correlated,
+input int    MaxSetupHours_M5     = 72;   // so one EA instance can now run all three together)
 input int    MaxPositionHours     = 72;   // safety timeout force-close (not explicitly requested)
 input bool   UseM1                = true;  // set false to disable M1 setups entirely (still lets others run)
 input bool   UseM2                = true;
@@ -130,7 +144,8 @@ input int    MaxDeviationPts      = 50;
 
 #define N_TF 4
 ENUM_TIMEFRAMES ENTRY_TFS[N_TF]={PERIOD_M1,PERIOD_M2,PERIOD_M3,PERIOD_M5};
-bool TFEnabled[N_TF]; // set from UseM1/UseM2/UseM3 in OnInit
+bool TFEnabled[N_TF]; // set from UseM1/UseM2/UseM3/UseM5 in OnInit
+int  MaxSetupHoursArr[N_TF]; // set from MaxSetupHours_M1/M2/M3/M5 in OnInit
 
 int hH1_20=INVALID_HANDLE,hH1_4=INVALID_HANDLE;
 int hE_20[N_TF],hE_4[N_TF],hE_MAL[N_TF],hE_MAS[N_TF];
@@ -218,10 +233,10 @@ void CheckH1Signal()
    else if(c<o && l<=l20[0] && l<=l4[0]) dir=-1; // H1 bear breakout -> SELL setup
    if(dir==0) return;
 
-   datetime expire=t+MaxSetupHours*3600;
    for(int k=0;k<N_TF;k++)
    {
       if(!TFEnabled[k]) continue;
+      datetime expire=t+MaxSetupHoursArr[k]*3600;
       int n=ArraySize(setups); ArrayResize(setups,n+1);
       setups[n].signal_time=sig;
       setups[n].expire_time=expire;
@@ -413,6 +428,8 @@ int OnInit()
    }
 
    TFEnabled[0]=UseM1; TFEnabled[1]=UseM2; TFEnabled[2]=UseM3; TFEnabled[3]=UseM5;
+   MaxSetupHoursArr[0]=MaxSetupHours_M1; MaxSetupHoursArr[1]=MaxSetupHours_M2;
+   MaxSetupHoursArr[2]=MaxSetupHours_M3; MaxSetupHoursArr[3]=MaxSetupHours_M5;
 
    hH1_20=iBands(_Symbol,PERIOD_H1,20,0,BB20_Dev,PRICE_CLOSE);
    hH1_4 =iBands(_Symbol,PERIOD_H1,4,0,BB4_Dev,PRICE_OPEN);
@@ -430,7 +447,9 @@ int OnInit()
       managed[k]=false; managed_ticket[k]=0; managed_dir[k]=0; managed_entry[k]=0;
    }
 
-   Log("START","BUILD=v11_tp_opposite_farther | EntryTFs(enabled)="+(UseM1?"M1 ":"")+(UseM2?"M2 ":"")+(UseM3?"M3 ":"")+(UseM5?"M5":"")+
+   Log("START","BUILD=v12_per_tf_setup_hours | EntryTFs(enabled)="+(UseM1?"M1 ":"")+(UseM2?"M2 ":"")+(UseM3?"M3 ":"")+(UseM5?"M5":"")+
+       " | MaxSetupHours(M1/M2/M3/M5)="+IntegerToString(MaxSetupHours_M1)+"/"+IntegerToString(MaxSetupHours_M2)+
+       "/"+IntegerToString(MaxSetupHours_M3)+"/"+IntegerToString(MaxSetupHours_M5)+
        " | MA_Long="+IntegerToString(MA_Long)+
        " | MA_Short="+IntegerToString(MA_Short)+" | StopLoss_R="+DoubleToString(StopLoss_R,2)+
        " | MinR_Points="+DoubleToString(MinR_Points,1)+
