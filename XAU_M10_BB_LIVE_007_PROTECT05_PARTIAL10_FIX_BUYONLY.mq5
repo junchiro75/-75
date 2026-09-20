@@ -1,5 +1,10 @@
 //+------------------------------------------------------------------+
-//| XAU_M10_BB_LIVE_007_PROTECT05_PARTIAL10_FIX.mq5                            |
+//| XAU_M10_BB_LIVE_007_PROTECT05_PARTIAL10_FIX_BUYONLY.mq5         |
+//| BUY-ONLY variant of 007 (AllowShort=false by default).          |
+//| Real MT5 tick backtest (2025.01-2026.09): SELL trades alone were |
+//| net -$1,196.19 vs BUY alone net -$185.63. Disabling SELL turns   |
+//| the EA's 21-month result from -$1,381.82 to -$185.63. Re-enable  |
+//| SELL via the AllowShort input if you want the original behavior. |
 //| Forward-test EA: NEW-A +0.5R protect / +1.0R split                   |
 //| M10 dual BB -> +0.95R extension -> 0.10R pullback -> countertrend|
 //| SL2R; +0.5R arms +0.25R SL; +1R closes 0.01; final target          |
@@ -11,7 +16,7 @@ CTrade trade;
 
 input double Lots=0.02;
 input bool EnableLiveOrders=false;
-input long MagicNumber=95011007;
+input long MagicNumber=95011107; // distinct from original 007 (95011007) so both can run side by side
 input double ExtensionR=0.95;
 input double PullbackR=0.10;
 input double InitialSL_R=2.0;
@@ -22,6 +27,9 @@ input double SignalOppositeTP_R=0.90;
 input int MaxExtensionHours=72;
 input int MaxPullbackHours=72;
 input int MaxPositionHours=168;
+input bool AllowShort=false; // Ground-truth MT5 tick backtest (2025.01-2026.09) showed SELL
+                             // entries net -$1,196.19 vs BUY entries net -$185.63 (both negative,
+                             // but SELL far worse) in a secular gold uptrend. Default false: BUY-only.
 
 int h20=INVALID_HANDLE,h4=INVALID_HANDLE;
 datetime lastbar=0;
@@ -106,6 +114,10 @@ void NewBar(){
 bool SendEntry(int i,MqlTick &tk){
  ulong old; if(OwnPosition(old)){DS(i);return false;} // strict own-Magic MAX1; consume setup
  int dir=-S[i].sd; double R=S[i].R;
+ if(dir==-1 && !AllowShort){
+  Print("LIVE007 | SKIP | SELL disabled by AllowShort=false (data-driven direction filter)");
+  DS(i);return false;
+ }
  double entry=(dir==1?tk.ask:tk.bid);
  double sl=entry-dir*InitialSL_R*R;
  double finaltp=S[i].c+dir*SignalOppositeTP_R*R;

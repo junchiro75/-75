@@ -1,5 +1,10 @@
 //+------------------------------------------------------------------+
-//| XAU_M10_BB_LIVE_004_FINAL.mq5                                   |
+//| XAU_M10_BB_LIVE_004_FINAL_BUYONLY.mq5                           |
+//| BUY-ONLY variant of 004 (AllowShort=false by default).          |
+//| Real MT5 tick backtest (2025.01-2026.09): SELL trades alone were |
+//| net -$514.35 vs BUY alone net -$174.55. Disabling SELL turns the |
+//| EA's 21-month result from -$688.90 to -$174.55. Re-enable SELL   |
+//| via the AllowShort input if you want the original behavior.      |
 //| LIVE004 FINAL: research Virtual-MAX1 + separate real order state |
 //| BB -> +0.95R -> extreme -> 0.10R pullback -> countertrend        |
 //+------------------------------------------------------------------+
@@ -16,8 +21,11 @@ input double TP2R=0.90;
 input int MaxExtensionHours=72;
 input int MaxPullbackHours=72;
 input int MaxVirtualExitHours=168;
-input ulong MagicNumber=95011001;
+input ulong MagicNumber=95011101; // distinct from original 004 (95011001) so both can run side by side
 input bool EnableLiveOrders=false;
+input bool AllowShort=false; // Ground-truth MT5 tick backtest (2025.01-2026.09) showed SELL
+                              // entries net -$514.35 vs BUY entries net -$174.55 (both negative,
+                              // but SELL far worse) in a secular gold uptrend. Default false: BUY-only.
 
 CTrade trade;
 int h20=INVALID_HANDLE,h4=INVALID_HANDLE;
@@ -170,6 +178,10 @@ void ManageSetups(MqlTick &t){
   }
 
   int dir=-S[i].sigdir;
+  if(dir==-1 && !AllowShort){
+   Print("LIVE004 FINAL SKIP: SELL disabled by AllowShort=false (data-driven direction filter)");
+   DelS(i);continue;
+  }
   double virtualEntry=dir==1?t.ask:t.bid;
   StartVirtual(dir,S[i].R,virtualEntry,now);
 
