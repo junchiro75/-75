@@ -1,0 +1,4 @@
+scenario,lot_005,lot_007,net_21mo,ann_est,mdd,dollar_sharpe
+A: 005 only,0.3,0.0,52417,21168,-20134,1.88
+B: risk-parity,0.1354,0.1646,21982,8877,-13445,1.21
+C: equal split,0.15,0.15,24682,9968,-13975,1.34
