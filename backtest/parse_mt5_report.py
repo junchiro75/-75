@@ -7,6 +7,7 @@ not a re-simulation.
 import argparse
 import re
 import sys
+from collections import deque
 
 import openpyxl
 import pandas as pd
@@ -34,16 +35,33 @@ def parse_deals(path):
     # 007's +1.0R half-close). Track remaining open volume so every 'out'
     # deal is kept as its own fill row -- dropping any of them silently
     # under-counts trades and corrupts the P&L total.
+    #
+    # This export has no explicit position-id column, and EAs that can hold
+    # several concurrent same-symbol positions (e.g. the MA120-pullback EA's
+    # up-to-3 M1/M2/M3 slots) genuinely overlap in the deal stream. We track
+    # one FIFO queue per entry side (buy/sell) and match each 'out' deal to
+    # the OLDEST still-open entry of the opposite side -- the standard
+    # approximation when no ticket/position id is exported. Aggregate P&L,
+    # counts and win rate are exact either way (each close's own profit is
+    # MT5's own number); only which entry_time/entry_price a given close is
+    # attributed to could occasionally be swapped between same-direction
+    # concurrent positions.
+    pending_buys = deque()   # each: dict as built below, entry_side == 'buy'
+    pending_sells = deque()  # entry_side == 'sell'
     trades = []
-    pending = None
     for r in rows:
         time_, dealid, sym, side, dirn, vol, price, order, comm, swap, profit, bal, comment = r[:13]
         vol = float(vol) if vol is not None else 0.0
         if dirn == 'in':
-            pending = {'entry_time': time_, 'entry_price': price, 'entry_side': side,
-                       'entry_volume': vol, 'remaining': vol, 'commission_in': comm or 0.0,
-                       'commission_in_charged': False}
-        elif dirn == 'out' and pending is not None:
+            entry = {'entry_time': time_, 'entry_price': price, 'entry_side': side,
+                     'entry_volume': vol, 'remaining': vol, 'commission_in': comm or 0.0,
+                     'commission_in_charged': False}
+            (pending_buys if side == 'buy' else pending_sells).append(entry)
+        elif dirn == 'out':
+            queue = pending_buys if side == 'sell' else pending_sells  # 'out' side is opposite of entry
+            if not queue:
+                continue
+            pending = queue[0]
             pos_dir = 1 if pending['entry_side'] == 'buy' else -1
             gross = profit or 0.0
             comm_out = comm or 0.0
@@ -63,7 +81,7 @@ def parse_deals(path):
             })
             pending['remaining'] = round(pending['remaining'] - vol, 6)
             if pending['remaining'] <= 1e-6:
-                pending = None
+                queue.popleft()
     df = pd.DataFrame(trades)
     df['entry_dt'] = pd.to_datetime(df['entry_time'], format='%Y.%m.%d %H:%M:%S')
     df['exit_dt'] = pd.to_datetime(df['exit_time'], format='%Y.%m.%d %H:%M:%S')
