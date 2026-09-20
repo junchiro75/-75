@@ -1,5 +1,5 @@
 //+------------------------------------------------------------------+
-//| XAU_H1_MA120_PULLBACK_NEW_V8.mq5                                 |
+//| XAU_H1_MA120_PULLBACK_NEW_V9.mq5                                 |
 //| V5: order comment tags which band (BB20/BB4) and timeframe        |
 //| triggered entry, e.g. "MA120_M2_BB20".                             |
 //| V6: tried forcing BB20-only entry (AllowBB4Entry=false) based on   |
@@ -13,8 +13,14 @@
 //| -- net still -\$203 purely from \$309.60 of commission on 2064      |
 //| trades, not from bad signals.                                      |
 //| V8: added UseM1/UseM2/UseM3 toggles to disable a timeframe's       |
-//| setups entirely (e.g. M1 off to cut trade count/commission while   |
-//| keeping the slower, presumably higher-quality M2/M3 setups).       |
+//| setups entirely. M2-only + SL=4R turned out best so far (net       |
+//| -\$19.96, gross +\$84.41, PF 1.12 before commission); M3-only was    |
+//| much weaker (barely gross-positive). Lot size (tried 0.05) just     |
+//| scales P&L and commission together -- doesn't fix the ratio.       |
+//| V9: added a 4th timeframe, M5 (UseM5 toggle, same as M1/M2/M3), to  |
+//| see if a slower timeframe than M2/M3 does even better. Also added  |
+//| MinR_Points to skip entries whose R (pullback-to-band distance) is |
+//| too small -- these are presumably lower-quality/noisier setups.    |
 //| NEW strategy (user-designed), trend-following (NOT countertrend):|
 //|                                                                    |
 //| 1) H1 signal filter: same dual-BB breakout used elsewhere in this |
@@ -86,16 +92,21 @@ input bool   TP_OppositeBB4       = false; // false = TP at MA_Short (20) as bef
                                             // just back to the middle.
 input int    MaxSetupHours        = 72;   // how long a per-timeframe setup stays valid waiting for a touch
 input int    MaxPositionHours     = 72;   // safety timeout force-close (not explicitly requested)
-input bool   UseM1                = true;  // set false to disable M1 setups entirely (still lets M2/M3 run)
+input bool   UseM1                = true;  // set false to disable M1 setups entirely (still lets others run)
 input bool   UseM2                = true;
 input bool   UseM3                = true;
-input double Lots                 = 0.01; // PER TIMEFRAME -- up to 3x this can be open at once (M1+M2+M3)
+input bool   UseM5                = true;
+input double MinR_Points          = 0;    // skip entry if R (=|MA_Long-entry price| at touch, in points)
+                                           // is below this -- filters out setups where the pullback barely
+                                           // reached MA_Long, which give a tiny R and are more likely just
+                                           // noise. 0 = no filter (matches earlier behavior).
+input double Lots                 = 0.01; // PER TIMEFRAME -- up to 4x this can be open at once (M1+M2+M3+M5)
 input bool   EnableLiveOrders     = false; // SAFETY: set true only after checks
-input ulong  MagicNumber          = 95014101; // base magic; M1/M2/M3 use MagicNumber+0/+1/+2
+input ulong  MagicNumber          = 95014101; // base magic; M1/M2/M3/M5 use MagicNumber+0/+1/+2/+3
 input int    MaxDeviationPts      = 50;
 
-#define N_TF 3
-ENUM_TIMEFRAMES ENTRY_TFS[N_TF]={PERIOD_M1,PERIOD_M2,PERIOD_M3};
+#define N_TF 4
+ENUM_TIMEFRAMES ENTRY_TFS[N_TF]={PERIOD_M1,PERIOD_M2,PERIOD_M3,PERIOD_M5};
 bool TFEnabled[N_TF]; // set from UseM1/UseM2/UseM3 in OnInit
 
 int hH1_20=INVALID_HANDLE,hH1_4=INVALID_HANDLE;
@@ -116,7 +127,7 @@ struct Setup {
 };
 Setup setups[];
 
-// Per-timeframe open-position state -- up to N_TF positions can be open concurrently.
+// Per-timeframe open-position state -- up to N_TF (4: M1/M2/M3/M5) positions can be open concurrently.
 bool     managed[N_TF];
 ulong    managed_ticket[N_TF];
 int      managed_dir[N_TF];
@@ -205,9 +216,11 @@ bool OpenAtBB(int dir,int tf,double maLongAtTouch,string bandLabel,datetime setu
 
    double entry=(dir==+1?tick.ask:tick.bid);
    double R=MathAbs(maLongAtTouch-entry);
-   if(R<=_Point)
+   double minR=MathMax(_Point,MinR_Points*_Point);
+   if(R<=minR)
    {
-      Log("ENTRY_SKIPPED","R too small (MA_Long≈entry) tf="+EnumToString(ENTRY_TFS[tf]));
+      Log("ENTRY_SKIPPED","R too small ("+DoubleToString(R,_Digits)+" <= min "+DoubleToString(minR,_Digits)+
+          ") tf="+EnumToString(ENTRY_TFS[tf]));
       return false;
    }
    double sl=entry-dir*StopLoss_R*R;
@@ -356,11 +369,11 @@ int OnInit()
    // Up to 3 concurrent same-symbol positions (one per timeframe) require hedging.
    if(AccountInfoInteger(ACCOUNT_MARGIN_MODE)!=ACCOUNT_MARGIN_MODE_RETAIL_HEDGING)
    {
-      Print("MA120PULLBACK INIT FAILED: HEDGING account required (up to 3 concurrent M1/M2/M3 positions).");
+      Print("MA120PULLBACK INIT FAILED: HEDGING account required (up to 4 concurrent M1/M2/M3/M5 positions).");
       return INIT_FAILED;
    }
 
-   TFEnabled[0]=UseM1; TFEnabled[1]=UseM2; TFEnabled[2]=UseM3;
+   TFEnabled[0]=UseM1; TFEnabled[1]=UseM2; TFEnabled[2]=UseM3; TFEnabled[3]=UseM5;
 
    hH1_20=iBands(_Symbol,PERIOD_H1,20,0,BB20_Dev,PRICE_CLOSE);
    hH1_4 =iBands(_Symbol,PERIOD_H1,4,0,BB4_Dev,PRICE_OPEN);
@@ -378,12 +391,13 @@ int OnInit()
       managed[k]=false; managed_ticket[k]=0; managed_dir[k]=0; managed_entry[k]=0;
    }
 
-   Log("START","BUILD=v8_tf_toggle | EntryTFs(enabled)="+(UseM1?"M1 ":"")+(UseM2?"M2 ":"")+(UseM3?"M3":"")+
+   Log("START","BUILD=v9_m5_minr | EntryTFs(enabled)="+(UseM1?"M1 ":"")+(UseM2?"M2 ":"")+(UseM3?"M3 ":"")+(UseM5?"M5":"")+
        " | MA_Long="+IntegerToString(MA_Long)+
        " | MA_Short="+IntegerToString(MA_Short)+" | StopLoss_R="+DoubleToString(StopLoss_R,2)+
+       " | MinR_Points="+DoubleToString(MinR_Points,1)+
        " | Lots="+DoubleToString(Lots,2)+
        " | AllowBB4Entry="+(AllowBB4Entry?"true":"false")+" | TP_OppositeBB4="+(TP_OppositeBB4?"true":"false")+
-       " | BaseMagic="+IntegerToString((int)MagicNumber)+" (M1/M2/M3 = base+0/+1/+2)"+
+       " | BaseMagic="+IntegerToString((int)MagicNumber)+" (M1/M2/M3/M5 = base+0/+1/+2/+3)"+
        " | orders="+(EnableLiveOrders?"ENABLED":"DRY"));
    return INIT_SUCCEEDED;
 }
