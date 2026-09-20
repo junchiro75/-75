@@ -33,6 +33,7 @@ class Trade:
     commission: float
     net_pnl: float
     reason: str
+    entry_path: str = ''  # 'fast' (next-bar confirm) or 'mechanical' (extension+pullback), when known
 
 
 class PositionManager:
@@ -69,6 +70,7 @@ class PositionManager:
             'entry_time': ts, 'entry': entry, 'dir': dir_, 'R': event.R,
             'volume': self.lots, 'sl': sl, 'tp': tp, 'armed': False,
             'partial_done': self.partial_trigger_r is None,
+            'entry_path': getattr(event, 'origin', ''),
         }
         return True
 
@@ -122,7 +124,7 @@ class PositionManager:
         net = gross - commission
         r = (price - p['entry']) * dir_ / p['R'] if p['R'] else 0.0
         trades.append(Trade(self.name, p['entry_time'], p['entry'], ts, price, dir_,
-                             vol, r, gross, commission, net, reason))
+                             vol, r, gross, commission, net, reason, p.get('entry_path', '')))
         if partial:
             p['volume'] = round(p['volume'] - vol, 2)
         else:

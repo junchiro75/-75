@@ -29,6 +29,7 @@ class TriggerEvent:
     dir: int  # trade direction to open: -sigdir (countertrend)
     R: float
     sig_close: float
+    origin: str = 'mechanical'  # 'mechanical' (extension+pullback wait) or 'fast' (next-bar confirm)
 
 
 class SignalTracker:

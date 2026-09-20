@@ -55,13 +55,16 @@ def main():
         rows.append(summary)
         sub.to_csv(os.path.join(args.results_dir, f'trades_{name}.csv'), index=False)
 
-        # Direction breakdown (BUY vs SELL) to see which side the new SELL fast-path helps/hurts
+        # 4-case breakdown: (BUY/SELL) x (fast next-bar-confirm / mechanical ext+pullback)
         if not sub.empty:
-            for d, label in [(1, 'BUY'), (-1, 'SELL')]:
-                dsub = sub[sub['dir'] == d]
-                if len(dsub):
-                    print(f"  {name} {label}: n={len(dsub)} net_pnl=${dsub['net_pnl'].sum():.2f} "
-                          f"win_rate={100*(dsub['net_pnl']>0).mean():.1f}%")
+            print(f"  --- {name}: 4-case breakdown ---")
+            for d, dlabel in [(1, 'BUY (from bear signal)'), (-1, 'SELL (from bull signal)')]:
+                for path, plabel in [('fast', 'fast-confirm'), ('mechanical', 'ext+pullback')]:
+                    dsub = sub[(sub['dir'] == d) & (sub['entry_path'] == path)]
+                    if len(dsub):
+                        print(f"  {dlabel:24s} x {plabel:14s}: n={len(dsub):5d}  "
+                              f"net_pnl=${dsub['net_pnl'].sum():>10.2f}  "
+                              f"win_rate={100*(dsub['net_pnl']>0).mean():5.1f}%")
 
     report = pd.DataFrame(rows)
     report.to_csv(os.path.join(args.results_dir, 'summary_symfastconfirm.csv'), index=False)

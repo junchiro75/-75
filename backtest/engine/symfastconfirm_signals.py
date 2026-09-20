@@ -34,7 +34,7 @@ class SymmetricFastConfirmSignalTracker:
             reversed_next_bar = (bar.c < bar.o) if sigdir == 1 else (bar.c > bar.o)
             if reversed_next_bar:
                 self.pending_immediate.append({
-                    'dir': -sigdir, 'R': confirm['R'], 'sig_close': confirm['sig_close']})
+                    'dir': -sigdir, 'R': confirm['R'], 'sig_close': confirm['sig_close'], 'origin': 'fast'})
 
         if bands is not None:
             u20, l20, u4, l4 = bands
@@ -53,6 +53,6 @@ class SymmetricFastConfirmSignalTracker:
         if self.pending_immediate:
             for setup in self.pending_immediate:
                 events.append(TriggerEvent(time=ts, dir=setup['dir'], R=setup['R'],
-                                            sig_close=setup['sig_close']))
+                                            sig_close=setup['sig_close'], origin=setup['origin']))
             self.pending_immediate = []
         return events
