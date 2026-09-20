@@ -1,5 +1,5 @@
 //+------------------------------------------------------------------+
-//| XAU_H1_MA120_PULLBACK_NEW_V9.mq5                                 |
+//| XAU_H1_MA120_PULLBACK_NEW_V10.mq5                                |
 //| V5: order comment tags which band (BB20/BB4) and timeframe        |
 //| triggered entry, e.g. "MA120_M2_BB20".                             |
 //| V6: tried forcing BB20-only entry (AllowBB4Entry=false) based on   |
@@ -20,7 +20,14 @@
 //| V9: added a 4th timeframe, M5 (UseM5 toggle, same as M1/M2/M3), to  |
 //| see if a slower timeframe than M2/M3 does even better. Also added  |
 //| MinR_Points to skip entries whose R (pullback-to-band distance) is |
-//| too small -- these are presumably lower-quality/noisier setups.    |
+//| too small. Results: M5 was WORSE than M2 (PF 0.85 vs 1.12). The R  |
+//| filter changed trade character a lot (win rate 22%->58%, but avg   |
+//| loss grew 5x) while leaving the overall PF essentially unchanged   |
+//| (0.974 -> 0.973) -- doesn't actually improve the edge.             |
+//| V10: added TP_OppositeBB20 -- like TP_OppositeBB4 but targets the   |
+//| opposite BB20 (narrower/closer) instead of BB4, for a smaller but   |
+//| presumably more frequently reached target. Takes priority over     |
+//| TP_OppositeBB4 if both are set true.                                |
 //| NEW strategy (user-designed), trend-following (NOT countertrend):|
 //|                                                                    |
 //| 1) H1 signal filter: same dual-BB breakout used elsewhere in this |
@@ -89,7 +96,10 @@ input bool   AllowBB4Entry        = true;  // V6 test: forcing BB20-only (false)
 input bool   TP_OppositeBB4       = false; // false = TP at MA_Short (20) as before. true = TP at the
                                             // OPPOSITE band's BB4 (BUY entered at lower BB20/BB4 -> TP at
                                             // upper BB4; SELL mirrors) -- ride the full range instead of
-                                            // just back to the middle.
+                                            // just back to the middle. Ignored if TP_OppositeBB20=true.
+input bool   TP_OppositeBB20      = false; // true = TP at the OPPOSITE band's BB20 instead (narrower
+                                            // target than BB4, so smaller/faster wins). Takes priority
+                                            // over TP_OppositeBB4 if both are true.
 input int    MaxSetupHours        = 72;   // how long a per-timeframe setup stays valid waiting for a touch
 input int    MaxPositionHours     = 72;   // safety timeout force-close (not explicitly requested)
 input bool   UseM1                = true;  // set false to disable M1 setups entirely (still lets others run)
@@ -338,9 +348,16 @@ void ManageOpenPositions(MqlTick &tick)
       if(now>managed_entry_time[tf]+MaxPositionHours*3600) { ClosePosition(tf,"TIMEOUT"); continue; }
 
       double px=(managed_dir[tf]==+1?tick.bid:tick.ask);
-      if(TP_OppositeBB4)
+      if(TP_OppositeBB20)
       {
-         // BUY entered at lower BB20 -> TP at upper BB4 (opposite extreme). SELL mirrors.
+         // BUY entered at lower BB20/BB4 -> TP at upper BB20 (opposite, narrower band). SELL mirrors.
+         double target=(managed_dir[tf]==+1?cur_e_u20[tf]:cur_e_l20[tf]);
+         bool tp_hit=(managed_dir[tf]==+1 ? px>=target : px<=target);
+         if(tp_hit){ ClosePosition(tf,"TP_OPPOSITE_BB20"); continue; }
+      }
+      else if(TP_OppositeBB4)
+      {
+         // BUY entered at lower BB20/BB4 -> TP at upper BB4 (opposite extreme). SELL mirrors.
          double target=(managed_dir[tf]==+1?cur_e_u4[tf]:cur_e_l4[tf]);
          bool tp_hit=(managed_dir[tf]==+1 ? px>=target : px<=target);
          if(tp_hit){ ClosePosition(tf,"TP_OPPOSITE_BB4"); continue; }
@@ -391,12 +408,13 @@ int OnInit()
       managed[k]=false; managed_ticket[k]=0; managed_dir[k]=0; managed_entry[k]=0;
    }
 
-   Log("START","BUILD=v9_m5_minr | EntryTFs(enabled)="+(UseM1?"M1 ":"")+(UseM2?"M2 ":"")+(UseM3?"M3 ":"")+(UseM5?"M5":"")+
+   Log("START","BUILD=v10_tp_opposite_bb20 | EntryTFs(enabled)="+(UseM1?"M1 ":"")+(UseM2?"M2 ":"")+(UseM3?"M3 ":"")+(UseM5?"M5":"")+
        " | MA_Long="+IntegerToString(MA_Long)+
        " | MA_Short="+IntegerToString(MA_Short)+" | StopLoss_R="+DoubleToString(StopLoss_R,2)+
        " | MinR_Points="+DoubleToString(MinR_Points,1)+
        " | Lots="+DoubleToString(Lots,2)+
        " | AllowBB4Entry="+(AllowBB4Entry?"true":"false")+" | TP_OppositeBB4="+(TP_OppositeBB4?"true":"false")+
+       " | TP_OppositeBB20="+(TP_OppositeBB20?"true":"false")+
        " | BaseMagic="+IntegerToString((int)MagicNumber)+" (M1/M2/M3/M5 = base+0/+1/+2/+3)"+
        " | orders="+(EnableLiveOrders?"ENABLED":"DRY"));
    return INIT_SUCCEEDED;
