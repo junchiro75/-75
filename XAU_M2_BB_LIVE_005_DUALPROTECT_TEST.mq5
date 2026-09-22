@@ -1,38 +1,45 @@
 //+------------------------------------------------------------------+
 //| XAU_M2_BB_LIVE_005_DUALPROTECT_TEST.mq5                          |
-//| A/B protect-SL comparison test, built on top of RFILTER_V2's     |
+//| A/B/C protect-SL comparison test, built on top of RFILTER_V2's   |
 //| live-config signal logic (LatestSignalOnly + MinR_Points).       |
-//| Every confirmed pullback entry opens TWO simultaneous positions  |
-//| under DIFFERENT magic numbers, same direction/SL/TP2 at open:    |
+//| Every confirmed pullback entry opens THREE simultaneous          |
+//| positions under DIFFERENT magic numbers, same direction/SL/TP2   |
+//| at open:                                                          |
 //|   Position A (MagicNumber_A) -- KEEPS existing behavior: once    |
-//|     price reaches TP1_R, whole-position SL is moved to Lock_R.   |
+//|     price reaches TP1_R (0.5R), whole SL moves to Lock_R.        |
 //|   Position B (MagicNumber_B) -- protect-SL logic REMOVED: rides  |
 //|     the original SL/TP2 bracket set at entry, untouched.         |
-//| No new dual-entry signal is taken until BOTH A and B are flat,   |
-//| so each pair shares the identical entry -- only the exit rule    |
-//| differs. MT5's own report separates A vs B by magic number in    |
-//| the deals/orders comment ("DUAL_A_PROTECT" / "DUAL_B_NOPROTECT") |
-//| for post-hoc parsing.                                            |
+//|   Position C (MagicNumber_C) -- same protect-SL mechanism as A,  |
+//|     but the trigger is TP1_R_C (0.8R) instead of TP1_R; Lock_R   |
+//|     target is the same 0.25R as A once triggered.                |
+//| No new triple-entry signal is taken until A, B, AND C are all    |
+//| flat, so each triplet shares the identical entry -- only the     |
+//| exit rule differs. MT5's own report separates A/B/C by magic     |
+//| number or order comment ("DUAL_A_PROTECT" / "DUAL_B_NOPROTECT" / |
+//| "DUAL_C_PROTECT_TP1_0.8R") for post-hoc parsing.                 |
 //| Tester-only: EnableLiveOrders must be true (no DRY/virtual path).|
 //+------------------------------------------------------------------+
 #property strict
 #include <Trade/Trade.mqh>
 CTrade trade;
 
-input double LotsA                = 0.10;    // Position A: keeps protect-SL (TP1_R -> Lock_R)
+input double LotsA                = 0.10;    // Position A: protect-SL (TP1_R -> Lock_R)
 input double LotsB                = 0.10;    // Position B: NO protect-SL, rides original SL/TP2 only
+input double LotsC                = 0.10;    // Position C: protect-SL like A, but TP1 trigger = TP1_R_C
 input double ExtensionR           = 0.95;
 input double PullbackR            = 0.10;
 input double InitialSL_R          = 4.00;    // matches current live 005 config
-input double TP1_R                = 0.50;
-input double Lock_R               = 0.25;
+input double TP1_R                = 0.50;    // Position A's TP1 trigger
+input double TP1_R_C              = 0.80;    // Position C's TP1 trigger (only thing changed vs A)
+input double Lock_R               = 0.25;    // shared by A and C once their own TP1 triggers
 input double TP2_R                = 0.90;
 input double MinR_Points          = 0;       // 0 = matches current live 005 config
 input bool   LatestSignalOnly     = true;    // matches current live 005 config
 input int    MaxExtensionHours    = 72;
 input int    MaxPullbackHours     = 72;
-input ulong  MagicNumber_A        = 95012101; // same magic as live 005 (protect side)
+input ulong  MagicNumber_A        = 95012101; // same magic as live 005 (protect side, TP1=0.5R)
 input ulong  MagicNumber_B        = 95012199; // distinct magic (no-protect side)
+input ulong  MagicNumber_C        = 95012198; // distinct magic (protect side, TP1=0.8R)
 input int    MaxDeviationPts      = 50;
 input bool   EnableLiveOrders     = true;     // this test variant only supports the real-order path
 input bool   AllowShort           = false;
@@ -93,9 +100,9 @@ bool HasPosition(ulong magic)
    return false;
 }
 
-bool AnySlotOccupied(){ return HasPosition(MagicNumber_A) || HasPosition(MagicNumber_B); }
+bool AnySlotOccupied(){ return HasPosition(MagicNumber_A) || HasPosition(MagicNumber_B) || HasPosition(MagicNumber_C); }
 
-bool FindPosition(ulong magic,ManagedPos &mp)
+bool FindPosition(ulong magic,double tp1R,ManagedPos &mp)
 {
    mp.found=false; mp.ticket=0; mp.tp1_reached=false;
    for(int i=PositionsTotal()-1;i>=0;i--)
@@ -118,7 +125,7 @@ bool FindPosition(ulong magic,ManagedPos &mp)
 
       if(mp.R>0)
       {
-         mp.tp1=mp.entry+mp.dir*TP1_R*mp.R;
+         mp.tp1=mp.entry+mp.dir*tp1R*mp.R;
          mp.lock=mp.entry+mp.dir*Lock_R*mp.R;
          double eps=2*_Point;
          mp.tp1_reached=(mp.dir==+1 ? mp.sl>=mp.lock-eps
@@ -205,7 +212,7 @@ void CheckNewM2Bar()
 void OpenDualEntry(Setup &s,MqlTick &tick)
 {
    if(!EnableLiveOrders){ Log("ENTRY_SKIPPED","EnableLiveOrders=false -- this test variant requires real orders"); return; }
-   if(AnySlotOccupied()){ Log("ENTRY_SKIPPED","dual-slot occupied (A and/or B still open)"); return; }
+   if(AnySlotOccupied()){ Log("ENTRY_SKIPPED","triple-slot occupied (A/B/C still open)"); return; }
 
    int dir=-s.sigdir; // bull signal -> SELL, bear signal -> BUY
    if(dir==-1 && !AllowShort)
@@ -245,6 +252,12 @@ void OpenDualEntry(Setup &s,MqlTick &tick)
                      : trade.Sell(LotsB,_Symbol,0.0,sl,tp,"DUAL_B_NOPROTECT"));
    if(!okB) Log("ORDER_FAIL_B",IntegerToString((int)trade.ResultRetcode())+" | "+trade.ResultRetcodeDescription());
    else     Log("ENTRY_B",(dir==1?"BUY":"SELL")+" | sl="+DoubleToString(sl,_Digits)+" | tp2="+DoubleToString(tp,_Digits)+" | NO protect-SL will be applied");
+
+   trade.SetExpertMagicNumber(MagicNumber_C);
+   bool okC=(dir==+1 ? trade.Buy(LotsC,_Symbol,0.0,sl,tp,"DUAL_C_PROTECT_TP1_0.8R")
+                     : trade.Sell(LotsC,_Symbol,0.0,sl,tp,"DUAL_C_PROTECT_TP1_0.8R"));
+   if(!okC) Log("ORDER_FAIL_C",IntegerToString((int)trade.ResultRetcode())+" | "+trade.ResultRetcodeDescription());
+   else     Log("ENTRY_C",(dir==1?"BUY":"SELL")+" | sl="+DoubleToString(sl,_Digits)+" | tp2="+DoubleToString(tp,_Digits)+" | protect-SL at TP1_R_C");
 }
 
 void CheckSetups(MqlTick &tick)
@@ -293,11 +306,11 @@ void CheckSetups(MqlTick &tick)
    }
 }
 
-// Position A only: once TP1_R is reached, move whole-position SL to Lock_R (existing live behavior).
+// Position A only: once TP1_R (0.5R) is reached, move whole-position SL to Lock_R (existing live behavior).
 void ManageProtectA(MqlTick &tick)
 {
    ManagedPos mp;
-   if(!FindPosition(MagicNumber_A,mp)) return;
+   if(!FindPosition(MagicNumber_A,TP1_R,mp)) return;
    if(mp.tp1_reached || mp.R<=0) return;
 
    double px=(mp.dir==+1 ? tick.bid : tick.ask);
@@ -309,6 +322,22 @@ void ManageProtectA(MqlTick &tick)
       Log("TP1_LOCK_A","whole SL moved to "+DoubleToString(mp.lock,_Digits));
 }
 // Position B: deliberately NO management function -- rides original SL/TP2 bracket set at OpenDualEntry.
+
+// Position C: same mechanism as A, but the TP1 trigger is TP1_R_C (0.8R) instead of TP1_R.
+void ManageProtectC(MqlTick &tick)
+{
+   ManagedPos mp;
+   if(!FindPosition(MagicNumber_C,TP1_R_C,mp)) return;
+   if(mp.tp1_reached || mp.R<=0) return;
+
+   double px=(mp.dir==+1 ? tick.bid : tick.ask);
+   bool hit=(mp.dir==+1 ? px>=mp.tp1 : px<=mp.tp1);
+   if(!hit) return;
+
+   trade.SetExpertMagicNumber(MagicNumber_C);
+   if(SafeModifyPosition(mp.ticket,mp.dir,mp.lock,mp.tp2,"LOCK_MODIFY_C"))
+      Log("TP1_LOCK_C","whole SL moved to "+DoubleToString(mp.lock,_Digits));
+}
 
 int OnInit()
 {
@@ -326,9 +355,10 @@ int OnInit()
    trade.SetDeviationInPoints(MaxDeviationPts);
    trade.SetTypeFillingBySymbol(_Symbol);
 
-   Log("START",string("A/B DUAL PROTECT-SL TEST | TF=M2 | LotsA=")+DoubleToString(LotsA,2)+
-       " (MagicA="+IntegerToString((int)MagicNumber_A)+", protect-SL ON) | LotsB="+DoubleToString(LotsB,2)+
-       " (MagicB="+IntegerToString((int)MagicNumber_B)+", protect-SL OFF) | InitialSL_R="+DoubleToString(InitialSL_R,2)+
+   Log("START",string("A/B/C TRIPLE PROTECT-SL TEST | TF=M2 | LotsA=")+DoubleToString(LotsA,2)+
+       " (MagicA="+IntegerToString((int)MagicNumber_A)+", protect-SL ON, TP1="+DoubleToString(TP1_R,2)+"R) | LotsB="+DoubleToString(LotsB,2)+
+       " (MagicB="+IntegerToString((int)MagicNumber_B)+", protect-SL OFF) | LotsC="+DoubleToString(LotsC,2)+
+       " (MagicC="+IntegerToString((int)MagicNumber_C)+", protect-SL ON, TP1="+DoubleToString(TP1_R_C,2)+"R) | InitialSL_R="+DoubleToString(InitialSL_R,2)+
        " | LatestSignalOnly="+(LatestSignalOnly?"true":"false")+" | MinR_Points="+DoubleToString(MinR_Points,1));
    return INIT_SUCCEEDED;
 }
@@ -346,5 +376,6 @@ void OnTick()
    CheckNewM2Bar();
    CheckSetups(tick);
    ManageProtectA(tick);
+   ManageProtectC(tick);
 }
 //+------------------------------------------------------------------+
