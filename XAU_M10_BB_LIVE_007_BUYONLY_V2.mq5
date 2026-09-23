@@ -42,6 +42,14 @@ input bool LatestSignalOnly=false; // true = a new BB-breakout signal candle dis
 
 int h20=INVALID_HANDLE,h4=INVALID_HANDLE;
 datetime lastbar=0;
+int f_log=INVALID_HANDLE;
+
+string TS(datetime t){ return TimeToString(t,TIME_DATE|TIME_MINUTES|TIME_SECONDS); }
+void Log(string event,string detail="")
+{
+   Print("LIVE007 | ",event," | ",detail);
+   if(f_log!=INVALID_HANDLE){ FileWrite(f_log,TS(TimeCurrent()),event,detail); FileFlush(f_log); }
+}
 
 struct Setup{
  datetime sig,ct,exp;
@@ -115,20 +123,20 @@ void NewBar(){
  if(!bull&&!bear)return;
  double R=MathAbs(c-o);if(R<=0)return;
  if(LatestSignalOnly && ArraySize(S)>0){
-  Print("LIVE007 | SIGNAL_SUPERSEDES | dropping ",ArraySize(S)," pending setup(s) for newer signal");
+  Log("SIGNAL_SUPERSEDES","dropping "+IntegerToString(ArraySize(S))+" pending setup(s) for newer signal");
   ArrayResize(S,0);
  }
  int n=ArraySize(S);ArrayResize(S,n+1);
  S[n].sig=st;S[n].ct=st+PeriodSeconds(PERIOD_M10);S[n].exp=S[n].ct+MaxExtensionHours*3600;
  S[n].sd=bull?1:-1;S[n].R=R;S[n].o=o;S[n].h=h;S[n].l=l;S[n].c=c;S[n].extreme=c;S[n].ext=false;
- Print("LIVE007 | SIGNAL | ",bull?"BULL":"BEAR"," R=",DoubleToString(R,2));
+ Log("SIGNAL",(bull?"BULL":"BEAR")+" R="+DoubleToString(R,2));
 }
 
 bool SendEntry(int i,MqlTick &tk){
  ulong old; if(OwnPosition(old)){DS(i);return false;} // strict own-Magic MAX1; consume setup
  int dir=-S[i].sd; double R=S[i].R;
  if(dir==-1 && !AllowShort){
-  Print("LIVE007 | SKIP | SELL disabled by AllowShort=false (data-driven direction filter)");
+  Log("SIGNAL_SKIPPED","SELL disabled by AllowShort=false (data-driven direction filter)");
   DS(i);return false;
  }
  double entry=(dir==1?tk.ask:tk.bid);
@@ -141,11 +149,11 @@ bool SendEntry(int i,MqlTick &tk){
   ok=(dir==1)?trade.Buy(Lots,_Symbol,0,sl,finaltp,"LIVE007_P05P10")
              :trade.Sell(Lots,_Symbol,0,sl,finaltp,"LIVE007_P05P10");
  }else{
-  Print("LIVE007 | DRY ENTRY | ",dir==1?"BUY":"SELL"," entry~",DoubleToString(entry,_Digits),
-        " R=",DoubleToString(R,2)," SL=",DoubleToString(sl,_Digits)," finalTP=",DoubleToString(finaltp,_Digits));
+  Log("DRY_ENTRY",(dir==1?"BUY":"SELL")+" entry~"+DoubleToString(entry,_Digits)+
+      " R="+DoubleToString(R,2)+" SL="+DoubleToString(sl,_Digits)+" finalTP="+DoubleToString(finaltp,_Digits));
   DS(i);return false;
  }
- if(!ok){Print("LIVE007 | ENTRY FAILED | retcode=",trade.ResultRetcode()," ",trade.ResultRetcodeDescription());DS(i);return false;}
+ if(!ok){Log("ORDER_FAIL","retcode="+IntegerToString((int)trade.ResultRetcode())+" "+trade.ResultRetcodeDescription());DS(i);return false;}
  ulong t;
  if(OwnPosition(t)&&PositionSelectByTicket(t)){
   tracked_entry=PositionGetDouble(POSITION_PRICE_OPEN);
@@ -153,8 +161,8 @@ bool SendEntry(int i,MqlTick &tk){
  }else{tracked_entry=entry;tracked_entry_time=(datetime)(tk.time_msc/1000);}
  tracked_R=R;tracked_sigclose=S[i].c;tracked_dir=dir;protection_armed=false;managed_partial=false;
  SaveTrack();
- Print("LIVE007 | ENTRY OK | ",dir==1?"BUY":"SELL"," entry=",DoubleToString(tracked_entry,_Digits),
-       " R=",DoubleToString(R,2)," lots=",DoubleToString(Lots,2));
+ Log("ENTRY_OK",(dir==1?"BUY":"SELL")+" entry="+DoubleToString(tracked_entry,_Digits)+
+     " R="+DoubleToString(R,2)+" lots="+DoubleToString(Lots,2));
  DS(i);return true;
 }
 
@@ -166,13 +174,13 @@ void ManageSetups(MqlTick &tk){
   if(!S[i].ext){
    if(now>S[i].exp){DS(i);continue;}
    double ext=S[i].c+S[i].sd*ExtensionR*S[i].R;
-   if(S[i].sd==1?px>=ext:px<=ext){S[i].ext=true;S[i].extreme=px;S[i].exp=now+MaxPullbackHours*3600;Print("LIVE007 | EXT HIT");}
+   if(S[i].sd==1?px>=ext:px<=ext){S[i].ext=true;S[i].extreme=px;S[i].exp=now+MaxPullbackHours*3600;Log("EXT_HIT");}
   }else{
    if(now>S[i].exp){DS(i);continue;}
    if(S[i].sd==1&&px>S[i].extreme)S[i].extreme=px;
    if(S[i].sd==-1&&px<S[i].extreme)S[i].extreme=px;
    double tr=S[i].extreme-S[i].sd*PullbackR*S[i].R;
-   if(S[i].sd==1?px<=tr:px>=tr){Print("LIVE007 | PB CONFIRM");SendEntry(i,tk);}
+   if(S[i].sd==1?px<=tr:px>=tr){Log("PB_CONFIRM");SendEntry(i,tk);}
   }
  }
 }
@@ -192,9 +200,9 @@ void ManageOwn(MqlTick &tk){
  if(tracked_entry_time==0){
   // Restart/re-attach recovery. Prefer the exact state saved at entry.
   if(LoadTrack() && tracked_dir==dir && MathAbs(tracked_entry-entry)<=MathMax(_Point*10,0.02)){
-   Print("LIVE007 | RECOVERY OK | saved state restored | entry=",DoubleToString(tracked_entry,_Digits),
-         " R=",DoubleToString(tracked_R,2)," protected=",protection_armed?"YES":"NO",
-         " partial=",managed_partial?"YES":"NO");
+   Log("RECOVERY_OK","saved state restored | entry="+DoubleToString(tracked_entry,_Digits)+
+       " R="+DoubleToString(tracked_R,2)+" protected="+(protection_armed?"YES":"NO")+
+       " partial="+(managed_partial?"YES":"NO"));
   }else{
    // Fallback for positions opened by older builds: infer R from the current SL.
    tracked_entry_time=(datetime)PositionGetInteger(POSITION_TIME);
@@ -206,21 +214,21 @@ void ManageOwn(MqlTick &tk){
    if(initial_sl)tracked_R=MathAbs(entry-sl)/InitialSL_R;
    else if(locked_sl){tracked_R=MathAbs(sl-entry)/ProtectR;protection_armed=true;}
    if(tracked_R<=0){
-    Print("LIVE007 | RECOVERY FAILED | R cannot be reconstructed; manual management required.");
+    Log("RECOVERY_FAILED","R cannot be reconstructed; manual management required.");
     return;
    }
    if(tp>0)tracked_sigclose=tp-dir*SignalOppositeTP_R*tracked_R;
    double vstep=SymbolInfoDouble(_Symbol,SYMBOL_VOLUME_STEP);
    managed_partial=(vol<Lots-vstep/2.0);
    SaveTrack();
-   Print("LIVE007 | RECOVERY FALLBACK OK | R=",DoubleToString(tracked_R,2),
-         " protected=",protection_armed?"YES":"NO"," partial=",managed_partial?"YES":"NO");
+   Log("RECOVERY_FALLBACK_OK","R="+DoubleToString(tracked_R,2)+
+       " protected="+(protection_armed?"YES":"NO")+" partial="+(managed_partial?"YES":"NO"));
   }
  }
 
  datetime now=(datetime)(tk.time_msc/1000);
  if(now>tracked_entry_time+MaxPositionHours*3600){
-  if(EnableLiveOrders && trade.PositionClose(ticket))Print("LIVE007 | TIMEOUT CLOSE");
+  if(EnableLiveOrders && trade.PositionClose(ticket))Log("TIMEOUT_CLOSE");
   return;
  }
  if(tracked_R<=0)return;
@@ -236,19 +244,19 @@ void ManageOwn(MqlTick &tk){
   if(!reached05)return;
 
   if(!EnableLiveOrders){
-   Print("LIVE007 | DRY PROTECT | +0.5R reached; would move whole-position SL to +0.25R");
+   Log("DRY_PROTECT","+0.5R reached; would move whole-position SL to +0.25R");
    protection_armed=true;
   }else{
    trade.SetExpertMagicNumber(MagicNumber);
    double tp=PositionGetDouble(POSITION_TP);
    if(!trade.PositionModify(ticket,lock,tp) || !TradeResultOK()){
-    Print("LIVE007 | PROTECT MODIFY FAILED | ",trade.ResultRetcode()," ",trade.ResultRetcodeDescription());
+    Log("PROTECT_MODIFY_FAILED",IntegerToString((int)trade.ResultRetcode())+" "+trade.ResultRetcodeDescription());
     return; // retry on later ticks; do not mark armed until broker accepts it
    }
    protection_armed=true;
    SaveTrack();
-   Print("LIVE007 | PROTECT ARMED | +0.5R reached; whole SL=",DoubleToString(lock,_Digits),
-         " | volume=",DoubleToString(vol,2));
+   Log("PROTECT_ARMED","+0.5R reached; whole SL="+DoubleToString(lock,_Digits)+
+       " | volume="+DoubleToString(vol,2));
   }
  }
 
@@ -263,13 +271,13 @@ void ManageOwn(MqlTick &tk){
  if(half<vmin)half=vmin;
  double remain=vol-half;
  if(remain+1e-8<vmin){
-  Print("LIVE007 | PARTIAL IMPOSSIBLE | volume=",DoubleToString(vol,2));
+  Log("PARTIAL_IMPOSSIBLE","volume="+DoubleToString(vol,2));
   return;
  }
 
  if(!EnableLiveOrders){
-  Print("LIVE007 | DRY PARTIAL | +1.0R reached; would close ",DoubleToString(half,2),
-        " and keep runner SL +0.25R");
+  Log("DRY_PARTIAL","+1.0R reached; would close "+DoubleToString(half,2)+
+      " and keep runner SL +0.25R");
   managed_partial=true;
   return;
  }
@@ -277,7 +285,7 @@ void ManageOwn(MqlTick &tk){
  trade.SetExpertMagicNumber(MagicNumber);
  double before_vol=vol;
  if(!trade.PositionClosePartial(ticket,half) || !TradeResultOK()){
-  Print("LIVE007 | PARTIAL FAILED | ",trade.ResultRetcode()," ",trade.ResultRetcodeDescription());
+  Log("PARTIAL_FAILED",IntegerToString((int)trade.ResultRetcode())+" "+trade.ResultRetcodeDescription());
   return;
  }
 
@@ -287,15 +295,15 @@ void ManageOwn(MqlTick &tk){
  // Re-find the surviving own-Magic position instead of assuming the old ticket survives.
  ulong runner_ticket=0;
  if(!OwnPosition(runner_ticket) || !PositionSelectByTicket(runner_ticket)){
-  Print("LIVE007 | PARTIAL VERIFY FAILED | close request accepted but runner not found; check account history.");
+  Log("PARTIAL_VERIFY_FAILED","close request accepted but runner not found; check account history.");
   return;
  }
 
  double tp=PositionGetDouble(POSITION_TP);
  double runner_vol=PositionGetDouble(POSITION_VOLUME);
  if(runner_vol>=before_vol-vstep/2.0){
-  Print("LIVE007 | PARTIAL VERIFY FAILED | volume unchanged at ",DoubleToString(runner_vol,2),
-        " | retcode=",trade.ResultRetcode()," ",trade.ResultRetcodeDescription());
+  Log("PARTIAL_VERIFY_FAILED","volume unchanged at "+DoubleToString(runner_vol,2)+
+      " | retcode="+IntegerToString((int)trade.ResultRetcode())+" "+trade.ResultRetcodeDescription());
   return;
  }
  managed_partial=true;
@@ -307,15 +315,15 @@ void ManageOwn(MqlTick &tk){
  double runner_sl=PositionGetDouble(POSITION_SL);
  bool lock_kept=(runner_sl>0 && (dir==1?runner_sl>=lock-_Point:runner_sl<=lock+_Point));
  if(!lock_kept){
-  Print("LIVE007 | RUNNER PROTECTION WARNING | inherited SL=",DoubleToString(runner_sl,_Digits),
-        " expected=",DoubleToString(lock,_Digits)," | manual check required");
+  Log("RUNNER_PROTECTION_WARNING","inherited SL="+DoubleToString(runner_sl,_Digits)+
+      " expected="+DoubleToString(lock,_Digits)+" | manual check required");
   return;
  }
 
- Print("LIVE007 | PARTIAL OK | closed=",DoubleToString(half,2),
-       " runner=",DoubleToString(runner_vol,2),
-       " inherited_lock=",DoubleToString(runner_sl,_Digits),
-       " finalTP=",DoubleToString(tp,_Digits));
+ Log("PARTIAL_OK","closed="+DoubleToString(half,2)+
+     " runner="+DoubleToString(runner_vol,2)+
+     " inherited_lock="+DoubleToString(runner_sl,_Digits)+
+     " finalTP="+DoubleToString(tp,_Digits));
 }
 int OnInit(){
  if(AccountInfoInteger(ACCOUNT_MARGIN_MODE)!=ACCOUNT_MARGIN_MODE_RETAIL_HEDGING){
@@ -325,10 +333,18 @@ int OnInit(){
  h4=iBands(_Symbol,PERIOD_M10,4,0,4.0,PRICE_OPEN);
  if(h20==INVALID_HANDLE||h4==INVALID_HANDLE)return INIT_FAILED;
  trade.SetExpertMagicNumber(MagicNumber);
- Print("LIVE007 P05/P10 V2 | START | M10 | PB=0.10R | SL=",DoubleToString(InitialSL_R,2),
-       "R | LatestSignalOnly=",LatestSignalOnly?"true":"false"," | Lots=",DoubleToString(Lots,2),
-       " | Magic=",MagicNumber," | orders=",EnableLiveOrders?"ENABLED":"DRY");
- Print("LIVE007 | EXIT | +0.5R whole-position SL -> +0.25R; +1.0R close half; runner +0.25R; final signal-close opposite 0.90R");
+
+ f_log=FileOpen("XAU_M10_LIVE_007_BUYONLY_V2_LOG.csv",FILE_READ|FILE_WRITE|FILE_CSV|FILE_ANSI|FILE_SHARE_READ,',');
+ if(f_log!=INVALID_HANDLE)
+ {
+    FileSeek(f_log,0,SEEK_END);
+    if(FileTell(f_log)==0) FileWrite(f_log,"TIME","EVENT","DETAIL");
+ }
+
+ Log("START","M10 | PB=0.10R | SL="+DoubleToString(InitialSL_R,2)+
+     "R | LatestSignalOnly="+(LatestSignalOnly?"true":"false")+" | Lots="+DoubleToString(Lots,2)+
+     " | Magic="+IntegerToString((int)MagicNumber)+" | orders="+(EnableLiveOrders?"ENABLED":"DRY"));
+ Log("NOTE","EXIT: +0.5R whole-position SL -> +0.25R; +1.0R close half; runner +0.25R; final signal-close opposite 0.90R");
  return INIT_SUCCEEDED;
 }
 void OnTick(){
@@ -338,6 +354,7 @@ void OnTick(){
  ManageOwn(tk);
 }
 void OnDeinit(const int reason){
+ if(f_log!=INVALID_HANDLE){ FileFlush(f_log); FileClose(f_log); }
  if(h20!=INVALID_HANDLE)IndicatorRelease(h20);
  if(h4!=INVALID_HANDLE)IndicatorRelease(h4);
 }
