@@ -1,5 +1,5 @@
 //+------------------------------------------------------------------+
-//| XAU_M2_BB_STOCH_V2.mq5                                           |
+//| XAU_M2_BB_LIVE_001_STOCH.mq5                                           |
 //| New strategy (user-designed): same M2 dual-BB signal-candle       |
 //| detection used throughout this project (BB20 dev2.0 on Close +   |
 //| BB4 dev4.0 on Open, PERIOD_M2), but direction is decided by the   |
@@ -33,6 +33,7 @@
 #include <Trade/Trade.mqh>
 CTrade trade;
 
+input ENUM_TIMEFRAMES Timeframe = PERIOD_M2; // signal-candle timeframe; change to test other TFs (M1/M3/M5/...)
 input double Lots               = 0.1;
 input int    StochK_Period      = 16;   // matches user's chart setting (default MT5 is 5)
 input int    StochD_Period      = 3;
@@ -57,7 +58,7 @@ string TS(datetime t){ return TimeToString(t,TIME_DATE|TIME_MINUTES|TIME_SECONDS
 
 void Log(string event,string detail="")
 {
-   Print("XAU_M2_BB_STOCH_V2 | ",event," | ",detail);
+   Print("XAU_M2_BB_LIVE_001_STOCH | ",event," | ",detail);
    if(f_log!=INVALID_HANDLE){ FileWrite(f_log,TS(TimeCurrent()),event,detail); FileFlush(f_log); }
 }
 
@@ -126,13 +127,13 @@ void OpenTrade(int dir,double R,string tag)
 
 void CheckNewM2Bar()
 {
-   datetime t=iTime(_Symbol,PERIOD_M2,0);
+   datetime t=iTime(_Symbol,Timeframe,0);
    if(t==0 || t==last_m2_bar) return;
    last_m2_bar=t;
 
-   double o=iOpen(_Symbol,PERIOD_M2,1),h=iHigh(_Symbol,PERIOD_M2,1);
-   double l=iLow(_Symbol,PERIOD_M2,1),c=iClose(_Symbol,PERIOD_M2,1);
-   datetime sig=iTime(_Symbol,PERIOD_M2,1);
+   double o=iOpen(_Symbol,Timeframe,1),h=iHigh(_Symbol,Timeframe,1);
+   double l=iLow(_Symbol,Timeframe,1),c=iClose(_Symbol,Timeframe,1);
+   datetime sig=iTime(_Symbol,Timeframe,1);
    if(sig==0) return;
 
    double up20[1],lo20[1],up4[1],lo4[1];
@@ -175,12 +176,12 @@ void CheckNewM2Bar()
 
 int OnInit()
 {
-   hBB20=iBands(_Symbol,PERIOD_M2,20,0,2.0,PRICE_CLOSE);
-   hBB4 =iBands(_Symbol,PERIOD_M2,4,0,4.0,PRICE_OPEN);
-   hStoch=iStochastic(_Symbol,PERIOD_M2,StochK_Period,StochD_Period,StochSlowing,MODE_LWMA,STO_LOWHIGH);
+   hBB20=iBands(_Symbol,Timeframe,20,0,2.0,PRICE_CLOSE);
+   hBB4 =iBands(_Symbol,Timeframe,4,0,4.0,PRICE_OPEN);
+   hStoch=iStochastic(_Symbol,Timeframe,StochK_Period,StochD_Period,StochSlowing,MODE_LWMA,STO_LOWHIGH);
    if(hBB20==INVALID_HANDLE || hBB4==INVALID_HANDLE || hStoch==INVALID_HANDLE) return INIT_FAILED;
 
-   f_log=FileOpen("XAU_M2_BB_STOCH_V2_LOG.csv",FILE_READ|FILE_WRITE|FILE_CSV|FILE_ANSI|FILE_SHARE_READ,',');
+   f_log=FileOpen("XAU_M2_BB_LIVE_001_STOCH_LOG.csv",FILE_READ|FILE_WRITE|FILE_CSV|FILE_ANSI|FILE_SHARE_READ,',');
    if(f_log!=INVALID_HANDLE)
    {
       FileSeek(f_log,0,SEEK_END);
@@ -191,7 +192,7 @@ int OnInit()
    trade.SetDeviationInPoints(MaxDeviationPts);
    trade.SetTypeFillingBySymbol(_Symbol);
 
-   Log("START",string("TF=M2 | Stoch(")+IntegerToString(StochK_Period)+","+IntegerToString(StochD_Period)+
+   Log("START",string("TF=")+EnumToString(Timeframe)+" | Stoch("+IntegerToString(StochK_Period)+","+IntegerToString(StochD_Period)+
        ","+IntegerToString(StochSlowing)+") | OB="+DoubleToString(StochOverbought,1)+
        " OS="+DoubleToString(StochOversold,1)+" | SL_R="+DoubleToString(SL_R,2)+
        " | TP_R="+DoubleToString(TP_R,2)+" | MinR_Points="+DoubleToString(MinR_Points,1)+
