@@ -28,7 +28,7 @@
 CTrade trade;
 
 input double Lots               = 0.1;
-input int    StochK_Period      = 5;
+input int    StochK_Period      = 16;   // matches user's chart setting (default MT5 is 5)
 input int    StochD_Period      = 3;
 input int    StochSlowing       = 3;
 input double StochOverbought    = 70.0;
@@ -165,7 +165,7 @@ int OnInit()
 {
    hBB20=iBands(_Symbol,PERIOD_M2,20,0,2.0,PRICE_CLOSE);
    hBB4 =iBands(_Symbol,PERIOD_M2,4,0,4.0,PRICE_OPEN);
-   hStoch=iStochastic(_Symbol,PERIOD_M2,StochK_Period,StochD_Period,StochSlowing,MODE_SMA,STO_LOWHIGH);
+   hStoch=iStochastic(_Symbol,PERIOD_M2,StochK_Period,StochD_Period,StochSlowing,MODE_LWMA,STO_LOWHIGH);
    if(hBB20==INVALID_HANDLE || hBB4==INVALID_HANDLE || hStoch==INVALID_HANDLE) return INIT_FAILED;
 
    f_log=FileOpen("XAU_M2_BB_STOCH_V1_LOG.csv",FILE_READ|FILE_WRITE|FILE_CSV|FILE_ANSI|FILE_SHARE_READ,',');
