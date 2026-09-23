@@ -21,7 +21,13 @@
 //| elsewhere in this project. Exit is a single fixed bracket, no      |
 //| protect-lock: SL = entry -+ SL_R*R, TP = entry +- TP_R*R.          |
 //| MAX1 position at a time (own magic number).                        |
-//| UNVALIDATED: brand new, not yet backtested in any form.            |
+//| V2: added AllowSellFade -- ground-truth backtest (2025.01-2026.09, |
+//| SL_R=4.0, MinR_Points=400) showed the bull+overbought SELL-fade    |
+//| case is the ONE structurally losing direction (PF 0.88, -$4,848),  |
+//| consistent with gold's persistent uptrend bias found elsewhere in  |
+//| this project (005's own SELL-disable finding). The other three    |
+//| cases were all net profitable (combined +$15,050). Default true   |
+//| reproduces V1 exactly; set false to skip that one case entirely.  |
 //+------------------------------------------------------------------+
 #property strict
 #include <Trade/Trade.mqh>
@@ -40,6 +46,8 @@ input double MinR_Points        = 0;    // skip signal if R (=|close-open| of th
 input ulong  MagicNumber        = 95016101;
 input int    MaxDeviationPts    = 50;
 input bool   EnableLiveOrders   = false; // SAFETY: set true only after checks
+input bool   AllowSellFade      = true;  // false = skip the bull+overbought SELL-fade case entirely
+                                          // (ground-truth backtest showed this is the one losing direction)
 
 int hBB20=INVALID_HANDLE,hBB4=INVALID_HANDLE,hStoch=INVALID_HANDLE;
 datetime last_m2_bar=0;
@@ -147,7 +155,11 @@ void CheckNewM2Bar()
    int dir=0; string tag="";
    if(sigdir==+1) // bull signal candle
    {
-      if(stochK>=StochOverbought){ dir=-1; tag="STOCH_FADE_BULL_OB"; }
+      if(stochK>=StochOverbought)
+      {
+         if(!AllowSellFade){ Log("SIGNAL_SKIPPED","SELL-fade disabled by AllowSellFade=false"); return; }
+         dir=-1; tag="STOCH_FADE_BULL_OB";
+      }
       else                       { dir=+1; tag="STOCH_TREND_BULL"; }
    }
    else // bear signal candle
@@ -183,6 +195,7 @@ int OnInit()
        ","+IntegerToString(StochSlowing)+") | OB="+DoubleToString(StochOverbought,1)+
        " OS="+DoubleToString(StochOversold,1)+" | SL_R="+DoubleToString(SL_R,2)+
        " | TP_R="+DoubleToString(TP_R,2)+" | MinR_Points="+DoubleToString(MinR_Points,1)+
+       " | AllowSellFade="+(AllowSellFade?"true":"false")+
        " | Lots="+DoubleToString(Lots,2)+" | Magic="+IntegerToString((int)MagicNumber)+
        " | orders="+(EnableLiveOrders?"ENABLED":"DRY"));
    return INIT_SUCCEEDED;
