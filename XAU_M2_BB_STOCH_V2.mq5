@@ -1,5 +1,5 @@
 //+------------------------------------------------------------------+
-//| XAU_M2_BB_STOCH_V1.mq5                                           |
+//| XAU_M2_BB_STOCH_V2.mq5                                           |
 //| New strategy (user-designed): same M2 dual-BB signal-candle       |
 //| detection used throughout this project (BB20 dev2.0 on Close +   |
 //| BB4 dev4.0 on Open, PERIOD_M2), but direction is decided by the   |
@@ -57,7 +57,7 @@ string TS(datetime t){ return TimeToString(t,TIME_DATE|TIME_MINUTES|TIME_SECONDS
 
 void Log(string event,string detail="")
 {
-   Print("XAU_M2_BB_STOCH_V1 | ",event," | ",detail);
+   Print("XAU_M2_BB_STOCH_V2 | ",event," | ",detail);
    if(f_log!=INVALID_HANDLE){ FileWrite(f_log,TS(TimeCurrent()),event,detail); FileFlush(f_log); }
 }
 
@@ -180,7 +180,7 @@ int OnInit()
    hStoch=iStochastic(_Symbol,PERIOD_M2,StochK_Period,StochD_Period,StochSlowing,MODE_LWMA,STO_LOWHIGH);
    if(hBB20==INVALID_HANDLE || hBB4==INVALID_HANDLE || hStoch==INVALID_HANDLE) return INIT_FAILED;
 
-   f_log=FileOpen("XAU_M2_BB_STOCH_V1_LOG.csv",FILE_READ|FILE_WRITE|FILE_CSV|FILE_ANSI|FILE_SHARE_READ,',');
+   f_log=FileOpen("XAU_M2_BB_STOCH_V2_LOG.csv",FILE_READ|FILE_WRITE|FILE_CSV|FILE_ANSI|FILE_SHARE_READ,',');
    if(f_log!=INVALID_HANDLE)
    {
       FileSeek(f_log,0,SEEK_END);
