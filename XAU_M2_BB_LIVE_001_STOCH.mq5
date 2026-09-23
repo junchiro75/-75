@@ -134,11 +134,18 @@ void CheckNewM2Bar()
    double o=iOpen(_Symbol,Timeframe,1),h=iHigh(_Symbol,Timeframe,1);
    double l=iLow(_Symbol,Timeframe,1),c=iClose(_Symbol,Timeframe,1);
    datetime sig=iTime(_Symbol,Timeframe,1);
-   if(sig==0) return;
+   if(sig==0){ Log("BAR_DATA_FAIL","iTime(1) returned 0"); return; }
 
    double up20[1],lo20[1],up4[1],lo4[1];
-   if(CopyBuffer(hBB20,1,1,1,up20)!=1 || CopyBuffer(hBB20,2,1,1,lo20)!=1 ||
-      CopyBuffer(hBB4,1,1,1,up4)!=1   || CopyBuffer(hBB4,2,1,1,lo4)!=1) return;
+   int r1=CopyBuffer(hBB20,1,1,1,up20), r2=CopyBuffer(hBB20,2,1,1,lo20);
+   int r3=CopyBuffer(hBB4,1,1,1,up4),   r4=CopyBuffer(hBB4,2,1,1,lo4);
+   if(r1!=1 || r2!=1 || r3!=1 || r4!=1)
+   {
+      Log("COPYBUFFER_FAIL","BB20up="+IntegerToString(r1)+" BB20lo="+IntegerToString(r2)+
+          " BB4up="+IntegerToString(r3)+" BB4lo="+IntegerToString(r4)+
+          " err="+IntegerToString(GetLastError()));
+      return;
+   }
 
    int sigdir=0;
    if(c>o && h>=up20[0] && h>=up4[0]) sigdir=+1;      // bull (up) signal candle
