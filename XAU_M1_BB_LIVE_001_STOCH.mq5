@@ -55,6 +55,9 @@ input int    MaxDeviationPts    = 50;
 input bool   EnableLiveOrders   = false; // SAFETY: set true only after checks
 input bool   AllowSellFade      = false; // false = skip the bull+overbought SELL-fade case entirely
                                           // (ground-truth backtest showed this is the one losing direction)
+input bool   AllowTrendBull     = false; // false = skip the bull+not-overbought TREND-BUY case entirely
+                                          // (M1-specific finding: this bucket is a loser at SL_R=4.0-5.0
+                                          // here, unlike the same bucket on M2/M3 where it's profitable)
 
 int hBB20=INVALID_HANDLE,hBB4=INVALID_HANDLE,hStoch=INVALID_HANDLE;
 datetime last_m1_bar=0;
@@ -174,7 +177,11 @@ void CheckNewM1Bar()
          if(!AllowSellFade){ Log("SIGNAL_SKIPPED","SELL-fade disabled by AllowSellFade=false"); return; }
          dir=-1; tag="STOCH_FADE_BULL_OB";
       }
-      else                       { dir=+1; tag="STOCH_TREND_BULL"; }
+      else
+      {
+         if(!AllowTrendBull){ Log("SIGNAL_SKIPPED","TREND-BUY disabled by AllowTrendBull=false"); return; }
+         dir=+1; tag="STOCH_TREND_BULL";
+      }
    }
    else // bear signal candle
    {
@@ -210,6 +217,7 @@ int OnInit()
        " OS="+DoubleToString(StochOversold,1)+" | SL_R="+DoubleToString(SL_R,2)+
        " | TP_R="+DoubleToString(TP_R,2)+" | MinR_Points="+DoubleToString(MinR_Points,1)+
        " | AllowSellFade="+(AllowSellFade?"true":"false")+
+       " | AllowTrendBull="+(AllowTrendBull?"true":"false")+
        " | Lots="+DoubleToString(Lots,2)+" | Magic="+IntegerToString((int)MagicNumber)+
        " | orders="+(EnableLiveOrders?"ENABLED":"DRY"));
    return INIT_SUCCEEDED;
