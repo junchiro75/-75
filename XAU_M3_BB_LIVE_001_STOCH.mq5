@@ -91,9 +91,23 @@ bool HasOurPosition()
    return false;
 }
 
+string TFPrefix()
+{
+   switch(Timeframe)
+   {
+      case PERIOD_M1: return "M1_";
+      case PERIOD_M2: return "M2_";
+      case PERIOD_M3: return "M3_";
+      case PERIOD_M4: return "M4_";
+      case PERIOD_M5: return "M5_";
+      default: return EnumToString(Timeframe)+"_";
+   }
+}
+
 void OpenTrade(int dir,double R,string tag)
 {
    if(HasOurPosition()){ Log("ENTRY_SKIPPED","own-Magic position already exists"); return; }
+   tag=TFPrefix()+tag;
 
    MqlTick q; if(!SymbolInfoTick(_Symbol,q)){ Log("ORDER_FAIL","no current tick"); return; }
    double ref=(dir==+1 ? q.ask : q.bid);
