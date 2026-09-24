@@ -291,7 +291,12 @@ void ManageOwn(MqlTick &tk){
 
  // IMPORTANT: on a hedging account the remaining position may no longer be
  // selectable by the original ticket immediately after a partial close.
- // Mark the partial as completed first so it can never fire repeatedly.
+ // Mark the partial as completed FIRST, before any verification lookup, so a
+ // flaky/delayed re-select on this tick can never let this block re-fire on
+ // the next tick and send a second, unintended close against the runner.
+ managed_partial=true;
+ SaveTrack();
+
  // Re-find the surviving own-Magic position instead of assuming the old ticket survives.
  ulong runner_ticket=0;
  if(!OwnPosition(runner_ticket) || !PositionSelectByTicket(runner_ticket)){
@@ -306,8 +311,6 @@ void ManageOwn(MqlTick &tk){
       " | retcode="+IntegerToString((int)trade.ResultRetcode())+" "+trade.ResultRetcodeDescription());
   return;
  }
- managed_partial=true;
- SaveTrack();
 
  // A partial close inherits the position's existing SL/TP. Re-sending the same
  // stops can be rejected as INVALID_STOPS when price is close to TP, so verify
