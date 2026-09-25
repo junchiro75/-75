@@ -39,6 +39,11 @@
 //| Europe (16-22) and US (22-06) hours. A real backtest confirmed a    |
 //| clean improvement on every metric (NET, PF, and drawdown all       |
 //| better); see the input's own comment for numbers.                  |
+//| MaxMinutesWithoutProgress (default 0, disabled) closes a position   |
+//| early once it's been open this many minutes, regardless of P&L --   |
+//| motivated by TP-hit trades resolving in ~3min median vs SL-hit      |
+//| trades taking ~36min median. UNTESTED as a live rule; see the       |
+//| input's own comment for the caveat before trusting it.              |
 //+------------------------------------------------------------------+
 #property strict
 #include <Trade/Trade.mqh>
@@ -86,6 +91,17 @@ input bool   ReverseTrendBearAsiaSession = false; // UNTESTED -- instead of SKIP
                                           // intrabar price path matters), so this needs its own backtest to
                                           // know whether the Asia-session weakness is a reversible edge or
                                           // just noise to avoid. Tagged STOCH_TREND_BEAR_REV_ASIA for tracking.
+input int    MaxMinutesWithoutProgress = 0; // 0 = disabled (default, no behavior change). Holding-time analysis
+                                          // (2025.01-2026.09) found trades that hit TP resolve in ~3min median,
+                                          // while trades that hit SL take ~36min median (9-18x longer) --
+                                          // a position still open past N minutes is disproportionately likely
+                                          // to end in a loss. HOWEVER: 12-26% of WINNING trades also take
+                                          // longer than typical cutoffs (15-30min), and this data can't show
+                                          // their intrabar P&L path at the cutoff moment, so a blind time-stop
+                                          // could cut some future winners at an unknown (possibly negative)
+                                          // price. UNTESTED as a live rule -- set >0 (e.g. 20/30/45) to close
+                                          // any open position early once it's been open this many minutes,
+                                          // and backtest the real net effect before trusting it.
 
 int hBB20=INVALID_HANDLE,hBB4=INVALID_HANDLE,hStoch=INVALID_HANDLE;
 datetime last_m2_bar=0;
@@ -155,6 +171,35 @@ bool HasOurPosition()
       return true;
    }
    return false;
+}
+
+void CheckTimeStop()
+{
+   if(MaxMinutesWithoutProgress<=0) return;
+   for(int i=PositionsTotal()-1;i>=0;i--)
+   {
+      ulong tk=PositionGetTicket(i);
+      if(tk==0 || !PositionSelectByTicket(tk)) continue;
+      if(PositionGetString(POSITION_SYMBOL)!=_Symbol) continue;
+      if((ulong)PositionGetInteger(POSITION_MAGIC)!=MagicNumber) continue;
+
+      datetime opened=(datetime)PositionGetInteger(POSITION_TIME);
+      double minutesOpen=(double)(TimeCurrent()-opened)/60.0;
+      if(minutesOpen<MaxMinutesWithoutProgress) continue;
+
+      double profit=PositionGetDouble(POSITION_PROFIT);
+      if(!EnableLiveOrders)
+      {
+         Log("TIME_STOP_DRY","ticket="+IntegerToString((int)tk)+" minutesOpen="+DoubleToString(minutesOpen,1)+
+             " profit="+DoubleToString(profit,2)+" (would close, EnableLiveOrders=false)");
+         continue;
+      }
+      if(trade.PositionClose(tk))
+         Log("TIME_STOP_CLOSE","ticket="+IntegerToString((int)tk)+" minutesOpen="+DoubleToString(minutesOpen,1)+
+             " profit="+DoubleToString(profit,2));
+      else
+         Log("TIME_STOP_FAIL",IntegerToString((int)trade.ResultRetcode())+" | "+trade.ResultRetcodeDescription());
+   }
 }
 
 string TFPrefix()
@@ -305,6 +350,7 @@ int OnInit()
        " | SkipTrendBearAsiaSession="+(SkipTrendBearAsiaSession?"true":"false")+
        " | AsiaWindow="+IntegerToString(AsiaSessionStartHour)+"-"+IntegerToString(AsiaSessionEndHour)+"KST"+
        " | ReverseTrendBearAsiaSession="+(ReverseTrendBearAsiaSession?"true":"false")+
+       " | MaxMinutesWithoutProgress="+IntegerToString(MaxMinutesWithoutProgress)+
        " | Lots="+DoubleToString(Lots,2)+" | Magic="+IntegerToString((int)MagicNumber)+
        " | orders="+(EnableLiveOrders?"ENABLED":"DRY"));
    return INIT_SUCCEEDED;
@@ -321,6 +367,7 @@ void OnDeinit(const int reason)
 void OnTick()
 {
    MqlTick tick; if(!SymbolInfoTick(_Symbol,tick)) return;
+   CheckTimeStop();
    CheckNewM2Bar();
 }
 //+------------------------------------------------------------------+
