@@ -44,6 +44,11 @@
 //| motivated by TP-hit trades resolving in ~3min median vs SL-hit      |
 //| trades taking ~36min median. UNTESTED as a live rule; see the       |
 //| input's own comment for the caveat before trusting it.              |
+//| MAE-milestone tracking (diagnostic only, no trading effect): logs   |
+//| MAE_MILESTONE when a position's adverse excursion crosses 50%/75%   |
+//| of SL_R, and MAE_OUTCOME with the final win/loss at close -- lets   |
+//| the CSV log answer "given a trade reached 50%/75% of its stop,      |
+//| what fraction still won" (not available from the xlsx report).     |
 //+------------------------------------------------------------------+
 #property strict
 #include <Trade/Trade.mqh>
@@ -106,6 +111,35 @@ input int    MaxMinutesWithoutProgress = 0; // 0 = disabled (default, no behavio
 int hBB20=INVALID_HANDLE,hBB4=INVALID_HANDLE,hStoch=INVALID_HANDLE;
 datetime last_m2_bar=0;
 int f_log=INVALID_HANDLE;
+
+// -- MAE-milestone tracking (diagnostic only, no trading effect) -----------
+// Tracks, for the current open position, whether the adverse excursion has
+// crossed 50%/75% of the SL_R distance, and logs the eventual win/loss
+// outcome alongside those flags -- lets us answer "given a trade reached
+// 50%/75% of its stop, what fraction still won vs lost" from the CSV log,
+// which the MT5 Strategy Tester xlsx report does not expose per-trade.
+ulong  g_trackTicket=0;
+double g_trackEntry=0, g_trackR=0;
+int    g_trackDir=0;
+bool   g_reached50=false, g_reached75=false;
+string g_trackTag="";
+
+void StartMAETracking(ulong ticket,double entry,double R,int dir,string tag)
+{
+   g_trackTicket=ticket; g_trackEntry=entry; g_trackR=R; g_trackDir=dir;
+   g_reached50=false; g_reached75=false; g_trackTag=tag;
+}
+
+void CheckMAEProgress()
+{
+   if(g_trackTicket==0) return;
+   if(!PositionSelectByTicket(g_trackTicket)) return; // closed; OnTradeTransaction logs the outcome
+   MqlTick q; if(!SymbolInfoTick(_Symbol,q)) return;
+   double adverseR=(g_trackDir==+1) ? (g_trackEntry-q.bid)/g_trackR : (q.ask-g_trackEntry)/g_trackR;
+   double frac=adverseR/SL_R;
+   if(frac>=0.5  && !g_reached50){ g_reached50=true; Log("MAE_MILESTONE","50% of SL reached | "+g_trackTag); }
+   if(frac>=0.75 && !g_reached75){ g_reached75=true; Log("MAE_MILESTONE","75% of SL reached | "+g_trackTag); }
+}
 
 string TS(datetime t){ return TimeToString(t,TIME_DATE|TIME_MINUTES|TIME_SECONDS); }
 
@@ -254,8 +288,19 @@ void OpenTrade(int dir,double R,string tag)
    if(!ok)
       Log("ORDER_FAIL",IntegerToString((int)trade.ResultRetcode())+" | "+trade.ResultRetcodeDescription());
    else
+   {
       Log("ENTRY_OK",(dir==1?"BUY":"SELL")+" R="+DoubleToString(R,_Digits)+
           " SL="+DoubleToString(sl,_Digits)+" TP="+DoubleToString(tp,_Digits)+" | "+tag);
+      for(int i=PositionsTotal()-1;i>=0;i--)
+      {
+         ulong tk=PositionGetTicket(i);
+         if(tk==0 || !PositionSelectByTicket(tk)) continue;
+         if(PositionGetString(POSITION_SYMBOL)!=_Symbol) continue;
+         if((ulong)PositionGetInteger(POSITION_MAGIC)!=MagicNumber) continue;
+         StartMAETracking(tk,ref,R,dir,tag);
+         break;
+      }
+   }
 }
 
 void CheckNewM2Bar()
@@ -367,7 +412,25 @@ void OnDeinit(const int reason)
 void OnTick()
 {
    MqlTick tick; if(!SymbolInfoTick(_Symbol,tick)) return;
+   CheckMAEProgress();
    CheckTimeStop();
    CheckNewM2Bar();
+}
+
+void OnTradeTransaction(const MqlTradeTransaction &trans,const MqlTradeRequest &request,const MqlTradeResult &result)
+{
+   if(g_trackTicket==0) return;
+   if(trans.type!=TRADE_TRANSACTION_DEAL_ADD) return;
+   if(!HistoryDealSelect(trans.deal)) return;
+   if((ulong)HistoryDealGetInteger(trans.deal,DEAL_MAGIC)!=MagicNumber) return;
+   if(HistoryDealGetString(trans.deal,DEAL_SYMBOL)!=_Symbol) return;
+   if((long)HistoryDealGetInteger(trans.deal,DEAL_ENTRY)!=DEAL_ENTRY_OUT) return;
+   if((ulong)HistoryDealGetInteger(trans.deal,DEAL_POSITION_ID)!=g_trackTicket) return;
+
+   double profit=HistoryDealGetDouble(trans.deal,DEAL_PROFIT)+HistoryDealGetDouble(trans.deal,DEAL_SWAP);
+   string outcome=(profit>0?"WIN":"LOSS");
+   Log("MAE_OUTCOME","outcome="+outcome+" profit="+DoubleToString(profit,2)+
+       " reached50="+(g_reached50?"true":"false")+" reached75="+(g_reached75?"true":"false")+" | "+g_trackTag);
+   g_trackTicket=0;
 }
 //+------------------------------------------------------------------+
