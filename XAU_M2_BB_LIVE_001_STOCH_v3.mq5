@@ -1,5 +1,5 @@
 //+------------------------------------------------------------------+
-//| XAU_M2_BB_LIVE_001_STOCH_v2.mq5                                    |
+//| XAU_M2_BB_LIVE_001_STOCH_v3.mq5                                    |
 //| New strategy (user-designed): same M2 dual-BB signal-candle       |
 //| detection used throughout this project (BB20 dev2.0 on Close +   |
 //| BB4 dev4.0 on Open, PERIOD_M2), but direction is decided by the   |
@@ -20,7 +20,6 @@
 //| the signal candle's body (|close-open|), same definition as       |
 //| elsewhere in this project. Exit is a single fixed bracket, no      |
 //| protect-lock: SL = entry -+ SL_R*R, TP = entry +- TP_R*R.          |
-//| MAX1 position at a time (own magic number).                        |
 //| V2: added AllowSellFade -- ground-truth backtest (2025.01-2026.09, |
 //| SL_R=4.0, MinR_Points=400) showed the bull+overbought SELL-fade    |
 //| case is the ONE structurally losing direction (PF 0.88, -$4,848),  |
@@ -28,11 +27,21 @@
 //| this project (005's own SELL-disable finding). The other three    |
 //| cases were all net profitable (combined +$15,050). Default true   |
 //| reproduces V1 exactly; set false to skip that one case entirely.  |
-//| _v2 build: same logic as the live XAU_M2_BB_STOCH_V2 EA this      |
-//| replaces, plus diagnostic logging on previously-silent failure    |
-//| paths in CheckNewM2Bar() (BAR_DATA_FAIL / COPYBUFFER_FAIL) to      |
-//| catch a repeat of a multi-hour silent-signal window seen live on  |
-//| 2026.09.23.                                                        |
+//| V3: added MaxConcurrentPositions (default 1, reproduces V2's      |
+//| hardcoded MAX1-position behavior exactly). A real backtest showed  |
+//| forcing overbought bull candles to always trend-BUY instead of     |
+//| skipping (StochOverbought=101) looked fine in isolation (WR 90%)   |
+//| but actually hurt total NET/PF, because those extra BUY entries    |
+//| occupied the single position slot and crowded out the much more    |
+//| profitable STOCH_FADE_BEAR_OS signals (lost 165 of those trades    |
+//| and $3,940.99 net just from slot contention). Set >1 to test       |
+//| letting a new signal in while another of our positions is still    |
+//| open, instead of skipping it -- backtest-only until verified;      |
+//| raises worst-case simultaneous exposure/margin roughly             |
+//| proportionally (e.g. 2 = up to 2x Lots open at once).              |
+//| _v3 build: same base logic as XAU_M2_BB_LIVE_001_STOCH_v2, plus    |
+//| diagnostic logging on previously-silent failure paths in           |
+//| CheckNewM2Bar() (BAR_DATA_FAIL / COPYBUFFER_FAIL).                 |
 //+------------------------------------------------------------------+
 #property strict
 #include <Trade/Trade.mqh>
@@ -54,6 +63,11 @@ input int    MaxDeviationPts    = 50;
 input bool   EnableLiveOrders   = false; // SAFETY: set true only after checks
 input bool   AllowSellFade      = true;  // false = skip the bull+overbought SELL-fade case entirely
                                           // (ground-truth backtest showed this is the one losing direction)
+input int    MaxConcurrentPositions = 1; // default 1 preserves V2's MAX1-position live behavior exactly.
+                                          // >1 lets a new signal enter while another of our positions is still
+                                          // open, instead of being skipped -- UNTESTED, backtest-only until
+                                          // verified: raises worst-case simultaneous exposure/margin roughly
+                                          // proportionally (e.g. 2 = up to 2x Lots open at once).
 
 int hBB20=INVALID_HANDLE,hBB4=INVALID_HANDLE,hStoch=INVALID_HANDLE;
 datetime last_m2_bar=0;
@@ -63,7 +77,7 @@ string TS(datetime t){ return TimeToString(t,TIME_DATE|TIME_MINUTES|TIME_SECONDS
 
 void Log(string event,string detail="")
 {
-   Print("XAU_M2_BB_LIVE_001_STOCH_v2 | ",event," | ",detail);
+   Print("XAU_M2_BB_LIVE_001_STOCH_v3 | ",event," | ",detail);
    if(f_log!=INVALID_HANDLE){ FileWrite(f_log,TS(TimeCurrent()),event,detail); FileFlush(f_log); }
 }
 
@@ -75,17 +89,18 @@ double MinStopDistance()
    return (double)MathMax(stops,freeze)*_Point;
 }
 
-bool HasOurPosition()
+int CountOurPositions()
 {
+   int n=0;
    for(int i=PositionsTotal()-1;i>=0;i--)
    {
       ulong tk=PositionGetTicket(i);
       if(tk==0 || !PositionSelectByTicket(tk)) continue;
       if(PositionGetString(POSITION_SYMBOL)!=_Symbol) continue;
       if((ulong)PositionGetInteger(POSITION_MAGIC)!=MagicNumber) continue;
-      return true;
+      n++;
    }
-   return false;
+   return n;
 }
 
 string TFPrefix()
@@ -103,7 +118,8 @@ string TFPrefix()
 
 void OpenTrade(int dir,double R,string tag)
 {
-   if(HasOurPosition()){ Log("ENTRY_SKIPPED","own-Magic position already exists"); return; }
+   int ourCount=CountOurPositions();
+   if(ourCount>=MaxConcurrentPositions){ Log("ENTRY_SKIPPED","own-Magic position count "+IntegerToString(ourCount)+" >= MaxConcurrentPositions"); return; }
    tag=TFPrefix()+tag;
 
    MqlTick q; if(!SymbolInfoTick(_Symbol,q)){ Log("ORDER_FAIL","no current tick"); return; }
@@ -207,7 +223,7 @@ int OnInit()
    hStoch=iStochastic(_Symbol,Timeframe,StochK_Period,StochD_Period,StochSlowing,MODE_LWMA,STO_LOWHIGH);
    if(hBB20==INVALID_HANDLE || hBB4==INVALID_HANDLE || hStoch==INVALID_HANDLE) return INIT_FAILED;
 
-   f_log=FileOpen("XAU_M2_BB_LIVE_001_STOCH_v2_LOG.csv",FILE_READ|FILE_WRITE|FILE_CSV|FILE_ANSI|FILE_SHARE_READ,',');
+   f_log=FileOpen("XAU_M2_BB_LIVE_001_STOCH_v3_LOG.csv",FILE_READ|FILE_WRITE|FILE_CSV|FILE_ANSI|FILE_SHARE_READ,',');
    if(f_log!=INVALID_HANDLE)
    {
       FileSeek(f_log,0,SEEK_END);
@@ -223,6 +239,7 @@ int OnInit()
        " OS="+DoubleToString(StochOversold,1)+" | SL_R="+DoubleToString(SL_R,2)+
        " | TP_R="+DoubleToString(TP_R,2)+" | MinR_Points="+DoubleToString(MinR_Points,1)+
        " | AllowSellFade="+(AllowSellFade?"true":"false")+
+       " | MaxConcurrentPositions="+IntegerToString(MaxConcurrentPositions)+
        " | Lots="+DoubleToString(Lots,2)+" | Magic="+IntegerToString((int)MagicNumber)+
        " | orders="+(EnableLiveOrders?"ENABLED":"DRY"));
    return INIT_SUCCEEDED;
