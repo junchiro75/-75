@@ -70,6 +70,14 @@ input bool   SkipTrendBearAsiaSession = true; // A session breakdown (2025.01-20
                                           // $17,746.29 (+$742.21), PF 1.225 -> 1.260, DD down to 3.25%/3.96%
                                           // -- a clean improvement on every metric. Set false to restore the
                                           // old always-on TREND_BEAR behavior.
+input int    AsiaSessionStartHour = 6;   // Korea-time hour the Asia-session skip window starts (inclusive).
+                                          // An hour-by-hour breakdown of the same data found the losses
+                                          // actually concentrate in 06-11 KST, while 12-17 KST is profitable
+                                          // -- try narrowing AsiaSessionEndHour to 11 to test keeping those
+                                          // hours active. Hourly samples are much smaller than the 8h-block
+                                          // ones (20-45 trades/hour vs 200+), so treat this as a follow-up
+                                          // experiment, not a confirmed result yet.
+input int    AsiaSessionEndHour   = 16;  // Korea-time hour the Asia-session skip window ends (exclusive).
 input bool   ReverseTrendBearAsiaSession = false; // UNTESTED -- instead of SKIPPING TREND_BEAR during the
                                           // Asia session, trade the OPPOSITE direction (BUY) there instead.
                                           // Takes priority over SkipTrendBearAsiaSession when both would
@@ -133,7 +141,7 @@ int KST_Hour(datetime server_now)
 bool InAsiaSessionKST(datetime server_now)
 {
    int h=KST_Hour(server_now);
-   return (h>=6 && h<16);
+   return (h>=AsiaSessionStartHour && h<AsiaSessionEndHour);
 }
 
 bool HasOurPosition()
@@ -295,6 +303,7 @@ int OnInit()
        " | TP_R="+DoubleToString(TP_R,2)+" | MinR_Points="+DoubleToString(MinR_Points,1)+
        " | AllowSellFade="+(AllowSellFade?"true":"false")+
        " | SkipTrendBearAsiaSession="+(SkipTrendBearAsiaSession?"true":"false")+
+       " | AsiaWindow="+IntegerToString(AsiaSessionStartHour)+"-"+IntegerToString(AsiaSessionEndHour)+"KST"+
        " | ReverseTrendBearAsiaSession="+(ReverseTrendBearAsiaSession?"true":"false")+
        " | Lots="+DoubleToString(Lots,2)+" | Magic="+IntegerToString((int)MagicNumber)+
        " | orders="+(EnableLiveOrders?"ENABLED":"DRY"));
