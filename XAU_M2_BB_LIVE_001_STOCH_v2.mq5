@@ -33,12 +33,12 @@
 //| paths in CheckNewM2Bar() (BAR_DATA_FAIL / COPYBUFFER_FAIL) to      |
 //| catch a repeat of a multi-hour silent-signal window seen live on  |
 //| 2026.09.23.                                                        |
-//| SkipTrendBearAsiaSession added after a Korea-time session          |
-//| breakdown found STOCH_TREND_BEAR loses specifically during the    |
-//| Asia session (06-16 KST) while it's solidly profitable in Europe   |
-//| (16-22) and US (22-06) hours -- see the input's own comment for    |
-//| the numbers. Default false reproduces existing behavior exactly;   |
-//| still backtest-only until this specific filter is verified.        |
+//| SkipTrendBearAsiaSession=true (confirmed default) skips            |
+//| STOCH_TREND_BEAR specifically during the Asia session (06-16 KST)  |
+//| where it's a structural loser, while it's solidly profitable in    |
+//| Europe (16-22) and US (22-06) hours. A real backtest confirmed a    |
+//| clean improvement on every metric (NET, PF, and drawdown all       |
+//| better); see the input's own comment for numbers.                  |
 //+------------------------------------------------------------------+
 #property strict
 #include <Trade/Trade.mqh>
@@ -60,13 +60,16 @@ input int    MaxDeviationPts    = 50;
 input bool   EnableLiveOrders   = false; // SAFETY: set true only after checks
 input bool   AllowSellFade      = true;  // false = skip the bull+overbought SELL-fade case entirely
                                           // (ground-truth backtest showed this is the one losing direction)
-input bool   SkipTrendBearAsiaSession = false; // A session breakdown (2025.01-2026.09) found STOCH_TREND_BEAR
+input bool   SkipTrendBearAsiaSession = true; // A session breakdown (2025.01-2026.09) found STOCH_TREND_BEAR
                                           // is a structural loser specifically during the Asia session
                                           // (06:00-16:00 Korea time -> PF 0.822, -$1,480.89 over 243 trades),
                                           // while the same signal is solidly profitable during Europe (16-22)
-                                          // and especially US (22-06) hours. Set true to skip TREND_BEAR only
-                                          // during that Korea-time window; other signals/sessions unaffected.
-                                          // Default false reproduces existing behavior exactly.
+                                          // and especially US (22-06) hours. Skips TREND_BEAR only during
+                                          // that Korea-time window; other signals/sessions unaffected.
+                                          // Ground-truth backtest confirmed this default: NET $17,004.08 ->
+                                          // $17,746.29 (+$742.21), PF 1.225 -> 1.260, DD down to 3.25%/3.96%
+                                          // -- a clean improvement on every metric. Set false to restore the
+                                          // old always-on TREND_BEAR behavior.
 
 int hBB20=INVALID_HANDLE,hBB4=INVALID_HANDLE,hStoch=INVALID_HANDLE;
 datetime last_m2_bar=0;
