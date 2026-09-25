@@ -33,6 +33,12 @@
 //| paths in CheckNewM2Bar() (BAR_DATA_FAIL / COPYBUFFER_FAIL) to      |
 //| catch a repeat of a multi-hour silent-signal window seen live on  |
 //| 2026.09.23.                                                        |
+//| SkipTrendBearAsiaSession added after a Korea-time session          |
+//| breakdown found STOCH_TREND_BEAR loses specifically during the    |
+//| Asia session (06-16 KST) while it's solidly profitable in Europe   |
+//| (16-22) and US (22-06) hours -- see the input's own comment for    |
+//| the numbers. Default false reproduces existing behavior exactly;   |
+//| still backtest-only until this specific filter is verified.        |
 //+------------------------------------------------------------------+
 #property strict
 #include <Trade/Trade.mqh>
@@ -54,6 +60,13 @@ input int    MaxDeviationPts    = 50;
 input bool   EnableLiveOrders   = false; // SAFETY: set true only after checks
 input bool   AllowSellFade      = true;  // false = skip the bull+overbought SELL-fade case entirely
                                           // (ground-truth backtest showed this is the one losing direction)
+input bool   SkipTrendBearAsiaSession = false; // A session breakdown (2025.01-2026.09) found STOCH_TREND_BEAR
+                                          // is a structural loser specifically during the Asia session
+                                          // (06:00-16:00 Korea time -> PF 0.822, -$1,480.89 over 243 trades),
+                                          // while the same signal is solidly profitable during Europe (16-22)
+                                          // and especially US (22-06) hours. Set true to skip TREND_BEAR only
+                                          // during that Korea-time window; other signals/sessions unaffected.
+                                          // Default false reproduces existing behavior exactly.
 
 int hBB20=INVALID_HANDLE,hBB4=INVALID_HANDLE,hStoch=INVALID_HANDLE;
 datetime last_m2_bar=0;
@@ -73,6 +86,43 @@ double MinStopDistance()
    SymbolInfoInteger(_Symbol,SYMBOL_TRADE_STOPS_LEVEL,stops);
    SymbolInfoInteger(_Symbol,SYMBOL_TRADE_FREEZE_LEVEL,freeze);
    return (double)MathMax(stops,freeze)*_Point;
+}
+
+// -- Korea-time session helpers (server clock -> KST, EU-DST aware) --------
+// This broker's server runs 6h behind Korea time during EU summer time
+// (DST) and 7h behind during EU winter time -- measured directly (6h
+// confirmed live in Sep 2026), not assumed. EU DST: last Sunday of March
+// 01:00 UTC-ish to last Sunday of October, approximated here by date only
+// (the exact hour of the switchover is immaterial at this granularity).
+datetime LastSundayOfMonth(int year,int month,int daysInMonth)
+{
+   MqlDateTime dt; dt.year=year; dt.mon=month; dt.day=daysInMonth;
+   dt.hour=0; dt.min=0; dt.sec=0;
+   datetime d=StructToTime(dt);
+   MqlDateTime cur; TimeToStruct(d,cur);
+   d-=cur.day_of_week*86400; // day_of_week: 0=Sunday
+   return d;
+}
+
+bool IsEUDST(datetime server_now)
+{
+   MqlDateTime t; TimeToStruct(server_now,t);
+   datetime dstStart=LastSundayOfMonth(t.year,3,31);
+   datetime dstEnd  =LastSundayOfMonth(t.year,10,31);
+   return (server_now>=dstStart && server_now<dstEnd);
+}
+
+int KST_Hour(datetime server_now)
+{
+   int offsetHours=IsEUDST(server_now)?6:7;
+   MqlDateTime t; TimeToStruct(server_now+offsetHours*3600,t);
+   return t.hour;
+}
+
+bool InAsiaSessionKST(datetime server_now)
+{
+   int h=KST_Hour(server_now);
+   return (h>=6 && h<16);
 }
 
 bool HasOurPosition()
@@ -192,7 +242,12 @@ void CheckNewM2Bar()
    else // bear signal candle
    {
       if(stochK<StochOversold){ dir=+1; tag="STOCH_FADE_BEAR_OS"; }
-      else                    { dir=-1; tag="STOCH_TREND_BEAR"; }
+      else
+      {
+         if(SkipTrendBearAsiaSession && InAsiaSessionKST(sig))
+         { Log("SIGNAL_SKIPPED","TREND-BEAR disabled during Asia session (06-16 KST) by SkipTrendBearAsiaSession=true"); return; }
+         dir=-1; tag="STOCH_TREND_BEAR";
+      }
    }
 
    Log("SIGNAL",(sigdir==1?"BULL":"BEAR")+" candle | stochK="+DoubleToString(stochK,2)+
@@ -223,6 +278,7 @@ int OnInit()
        " OS="+DoubleToString(StochOversold,1)+" | SL_R="+DoubleToString(SL_R,2)+
        " | TP_R="+DoubleToString(TP_R,2)+" | MinR_Points="+DoubleToString(MinR_Points,1)+
        " | AllowSellFade="+(AllowSellFade?"true":"false")+
+       " | SkipTrendBearAsiaSession="+(SkipTrendBearAsiaSession?"true":"false")+
        " | Lots="+DoubleToString(Lots,2)+" | Magic="+IntegerToString((int)MagicNumber)+
        " | orders="+(EnableLiveOrders?"ENABLED":"DRY"));
    return INIT_SUCCEEDED;
