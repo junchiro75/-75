@@ -49,10 +49,12 @@
 //| of SL_R, and MAE_OUTCOME with the final win/loss at close -- lets   |
 //| the CSV log answer "given a trade reached 50%/75% of its stop,      |
 //| what fraction still won" (not available from the xlsx report).     |
-//| Also tags firstBarAgree on that same MAE_OUTCOME line: whether the  |
-//| very next M2 bar to close after entry moved WITH (true) or AGAINST  |
-//| (false) the trade's direction -- tests whether an immediate         |
-//| opposite-direction bar predicts a one-way move into the stop.       |
+//| Also tags firstBarOneWay on that same MAE_OUTCOME line: true when    |
+//| the very next M2 bar after entry never moved favorably by even 1     |
+//| point (BUY: bar's high never exceeded entry; SELL: bar's low never  |
+//| went below it) before closing -- tests whether an immediate,        |
+//| zero-pullback move against the position predicts a one-way run      |
+//| into the stop.                                                      |
 //+------------------------------------------------------------------+
 #property strict
 #include <Trade/Trade.mqh>
@@ -133,13 +135,13 @@ string g_trackTag="";
 // AGAINST the trade's direction -- tests the hypothesis that an immediate
 // opposite-direction bar predicts a one-way move into the stop.
 bool   g_waitingFirstBar=false;
-bool   g_firstBarKnown=false, g_firstBarAgree=false;
+bool   g_firstBarKnown=false, g_firstBarOneWay=false;
 
 void StartMAETracking(ulong ticket,double entry,double R,int dir,string tag)
 {
    g_trackTicket=ticket; g_trackEntry=entry; g_trackR=R; g_trackDir=dir;
    g_reached50=false; g_reached75=false; g_trackTag=tag;
-   g_waitingFirstBar=true; g_firstBarKnown=false; g_firstBarAgree=false;
+   g_waitingFirstBar=true; g_firstBarKnown=false; g_firstBarOneWay=false;
 }
 
 void CheckMAEProgress()
@@ -328,8 +330,12 @@ void CheckNewM2Bar()
 
    if(g_waitingFirstBar)
    {
-      bool barBull=(c>o);
-      g_firstBarAgree=(g_trackDir==+1 && barBull) || (g_trackDir==-1 && !barBull);
+      // "one-way against": price never moved favorably by even 1 point during
+      // this bar -- for a BUY, the bar's high never exceeded the entry price;
+      // for a SELL, the bar's low never went below it. Uses h/l (the bar's
+      // extremes), not open/close, since a bar can close red while still
+      // having ticked favorably first.
+      g_firstBarOneWay=(g_trackDir==+1) ? (h<=g_trackEntry) : (l>=g_trackEntry);
       g_firstBarKnown=true;
       g_waitingFirstBar=false;
    }
@@ -449,10 +455,10 @@ void OnTradeTransaction(const MqlTradeTransaction &trans,const MqlTradeRequest &
 
    double profit=HistoryDealGetDouble(trans.deal,DEAL_PROFIT)+HistoryDealGetDouble(trans.deal,DEAL_SWAP);
    string outcome=(profit>0?"WIN":"LOSS");
-   string firstBarStr=(!g_firstBarKnown ? "unknown" : (g_firstBarAgree?"true":"false"));
+   string firstBarStr=(!g_firstBarKnown ? "unknown" : (g_firstBarOneWay?"true":"false"));
    Log("MAE_OUTCOME","outcome="+outcome+" profit="+DoubleToString(profit,2)+
        " reached50="+(g_reached50?"true":"false")+" reached75="+(g_reached75?"true":"false")+
-       " firstBarAgree="+firstBarStr+" | "+g_trackTag);
+       " firstBarOneWay="+firstBarStr+" | "+g_trackTag);
    g_trackTicket=0;
    g_waitingFirstBar=false;
 }
