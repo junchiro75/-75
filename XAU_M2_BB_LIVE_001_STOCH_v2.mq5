@@ -54,6 +54,11 @@ input int    MaxDeviationPts    = 50;
 input bool   EnableLiveOrders   = false; // SAFETY: set true only after checks
 input bool   AllowSellFade      = true;  // false = skip the bull+overbought SELL-fade case entirely
                                           // (ground-truth backtest showed this is the one losing direction)
+input int    MaxConcurrentPositions = 1; // default 1 preserves existing MAX1-position live behavior exactly.
+                                          // >1 lets a new signal enter while another of our positions is still
+                                          // open, instead of being skipped -- UNTESTED, backtest-only until
+                                          // verified: raises worst-case simultaneous exposure/margin roughly
+                                          // proportionally (e.g. 2 = up to 2x Lots open at once).
 
 int hBB20=INVALID_HANDLE,hBB4=INVALID_HANDLE,hStoch=INVALID_HANDLE;
 datetime last_m2_bar=0;
@@ -75,17 +80,18 @@ double MinStopDistance()
    return (double)MathMax(stops,freeze)*_Point;
 }
 
-bool HasOurPosition()
+int CountOurPositions()
 {
+   int n=0;
    for(int i=PositionsTotal()-1;i>=0;i--)
    {
       ulong tk=PositionGetTicket(i);
       if(tk==0 || !PositionSelectByTicket(tk)) continue;
       if(PositionGetString(POSITION_SYMBOL)!=_Symbol) continue;
       if((ulong)PositionGetInteger(POSITION_MAGIC)!=MagicNumber) continue;
-      return true;
+      n++;
    }
-   return false;
+   return n;
 }
 
 string TFPrefix()
@@ -103,7 +109,8 @@ string TFPrefix()
 
 void OpenTrade(int dir,double R,string tag)
 {
-   if(HasOurPosition()){ Log("ENTRY_SKIPPED","own-Magic position already exists"); return; }
+   int ourCount=CountOurPositions();
+   if(ourCount>=MaxConcurrentPositions){ Log("ENTRY_SKIPPED","own-Magic position count "+IntegerToString(ourCount)+" >= MaxConcurrentPositions"); return; }
    tag=TFPrefix()+tag;
 
    MqlTick q; if(!SymbolInfoTick(_Symbol,q)){ Log("ORDER_FAIL","no current tick"); return; }
@@ -223,6 +230,7 @@ int OnInit()
        " OS="+DoubleToString(StochOversold,1)+" | SL_R="+DoubleToString(SL_R,2)+
        " | TP_R="+DoubleToString(TP_R,2)+" | MinR_Points="+DoubleToString(MinR_Points,1)+
        " | AllowSellFade="+(AllowSellFade?"true":"false")+
+       " | MaxConcurrentPositions="+IntegerToString(MaxConcurrentPositions)+
        " | Lots="+DoubleToString(Lots,2)+" | Magic="+IntegerToString((int)MagicNumber)+
        " | orders="+(EnableLiveOrders?"ENABLED":"DRY"));
    return INIT_SUCCEEDED;
