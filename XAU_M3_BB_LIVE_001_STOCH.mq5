@@ -72,6 +72,14 @@ input bool   TrendBearEuropeOnly = true;  // A Korea-time session breakdown (202
                                           // $20,749.43 (+$4,563.06), PF 1.725 -> 2.264, DD down to 1.85%/
                                           // 2.64% -- a clean improvement on every metric. Set false to
                                           // restore the old always-on TREND_BEAR behavior.
+input bool   ReverseTrendBearOutsideEurope = false; // UNTESTED -- instead of SKIPPING TREND_BEAR outside the
+                                          // Europe session (i.e. during Asia and US, both losers on M3),
+                                          // trade the OPPOSITE direction (BUY) there instead. Takes priority
+                                          // over TrendBearEuropeOnly when both would apply. A losing SELL and
+                                          // a winning reversed BUY are NOT mathematically equivalent (SL/TP
+                                          // distances are asymmetric and the intrabar price path matters),
+                                          // so this needs its own backtest. Tagged
+                                          // STOCH_TREND_BEAR_REV_NONEURO for tracking.
 
 int hBB20=INVALID_HANDLE,hBB4=INVALID_HANDLE,hStoch=INVALID_HANDLE;
 datetime last_m3_bar=0;
@@ -248,9 +256,14 @@ void CheckNewM3Bar()
       if(stochK<StochOversold){ dir=+1; tag="STOCH_FADE_BEAR_OS"; }
       else
       {
-         if(TrendBearEuropeOnly && !InEuropeSessionKST(sig))
-         { Log("SIGNAL_SKIPPED","TREND-BEAR restricted to Europe session (16-22 KST) by TrendBearEuropeOnly=true"); return; }
-         dir=-1; tag="STOCH_TREND_BEAR";
+         if(!InEuropeSessionKST(sig))
+         {
+            if(ReverseTrendBearOutsideEurope){ dir=+1; tag="STOCH_TREND_BEAR_REV_NONEURO"; }
+            else if(TrendBearEuropeOnly)
+            { Log("SIGNAL_SKIPPED","TREND-BEAR restricted to Europe session (16-22 KST) by TrendBearEuropeOnly=true"); return; }
+            else { dir=-1; tag="STOCH_TREND_BEAR"; }
+         }
+         else { dir=-1; tag="STOCH_TREND_BEAR"; }
       }
    }
 
@@ -283,6 +296,7 @@ int OnInit()
        " | TP_R="+DoubleToString(TP_R,2)+" | MinR_Points="+DoubleToString(MinR_Points,1)+
        " | AllowSellFade="+(AllowSellFade?"true":"false")+
        " | TrendBearEuropeOnly="+(TrendBearEuropeOnly?"true":"false")+
+       " | ReverseTrendBearOutsideEurope="+(ReverseTrendBearOutsideEurope?"true":"false")+
        " | Lots="+DoubleToString(Lots,2)+" | Magic="+IntegerToString((int)MagicNumber)+
        " | orders="+(EnableLiveOrders?"ENABLED":"DRY"));
    return INIT_SUCCEEDED;

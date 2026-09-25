@@ -70,6 +70,14 @@ input bool   SkipTrendBearAsiaSession = true; // A session breakdown (2025.01-20
                                           // $17,746.29 (+$742.21), PF 1.225 -> 1.260, DD down to 3.25%/3.96%
                                           // -- a clean improvement on every metric. Set false to restore the
                                           // old always-on TREND_BEAR behavior.
+input bool   ReverseTrendBearAsiaSession = false; // UNTESTED -- instead of SKIPPING TREND_BEAR during the
+                                          // Asia session, trade the OPPOSITE direction (BUY) there instead.
+                                          // Takes priority over SkipTrendBearAsiaSession when both would
+                                          // apply. A losing SELL and a winning reversed BUY are NOT
+                                          // mathematically equivalent (SL/TP distances are asymmetric and the
+                                          // intrabar price path matters), so this needs its own backtest to
+                                          // know whether the Asia-session weakness is a reversible edge or
+                                          // just noise to avoid. Tagged STOCH_TREND_BEAR_REV_ASIA for tracking.
 
 int hBB20=INVALID_HANDLE,hBB4=INVALID_HANDLE,hStoch=INVALID_HANDLE;
 datetime last_m2_bar=0;
@@ -247,9 +255,14 @@ void CheckNewM2Bar()
       if(stochK<StochOversold){ dir=+1; tag="STOCH_FADE_BEAR_OS"; }
       else
       {
-         if(SkipTrendBearAsiaSession && InAsiaSessionKST(sig))
-         { Log("SIGNAL_SKIPPED","TREND-BEAR disabled during Asia session (06-16 KST) by SkipTrendBearAsiaSession=true"); return; }
-         dir=-1; tag="STOCH_TREND_BEAR";
+         if(InAsiaSessionKST(sig))
+         {
+            if(ReverseTrendBearAsiaSession){ dir=+1; tag="STOCH_TREND_BEAR_REV_ASIA"; }
+            else if(SkipTrendBearAsiaSession)
+            { Log("SIGNAL_SKIPPED","TREND-BEAR disabled during Asia session (06-16 KST) by SkipTrendBearAsiaSession=true"); return; }
+            else { dir=-1; tag="STOCH_TREND_BEAR"; }
+         }
+         else { dir=-1; tag="STOCH_TREND_BEAR"; }
       }
    }
 
@@ -282,6 +295,7 @@ int OnInit()
        " | TP_R="+DoubleToString(TP_R,2)+" | MinR_Points="+DoubleToString(MinR_Points,1)+
        " | AllowSellFade="+(AllowSellFade?"true":"false")+
        " | SkipTrendBearAsiaSession="+(SkipTrendBearAsiaSession?"true":"false")+
+       " | ReverseTrendBearAsiaSession="+(ReverseTrendBearAsiaSession?"true":"false")+
        " | Lots="+DoubleToString(Lots,2)+" | Magic="+IntegerToString((int)MagicNumber)+
        " | orders="+(EnableLiveOrders?"ENABLED":"DRY"));
    return INIT_SUCCEEDED;
