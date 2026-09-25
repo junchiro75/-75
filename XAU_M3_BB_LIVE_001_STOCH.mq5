@@ -57,6 +57,15 @@ input int    MaxDeviationPts    = 50;
 input bool   EnableLiveOrders   = false; // SAFETY: set true only after checks
 input bool   AllowSellFade      = false; // false = skip the bull+overbought SELL-fade case entirely
                                           // (ground-truth backtest showed this is the one losing direction)
+input bool   TrendBearEuropeOnly = false; // A Korea-time session breakdown (2025.01-2026.09) found
+                                          // STOCH_TREND_BEAR loses in BOTH Asia (06-16 KST: PF 0.586,
+                                          // -$1,616.72, 46 trades) and US hours (22-06 KST: PF 0.709,
+                                          // -$1,225.20, 51 trades) on M3, and is only profitable during
+                                          // Europe (16-22 KST: PF 3.596, +$1,157.86, 26 trades) -- a
+                                          // different pattern from M2 (Asia-only weakness) and M1 (a
+                                          // different bucket entirely). Set true to trade TREND_BEAR only
+                                          // during that window; other buckets/sessions unaffected. Default
+                                          // false reproduces existing behavior exactly.
 
 int hBB20=INVALID_HANDLE,hBB4=INVALID_HANDLE,hStoch=INVALID_HANDLE;
 datetime last_m3_bar=0;
@@ -76,6 +85,42 @@ double MinStopDistance()
    SymbolInfoInteger(_Symbol,SYMBOL_TRADE_STOPS_LEVEL,stops);
    SymbolInfoInteger(_Symbol,SYMBOL_TRADE_FREEZE_LEVEL,freeze);
    return (double)MathMax(stops,freeze)*_Point;
+}
+
+// -- Korea-time session helpers (server clock -> KST, EU-DST aware) --------
+// This broker's server runs 6h behind Korea time during EU summer time
+// (DST) and 7h behind during EU winter time -- measured directly (6h
+// confirmed live in Sep 2026), not assumed. EU DST: last Sunday of March
+// to last Sunday of October, approximated here by date only.
+datetime LastSundayOfMonth(int year,int month,int daysInMonth)
+{
+   MqlDateTime dt; dt.year=year; dt.mon=month; dt.day=daysInMonth;
+   dt.hour=0; dt.min=0; dt.sec=0;
+   datetime d=StructToTime(dt);
+   MqlDateTime cur; TimeToStruct(d,cur);
+   d-=cur.day_of_week*86400; // day_of_week: 0=Sunday
+   return d;
+}
+
+bool IsEUDST(datetime server_now)
+{
+   MqlDateTime t; TimeToStruct(server_now,t);
+   datetime dstStart=LastSundayOfMonth(t.year,3,31);
+   datetime dstEnd  =LastSundayOfMonth(t.year,10,31);
+   return (server_now>=dstStart && server_now<dstEnd);
+}
+
+int KST_Hour(datetime server_now)
+{
+   int offsetHours=IsEUDST(server_now)?6:7;
+   MqlDateTime t; TimeToStruct(server_now+offsetHours*3600,t);
+   return t.hour;
+}
+
+bool InEuropeSessionKST(datetime server_now)
+{
+   int h=KST_Hour(server_now);
+   return (h>=16 && h<22);
 }
 
 bool HasOurPosition()
@@ -195,7 +240,12 @@ void CheckNewM3Bar()
    else // bear signal candle
    {
       if(stochK<StochOversold){ dir=+1; tag="STOCH_FADE_BEAR_OS"; }
-      else                    { dir=-1; tag="STOCH_TREND_BEAR"; }
+      else
+      {
+         if(TrendBearEuropeOnly && !InEuropeSessionKST(sig))
+         { Log("SIGNAL_SKIPPED","TREND-BEAR restricted to Europe session (16-22 KST) by TrendBearEuropeOnly=true"); return; }
+         dir=-1; tag="STOCH_TREND_BEAR";
+      }
    }
 
    Log("SIGNAL",(sigdir==1?"BULL":"BEAR")+" candle | stochK="+DoubleToString(stochK,2)+
@@ -226,6 +276,7 @@ int OnInit()
        " OS="+DoubleToString(StochOversold,1)+" | SL_R="+DoubleToString(SL_R,2)+
        " | TP_R="+DoubleToString(TP_R,2)+" | MinR_Points="+DoubleToString(MinR_Points,1)+
        " | AllowSellFade="+(AllowSellFade?"true":"false")+
+       " | TrendBearEuropeOnly="+(TrendBearEuropeOnly?"true":"false")+
        " | Lots="+DoubleToString(Lots,2)+" | Magic="+IntegerToString((int)MagicNumber)+
        " | orders="+(EnableLiveOrders?"ENABLED":"DRY"));
    return INIT_SUCCEEDED;

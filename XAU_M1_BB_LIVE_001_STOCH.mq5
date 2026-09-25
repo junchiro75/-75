@@ -58,6 +58,15 @@ input bool   AllowSellFade      = false; // false = skip the bull+overbought SEL
 input bool   AllowTrendBull     = false; // false = skip the bull+not-overbought TREND-BUY case entirely
                                           // (M1-specific finding: this bucket is a loser at SL_R=4.0-5.0
                                           // here, unlike the same bucket on M2/M3 where it's profitable)
+input bool   SkipFadeBearOSAsiaSession = false; // A Korea-time session breakdown (2025.01-2026.09) found
+                                          // STOCH_FADE_BEAR_OS -- M1's dominant bucket -- is a structural
+                                          // loser specifically during the Asia session (06:00-16:00 KST):
+                                          // PF 0.907, -$1,926.30 over 628 trades, while it's solidly
+                                          // profitable in Europe (16-22 KST, PF 1.293) and US (22-06 KST,
+                                          // PF 1.526) hours. This is the OPPOSITE bucket from the same
+                                          // Asia-session weakness found on M2 (there it's STOCH_TREND_BEAR),
+                                          // so it needs its own separate filter here. Default false
+                                          // reproduces existing behavior exactly.
 
 int hBB20=INVALID_HANDLE,hBB4=INVALID_HANDLE,hStoch=INVALID_HANDLE;
 datetime last_m1_bar=0;
@@ -77,6 +86,42 @@ double MinStopDistance()
    SymbolInfoInteger(_Symbol,SYMBOL_TRADE_STOPS_LEVEL,stops);
    SymbolInfoInteger(_Symbol,SYMBOL_TRADE_FREEZE_LEVEL,freeze);
    return (double)MathMax(stops,freeze)*_Point;
+}
+
+// -- Korea-time session helpers (server clock -> KST, EU-DST aware) --------
+// This broker's server runs 6h behind Korea time during EU summer time
+// (DST) and 7h behind during EU winter time -- measured directly (6h
+// confirmed live in Sep 2026), not assumed. EU DST: last Sunday of March
+// to last Sunday of October, approximated here by date only.
+datetime LastSundayOfMonth(int year,int month,int daysInMonth)
+{
+   MqlDateTime dt; dt.year=year; dt.mon=month; dt.day=daysInMonth;
+   dt.hour=0; dt.min=0; dt.sec=0;
+   datetime d=StructToTime(dt);
+   MqlDateTime cur; TimeToStruct(d,cur);
+   d-=cur.day_of_week*86400; // day_of_week: 0=Sunday
+   return d;
+}
+
+bool IsEUDST(datetime server_now)
+{
+   MqlDateTime t; TimeToStruct(server_now,t);
+   datetime dstStart=LastSundayOfMonth(t.year,3,31);
+   datetime dstEnd  =LastSundayOfMonth(t.year,10,31);
+   return (server_now>=dstStart && server_now<dstEnd);
+}
+
+int KST_Hour(datetime server_now)
+{
+   int offsetHours=IsEUDST(server_now)?6:7;
+   MqlDateTime t; TimeToStruct(server_now+offsetHours*3600,t);
+   return t.hour;
+}
+
+bool InAsiaSessionKST(datetime server_now)
+{
+   int h=KST_Hour(server_now);
+   return (h>=6 && h<16);
 }
 
 bool HasOurPosition()
@@ -199,7 +244,12 @@ void CheckNewM1Bar()
    }
    else // bear signal candle
    {
-      if(stochK<StochOversold){ dir=+1; tag="STOCH_FADE_BEAR_OS"; }
+      if(stochK<StochOversold)
+      {
+         if(SkipFadeBearOSAsiaSession && InAsiaSessionKST(sig))
+         { Log("SIGNAL_SKIPPED","FADE_BEAR_OS disabled during Asia session (06-16 KST) by SkipFadeBearOSAsiaSession=true"); return; }
+         dir=+1; tag="STOCH_FADE_BEAR_OS";
+      }
       else                    { dir=-1; tag="STOCH_TREND_BEAR"; }
    }
 
@@ -232,6 +282,7 @@ int OnInit()
        " | TP_R="+DoubleToString(TP_R,2)+" | MinR_Points="+DoubleToString(MinR_Points,1)+
        " | AllowSellFade="+(AllowSellFade?"true":"false")+
        " | AllowTrendBull="+(AllowTrendBull?"true":"false")+
+       " | SkipFadeBearOSAsiaSession="+(SkipFadeBearOSAsiaSession?"true":"false")+
        " | Lots="+DoubleToString(Lots,2)+" | Magic="+IntegerToString((int)MagicNumber)+
        " | orders="+(EnableLiveOrders?"ENABLED":"DRY"));
    return INIT_SUCCEEDED;
