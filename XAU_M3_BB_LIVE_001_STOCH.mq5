@@ -35,6 +35,10 @@
 //| consistent with gold's persistent uptrend bias found elsewhere in  |
 //| this project). Includes diagnostic logging (BAR_DATA_FAIL /        |
 //| COPYBUFFER_FAIL) on previously-silent failure paths.               |
+//| TrendBearEuropeOnly=true (confirmed default) restricts             |
+//| STOCH_TREND_BEAR to the Europe session (16-22 KST) only -- a real   |
+//| backtest confirmed a clean improvement on every metric (NET, PF,   |
+//| and drawdown all better); see the input's own comment for numbers. |
 //+------------------------------------------------------------------+
 #property strict
 #include <Trade/Trade.mqh>
@@ -57,15 +61,17 @@ input int    MaxDeviationPts    = 50;
 input bool   EnableLiveOrders   = false; // SAFETY: set true only after checks
 input bool   AllowSellFade      = false; // false = skip the bull+overbought SELL-fade case entirely
                                           // (ground-truth backtest showed this is the one losing direction)
-input bool   TrendBearEuropeOnly = false; // A Korea-time session breakdown (2025.01-2026.09) found
+input bool   TrendBearEuropeOnly = true;  // A Korea-time session breakdown (2025.01-2026.09) found
                                           // STOCH_TREND_BEAR loses in BOTH Asia (06-16 KST: PF 0.586,
                                           // -$1,616.72, 46 trades) and US hours (22-06 KST: PF 0.709,
                                           // -$1,225.20, 51 trades) on M3, and is only profitable during
                                           // Europe (16-22 KST: PF 3.596, +$1,157.86, 26 trades) -- a
                                           // different pattern from M2 (Asia-only weakness) and M1 (a
-                                          // different bucket entirely). Set true to trade TREND_BEAR only
-                                          // during that window; other buckets/sessions unaffected. Default
-                                          // false reproduces existing behavior exactly.
+                                          // different bucket entirely, left untouched by choice).
+                                          // Ground-truth backtest confirmed this default: NET $16,186.37 ->
+                                          // $20,749.43 (+$4,563.06), PF 1.725 -> 2.264, DD down to 1.85%/
+                                          // 2.64% -- a clean improvement on every metric. Set false to
+                                          // restore the old always-on TREND_BEAR behavior.
 
 int hBB20=INVALID_HANDLE,hBB4=INVALID_HANDLE,hStoch=INVALID_HANDLE;
 datetime last_m3_bar=0;
