@@ -49,6 +49,10 @@
 //| of SL_R, and MAE_OUTCOME with the final win/loss at close -- lets   |
 //| the CSV log answer "given a trade reached 50%/75% of its stop,      |
 //| what fraction still won" (not available from the xlsx report).     |
+//| Also tags firstBarAgree on that same MAE_OUTCOME line: whether the  |
+//| very next M2 bar to close after entry moved WITH (true) or AGAINST  |
+//| (false) the trade's direction -- tests whether an immediate         |
+//| opposite-direction bar predicts a one-way move into the stop.       |
 //+------------------------------------------------------------------+
 #property strict
 #include <Trade/Trade.mqh>
@@ -124,10 +128,18 @@ int    g_trackDir=0;
 bool   g_reached50=false, g_reached75=false;
 string g_trackTag="";
 
+// -- first-bar-after-entry direction (diagnostic only) ----------------------
+// Checks whether the very next M2 bar to close after entry moved WITH or
+// AGAINST the trade's direction -- tests the hypothesis that an immediate
+// opposite-direction bar predicts a one-way move into the stop.
+bool   g_waitingFirstBar=false;
+bool   g_firstBarKnown=false, g_firstBarAgree=false;
+
 void StartMAETracking(ulong ticket,double entry,double R,int dir,string tag)
 {
    g_trackTicket=ticket; g_trackEntry=entry; g_trackR=R; g_trackDir=dir;
    g_reached50=false; g_reached75=false; g_trackTag=tag;
+   g_waitingFirstBar=true; g_firstBarKnown=false; g_firstBarAgree=false;
 }
 
 void CheckMAEProgress()
@@ -314,6 +326,14 @@ void CheckNewM2Bar()
    datetime sig=iTime(_Symbol,Timeframe,1);
    if(sig==0){ Log("BAR_DATA_FAIL","iTime(1) returned 0"); return; }
 
+   if(g_waitingFirstBar)
+   {
+      bool barBull=(c>o);
+      g_firstBarAgree=(g_trackDir==+1 && barBull) || (g_trackDir==-1 && !barBull);
+      g_firstBarKnown=true;
+      g_waitingFirstBar=false;
+   }
+
    double up20[1],lo20[1],up4[1],lo4[1];
    int r1=CopyBuffer(hBB20,1,1,1,up20), r2=CopyBuffer(hBB20,2,1,1,lo20);
    int r3=CopyBuffer(hBB4,1,1,1,up4),   r4=CopyBuffer(hBB4,2,1,1,lo4);
@@ -429,8 +449,11 @@ void OnTradeTransaction(const MqlTradeTransaction &trans,const MqlTradeRequest &
 
    double profit=HistoryDealGetDouble(trans.deal,DEAL_PROFIT)+HistoryDealGetDouble(trans.deal,DEAL_SWAP);
    string outcome=(profit>0?"WIN":"LOSS");
+   string firstBarStr=(!g_firstBarKnown ? "unknown" : (g_firstBarAgree?"true":"false"));
    Log("MAE_OUTCOME","outcome="+outcome+" profit="+DoubleToString(profit,2)+
-       " reached50="+(g_reached50?"true":"false")+" reached75="+(g_reached75?"true":"false")+" | "+g_trackTag);
+       " reached50="+(g_reached50?"true":"false")+" reached75="+(g_reached75?"true":"false")+
+       " firstBarAgree="+firstBarStr+" | "+g_trackTag);
    g_trackTicket=0;
+   g_waitingFirstBar=false;
 }
 //+------------------------------------------------------------------+
