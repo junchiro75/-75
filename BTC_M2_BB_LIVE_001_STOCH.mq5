@@ -37,6 +37,12 @@
 //| size (BTCUSD+ margin/lot ~$419.78 vs gold ~$427.72 for 0.1 lot;    |
 //| re-check with the account's own Specification dialog before going  |
 //| live). Re-verify, do not assume it stays optimal after tuning.     |
+//| AllowBuyFade added after a MinR_Points=38000 test (SL_R=1.0,       |
+//| TP_R=0.5) showed win rate jumps from ~55% (unfiltered) to ~66% at   |
+//| that R level, and STOCH_FADE_BEAR_OS is the one losing case there   |
+//| while both trend buckets are already profitable -- see the input's |
+//| own comment for the numbers. Still an open question whether this    |
+//| holds at other MinR_Points levels; re-verify before trusting it.   |
 //+------------------------------------------------------------------+
 #property strict
 #include <Trade/Trade.mqh>
@@ -61,6 +67,13 @@ input bool   EnableLiveOrders   = false; // SAFETY: set true only after checks
 input bool   AllowSellFade      = true;  // UNBIASED default -- gold's AllowSellFade=false came from its
                                           // own empirical finding (persistent uptrend bias); do not assume
                                           // it transfers to BTC without separately verifying by backtest
+input bool   AllowBuyFade       = true;  // gates the OTHER fade case (bear signal + oversold -> BUY,
+                                          // STOCH_FADE_BEAR_OS) -- distinct from AllowSellFade, which only
+                                          // gates the bull+overbought SELL-fade case. A MinR_Points=38000 test
+                                          // (2025.01-2026.09) found STOCH_FADE_BEAR_OS is BTC's own structurally
+                                          // losing case at that R level (PF 0.867, -$805.42 over 295 trades)
+                                          // while both trend-following buckets were already profitable
+                                          // (TREND_BULL PF 1.218, TREND_BEAR PF 1.153) -- set false to skip it.
 
 int hBB20=INVALID_HANDLE,hBB4=INVALID_HANDLE,hStoch=INVALID_HANDLE;
 datetime last_m2_bar=0;
@@ -184,7 +197,11 @@ void CheckNewM2Bar()
    }
    else // bear signal candle
    {
-      if(stochK<StochOversold){ dir=+1; tag="STOCH_FADE_BEAR_OS"; }
+      if(stochK<StochOversold)
+      {
+         if(!AllowBuyFade){ Log("SIGNAL_SKIPPED","BUY-fade disabled by AllowBuyFade=false"); return; }
+         dir=+1; tag="STOCH_FADE_BEAR_OS";
+      }
       else                    { dir=-1; tag="STOCH_TREND_BEAR"; }
    }
 
@@ -216,6 +233,7 @@ int OnInit()
        " OS="+DoubleToString(StochOversold,1)+" | SL_R="+DoubleToString(SL_R,2)+
        " | TP_R="+DoubleToString(TP_R,2)+" | MinR_Points="+DoubleToString(MinR_Points,1)+
        " | AllowSellFade="+(AllowSellFade?"true":"false")+
+       " | AllowBuyFade="+(AllowBuyFade?"true":"false")+
        " | Lots="+DoubleToString(Lots,2)+" | Magic="+IntegerToString((int)MagicNumber)+
        " | orders="+(EnableLiveOrders?"ENABLED":"DRY"));
    return INIT_SUCCEEDED;
