@@ -61,6 +61,18 @@
 //| against the intended direction. Theory: one-way losses happen when   |
 //| the opposing trend was already in place before entry, not created    |
 //| by the trade itself. Backtest before trusting it.                    |
+//| oppSignalSeen (diagnostic, always logged regardless of                |
+//| UseOppositeSignalExit): true if a NEW opposite-direction M2 signal   |
+//| candle (same BB20/BB4 breakout + R filter as entries) appeared at    |
+//| any point while the position was open -- answers "of trades that     |
+//| hit SL, what fraction had an opposite signal candle appear before    |
+//| the loss" and "of trades where an opposite signal appeared, what     |
+//| fraction still hit TP anyway" straight from the CSV log.             |
+//| UseOppositeSignalExit (default false, UNTESTED): when true, ACTS on  |
+//| the same opposite-signal detection above by closing the open         |
+//| position at market immediately. Unlike the time-stop / MAE-%         |
+//| early exits (tested and rejected), this uses the same technical      |
+//| basis (BB breakout) the strategy already trades entries on.          |
 //+------------------------------------------------------------------+
 #property strict
 #include <Trade/Trade.mqh>
@@ -132,6 +144,17 @@ input int    ADXPeriod          = 14;    // standard ADX period
 input double ADXThreshold       = 25.0;  // ADX >= this is considered "trending" (standard convention); below
                                           // this the market is considered range-bound/no dominant trend
 
+input bool   UseOppositeSignalExit = false; // UNTESTED -- while holding a position, close it immediately at
+                                          // market if a NEW opposite-direction M2 signal candle (BB20/BB4
+                                          // breakout, same R filter as entries) appears -- regardless of what
+                                          // direction that new signal would itself trade (the stochastic
+                                          // fade/trend decision only matters for entries, not for this check).
+                                          // Rationale: unlike the time-stop or MAE-%-based early exits already
+                                          // tested and rejected, this uses the SAME technical basis (BB
+                                          // breakout) the strategy already trades on, so it may catch a
+                                          // genuine reversal earlier than waiting for price to travel deep into
+                                          // the stop. Default false reproduces existing behavior exactly.
+
 int hBB20=INVALID_HANDLE,hBB4=INVALID_HANDLE,hStoch=INVALID_HANDLE,hADX=INVALID_HANDLE;
 datetime last_m2_bar=0;
 int f_log=INVALID_HANDLE;
@@ -170,12 +193,56 @@ double g_lastBandLevel=0;
 double g_trackBandLevel=0;
 bool   g_bandReentered=false;
 
+// -- opposite-signal tracking (diagnostic, always on; ACTS only if
+//    UseOppositeSignalExit=true) ------------------------------------------
+// Tracks whether a NEW opposite-direction M2 signal candle (same BB20/BB4
+// breakout + R filter used for entries) appeared at any point while the
+// current position was open. Logged regardless of UseOppositeSignalExit so
+// we can first ask "of trades that hit SL, what fraction had an opposite
+// signal candle appear before the loss" with zero trading effect, then
+// separately test the P&L impact of actually acting on it.
+bool   g_trackOppSignalSeen=false;
+
 void StartMAETracking(ulong ticket,double entry,double R,int dir,string tag)
 {
    g_trackTicket=ticket; g_trackEntry=entry; g_trackR=R; g_trackDir=dir;
    g_reached50=false; g_reached75=false; g_trackTag=tag;
    g_waitingFirstBar=true; g_firstBarKnown=false; g_firstBarOneWay=false;
    g_trackBandLevel=g_lastBandLevel; g_bandReentered=false;
+   g_trackOppSignalSeen=false;
+}
+
+// Called from CheckNewM2Bar with the new bar's raw breakout direction
+// (sigdir, before the stochastic fade/trend decision -- that decision only
+// matters for what a NEW entry would trade, not for detecting that the
+// opposite technical signal fired). If UseOppositeSignalExit is on, also
+// closes the open position at market right away.
+void CheckOppositeSignal(int sigdir)
+{
+   if(g_trackTicket==0 || sigdir==0) return;
+   if(sigdir!=-g_trackDir) return; // only the OPPOSITE of our position's direction counts
+
+   if(!g_trackOppSignalSeen)
+   {
+      g_trackOppSignalSeen=true;
+      Log("MAE_MILESTONE","opposite signal candle appeared | "+g_trackTag);
+   }
+
+   if(!UseOppositeSignalExit) return;
+   if(!PositionSelectByTicket(g_trackTicket)) return; // already closed
+
+   double profit=PositionGetDouble(POSITION_PROFIT);
+   if(!EnableLiveOrders)
+   {
+      Log("OPP_SIGNAL_EXIT_DRY","ticket="+IntegerToString((int)g_trackTicket)+" profit="+DoubleToString(profit,2)+
+          " (would close, EnableLiveOrders=false) | "+g_trackTag);
+      return;
+   }
+   if(trade.PositionClose(g_trackTicket))
+      Log("OPP_SIGNAL_EXIT_CLOSE","ticket="+IntegerToString((int)g_trackTicket)+" profit="+DoubleToString(profit,2)+
+          " | "+g_trackTag);
+   else
+      Log("OPP_SIGNAL_EXIT_FAIL",IntegerToString((int)trade.ResultRetcode())+" | "+trade.ResultRetcodeDescription());
 }
 
 void CheckMAEProgress()
@@ -417,6 +484,8 @@ void CheckNewM2Bar()
    double minR=MathMax(_Point,MinR_Points*_Point);
    if(R<=minR){ Log("SIGNAL_SKIPPED","R too small"); return; }
 
+   CheckOppositeSignal(sigdir);
+
    double kbuf[1];
    if(CopyBuffer(hStoch,0,1,1,kbuf)!=1){ Log("STOCH_FAIL","no stochastic value"); return; }
    double stochK=kbuf[0];
@@ -489,6 +558,7 @@ int OnInit()
        " | UseTrendFilter="+(UseTrendFilter?"true":"false")+
        " | TrendFilterTF="+EnumToString(TrendFilterTimeframe)+" ADXPeriod="+IntegerToString(ADXPeriod)+
        " ADXThreshold="+DoubleToString(ADXThreshold,1)+
+       " | UseOppositeSignalExit="+(UseOppositeSignalExit?"true":"false")+
        " | Lots="+DoubleToString(Lots,2)+" | Magic="+IntegerToString((int)MagicNumber)+
        " | orders="+(EnableLiveOrders?"ENABLED":"DRY"));
    return INIT_SUCCEEDED;
@@ -527,7 +597,8 @@ void OnTradeTransaction(const MqlTradeTransaction &trans,const MqlTradeRequest &
    string bandStr=(g_trackBandLevel==0 ? "n/a(fade)" : (g_bandReentered?"true":"false"));
    Log("MAE_OUTCOME","outcome="+outcome+" profit="+DoubleToString(profit,2)+
        " reached50="+(g_reached50?"true":"false")+" reached75="+(g_reached75?"true":"false")+
-       " firstBarOneWay="+firstBarStr+" bandReentry="+bandStr+" | "+g_trackTag);
+       " firstBarOneWay="+firstBarStr+" bandReentry="+bandStr+
+       " oppSignalSeen="+(g_trackOppSignalSeen?"true":"false")+" | "+g_trackTag);
    g_trackTicket=0;
    g_waitingFirstBar=false;
 }
