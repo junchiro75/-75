@@ -155,11 +155,27 @@ string g_trackTag="";
 bool   g_waitingFirstBar=false;
 bool   g_firstBarKnown=false, g_firstBarOneWay=false;
 
+// -- band-reentry tracking (diagnostic only) ---------------------------------
+// The entry signal is a BB20 breakout; this checks whether price later
+// crosses back to the OTHER side of that same (frozen, as-of-entry) BB20
+// level -- i.e. the breakout "gave back" and failed to hold. Cheap to check
+// every tick (no waiting for a bar close), unlike the opposite-signal-candle
+// idea, which only fires on a full new breakout in the other direction and
+// would already be very late. Logged as its own milestone, and also cross-
+// referenced with reached50/75 on the outcome line, to test the hypothesis
+// that "band reentry ALONE" is noisy (many such trades still recover, same
+// as firstBarOneWay) but "band reentry AND deep MAE" together might be a
+// more reliable failure signal than either alone.
+double g_lastBandLevel=0;
+double g_trackBandLevel=0;
+bool   g_bandReentered=false;
+
 void StartMAETracking(ulong ticket,double entry,double R,int dir,string tag)
 {
    g_trackTicket=ticket; g_trackEntry=entry; g_trackR=R; g_trackDir=dir;
    g_reached50=false; g_reached75=false; g_trackTag=tag;
    g_waitingFirstBar=true; g_firstBarKnown=false; g_firstBarOneWay=false;
+   g_trackBandLevel=g_lastBandLevel; g_bandReentered=false;
 }
 
 void CheckMAEProgress()
@@ -171,6 +187,12 @@ void CheckMAEProgress()
    double frac=adverseR/SL_R;
    if(frac>=0.5  && !g_reached50){ g_reached50=true; Log("MAE_MILESTONE","50% of SL reached | "+g_trackTag); }
    if(frac>=0.75 && !g_reached75){ g_reached75=true; Log("MAE_MILESTONE","75% of SL reached | "+g_trackTag); }
+
+   if(!g_bandReentered && g_trackBandLevel!=0)
+   {
+      bool reentered=(g_trackDir==+1) ? (q.bid<g_trackBandLevel) : (q.ask>g_trackBandLevel);
+      if(reentered){ g_bandReentered=true; Log("MAE_MILESTONE","band reentry (breakout failed) | "+g_trackTag); }
+   }
 }
 
 string TS(datetime t){ return TimeToString(t,TIME_DATE|TIME_MINUTES|TIME_SECONDS); }
@@ -425,6 +447,12 @@ void CheckNewM2Bar()
       }
    }
 
+   // Band-reentry tracking only makes sense for trend-following trades (dir
+   // matches the breakout direction) -- for a fade trade, price returning
+   // toward/across that same band is the EXPECTED favorable direction, not
+   // a failure signal, so disable the check there (0 = disabled).
+   g_lastBandLevel=(dir==sigdir) ? (sigdir==+1 ? up20[0] : lo20[0]) : 0;
+
    Log("SIGNAL",(sigdir==1?"BULL":"BEAR")+" candle | stochK="+DoubleToString(stochK,2)+
        " | R="+DoubleToString(R,_Digits)+" | decided dir="+(dir==1?"BUY":"SELL")+" | "+tag);
    OpenTrade(dir,R,tag);
@@ -496,9 +524,10 @@ void OnTradeTransaction(const MqlTradeTransaction &trans,const MqlTradeRequest &
    double profit=HistoryDealGetDouble(trans.deal,DEAL_PROFIT)+HistoryDealGetDouble(trans.deal,DEAL_SWAP);
    string outcome=(profit>0?"WIN":"LOSS");
    string firstBarStr=(!g_firstBarKnown ? "unknown" : (g_firstBarOneWay?"true":"false"));
+   string bandStr=(g_trackBandLevel==0 ? "n/a(fade)" : (g_bandReentered?"true":"false"));
    Log("MAE_OUTCOME","outcome="+outcome+" profit="+DoubleToString(profit,2)+
        " reached50="+(g_reached50?"true":"false")+" reached75="+(g_reached75?"true":"false")+
-       " firstBarOneWay="+firstBarStr+" | "+g_trackTag);
+       " firstBarOneWay="+firstBarStr+" bandReentry="+bandStr+" | "+g_trackTag);
    g_trackTicket=0;
    g_waitingFirstBar=false;
 }
