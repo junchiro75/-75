@@ -55,6 +55,12 @@
 //| went below it) before closing -- tests whether an immediate,        |
 //| zero-pullback move against the position predicts a one-way run      |
 //| into the stop.                                                      |
+//| UseTrendFilter (default false, UNTESTED): skips an entry when a      |
+//| strong opposing trend is already established on TrendFilterTimeframe |
+//| (default M15) -- ADX >= ADXThreshold and the dominant DI points      |
+//| against the intended direction. Theory: one-way losses happen when   |
+//| the opposing trend was already in place before entry, not created    |
+//| by the trade itself. Backtest before trusting it.                    |
 //+------------------------------------------------------------------+
 #property strict
 #include <Trade/Trade.mqh>
@@ -113,8 +119,20 @@ input int    MaxMinutesWithoutProgress = 0; // 0 = disabled (default, no behavio
                                           // price. UNTESTED as a live rule -- set >0 (e.g. 20/30/45) to close
                                           // any open position early once it's been open this many minutes,
                                           // and backtest the real net effect before trusting it.
+input bool   UseTrendFilter     = false; // UNTESTED -- skip an entry if a strong opposing trend is already in
+                                          // place on a higher timeframe (checked via ADX/DI), on the theory
+                                          // that trades lost to a one-way run against the position happen when
+                                          // that opposing trend was already established before entry. Default
+                                          // false reproduces existing behavior exactly.
+input ENUM_TIMEFRAMES TrendFilterTimeframe = PERIOD_M15; // higher timeframe to measure the opposing trend on
+                                          // (not the same M2 the signal fires on, since that's noisy/local --
+                                          // the idea is to detect the larger-picture regime, not the signal
+                                          // candle itself).
+input int    ADXPeriod          = 14;    // standard ADX period
+input double ADXThreshold       = 25.0;  // ADX >= this is considered "trending" (standard convention); below
+                                          // this the market is considered range-bound/no dominant trend
 
-int hBB20=INVALID_HANDLE,hBB4=INVALID_HANDLE,hStoch=INVALID_HANDLE;
+int hBB20=INVALID_HANDLE,hBB4=INVALID_HANDLE,hStoch=INVALID_HANDLE,hADX=INVALID_HANDLE;
 datetime last_m2_bar=0;
 int f_log=INVALID_HANDLE;
 
@@ -221,6 +239,22 @@ bool HasOurPosition()
    return false;
 }
 
+// Skips an entry if a strong opposing trend is already established on
+// TrendFilterTimeframe: ADX >= ADXThreshold (a trend, by the standard
+// convention) AND the dominant DI is pointed against our intended direction.
+bool OpposingTrendTooStrong(int dir)
+{
+   if(!UseTrendFilter) return false;
+   double adxBuf[1],plusDI[1],minusDI[1];
+   if(CopyBuffer(hADX,0,1,1,adxBuf)!=1) return false;
+   if(CopyBuffer(hADX,1,1,1,plusDI)!=1) return false;
+   if(CopyBuffer(hADX,2,1,1,minusDI)!=1) return false;
+   if(adxBuf[0]<ADXThreshold) return false;
+   if(dir==+1 && minusDI[0]>plusDI[0]) return true; // trying to BUY into a strong downtrend
+   if(dir==-1 && plusDI[0]>minusDI[0]) return true; // trying to SELL into a strong uptrend
+   return false;
+}
+
 void CheckTimeStop()
 {
    if(MaxMinutesWithoutProgress<=0) return;
@@ -266,6 +300,7 @@ string TFPrefix()
 void OpenTrade(int dir,double R,string tag)
 {
    if(HasOurPosition()){ Log("ENTRY_SKIPPED","own-Magic position already exists"); return; }
+   if(OpposingTrendTooStrong(dir)){ Log("ENTRY_SKIPPED","opposing trend too strong (ADX filter) | "+tag); return; }
    tag=TFPrefix()+tag;
 
    MqlTick q; if(!SymbolInfoTick(_Symbol,q)){ Log("ORDER_FAIL","no current tick"); return; }
@@ -400,7 +435,8 @@ int OnInit()
    hBB20=iBands(_Symbol,Timeframe,20,0,2.0,PRICE_CLOSE);
    hBB4 =iBands(_Symbol,Timeframe,4,0,4.0,PRICE_OPEN);
    hStoch=iStochastic(_Symbol,Timeframe,StochK_Period,StochD_Period,StochSlowing,MODE_LWMA,STO_LOWHIGH);
-   if(hBB20==INVALID_HANDLE || hBB4==INVALID_HANDLE || hStoch==INVALID_HANDLE) return INIT_FAILED;
+   hADX=iADX(_Symbol,TrendFilterTimeframe,ADXPeriod);
+   if(hBB20==INVALID_HANDLE || hBB4==INVALID_HANDLE || hStoch==INVALID_HANDLE || hADX==INVALID_HANDLE) return INIT_FAILED;
 
    f_log=FileOpen("XAU_M2_BB_LIVE_001_STOCH_v2_LOG.csv",FILE_READ|FILE_WRITE|FILE_CSV|FILE_ANSI|FILE_SHARE_READ,',');
    if(f_log!=INVALID_HANDLE)
@@ -422,6 +458,9 @@ int OnInit()
        " | AsiaWindow="+IntegerToString(AsiaSessionStartHour)+"-"+IntegerToString(AsiaSessionEndHour)+"KST"+
        " | ReverseTrendBearAsiaSession="+(ReverseTrendBearAsiaSession?"true":"false")+
        " | MaxMinutesWithoutProgress="+IntegerToString(MaxMinutesWithoutProgress)+
+       " | UseTrendFilter="+(UseTrendFilter?"true":"false")+
+       " | TrendFilterTF="+EnumToString(TrendFilterTimeframe)+" ADXPeriod="+IntegerToString(ADXPeriod)+
+       " ADXThreshold="+DoubleToString(ADXThreshold,1)+
        " | Lots="+DoubleToString(Lots,2)+" | Magic="+IntegerToString((int)MagicNumber)+
        " | orders="+(EnableLiveOrders?"ENABLED":"DRY"));
    return INIT_SUCCEEDED;
@@ -433,6 +472,7 @@ void OnDeinit(const int reason)
    if(hBB20!=INVALID_HANDLE) IndicatorRelease(hBB20);
    if(hBB4!=INVALID_HANDLE)  IndicatorRelease(hBB4);
    if(hStoch!=INVALID_HANDLE) IndicatorRelease(hStoch);
+   if(hADX!=INVALID_HANDLE) IndicatorRelease(hADX);
 }
 
 void OnTick()
