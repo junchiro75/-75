@@ -68,11 +68,19 @@
 //| hit SL, what fraction had an opposite signal candle appear before    |
 //| the loss" and "of trades where an opposite signal appeared, what     |
 //| fraction still hit TP anyway" straight from the CSV log.             |
-//| UseOppositeSignalExit (default false, UNTESTED): when true, ACTS on  |
-//| the same opposite-signal detection above by closing the open         |
-//| position at market immediately. Unlike the time-stop / MAE-%         |
-//| early exits (tested and rejected), this uses the same technical      |
-//| basis (BB breakout) the strategy already trades entries on.          |
+//| UseOppositeSignalExit (default false, UNTESTED as of the current      |
+//| reached75-gated form -- see the input's own comment): when true,     |
+//| ACTS on the opposite-signal detection above, but only once the       |
+//| position has ALSO reached 75% of SL_R, by closing it at market       |
+//| immediately. An earlier version acted on ANY opposite signal with    |
+//| no 75% gate and was ground-truth REJECTED (NET $17,746 -> $12,245,   |
+//| losses 218 -> 471) because it also cut ~131 shallow-pullback trades  |
+//| that had a 100% natural win rate. That test also exposed a same-tick |
+//| close+reopen logging race (fixed by moving tracking from single      |
+//| scalars to TRACK_SLOTS-indexed arrays keyed by ticket) -- the CSV    |
+//| had silently dropped 349 trade outcomes, which is why the corrupted  |
+//| CSV first looked like a huge improvement before the official xlsx    |
+//| report was checked.                                                   |
 //+------------------------------------------------------------------+
 #property strict
 #include <Trade/Trade.mqh>
@@ -144,39 +152,57 @@ input int    ADXPeriod          = 14;    // standard ADX period
 input double ADXThreshold       = 25.0;  // ADX >= this is considered "trending" (standard convention); below
                                           // this the market is considered range-bound/no dominant trend
 
-input bool   UseOppositeSignalExit = false; // UNTESTED -- while holding a position, close it immediately at
-                                          // market if a NEW opposite-direction M2 signal candle (BB20/BB4
-                                          // breakout, same R filter as entries) appears -- regardless of what
-                                          // direction that new signal would itself trade (the stochastic
-                                          // fade/trend decision only matters for entries, not for this check).
-                                          // Rationale: unlike the time-stop or MAE-%-based early exits already
-                                          // tested and rejected, this uses the SAME technical basis (BB
-                                          // breakout) the strategy already trades on, so it may catch a
-                                          // genuine reversal earlier than waiting for price to travel deep into
-                                          // the stop. Default false reproduces existing behavior exactly.
+input bool   UseOppositeSignalExit = false; // UNTESTED -- while holding a position that has ALSO reached 75%
+                                          // of SL_R (the same danger threshold reached50/75 tracks), close it
+                                          // immediately at market if a NEW opposite-direction M2 signal candle
+                                          // (BB20/BB4 breakout, same R filter as entries) appears -- regardless
+                                          // of what direction that new signal would itself trade (the
+                                          // stochastic fade/trend decision only matters for entries, not for
+                                          // this check). A first version that closed on ANY opposite signal
+                                          // (no 75% requirement) was ground-truth backtested and REJECTED: NET
+                                          // fell from $17,746 to $12,245 because it also cut ~131 trades that
+                                          // had only a shallow pullback and would have gone on to hit TP anyway
+                                          // (that subgroup's natural win rate was 100%). Requiring reached75
+                                          // first is meant to keep those safe, and only cut the trades already
+                                          // known to be in the 26%-win-rate danger zone. Default false
+                                          // reproduces existing behavior exactly.
 
 int hBB20=INVALID_HANDLE,hBB4=INVALID_HANDLE,hStoch=INVALID_HANDLE,hADX=INVALID_HANDLE;
 datetime last_m2_bar=0;
 int f_log=INVALID_HANDLE;
 
-// -- MAE-milestone tracking (diagnostic only, no trading effect) -----------
-// Tracks, for the current open position, whether the adverse excursion has
-// crossed 50%/75% of the SL_R distance, and logs the eventual win/loss
-// outcome alongside those flags -- lets us answer "given a trade reached
-// 50%/75% of its stop, what fraction still won vs lost" from the CSV log,
-// which the MT5 Strategy Tester xlsx report does not expose per-trade.
-ulong  g_trackTicket=0;
-double g_trackEntry=0, g_trackR=0;
-int    g_trackDir=0;
-bool   g_reached50=false, g_reached75=false;
-string g_trackTag="";
+// -- MAE-milestone tracking (diagnostic only except UseOppositeSignalExit) --
+// Tracks, for open position(s), whether the adverse excursion has crossed
+// 50%/75% of the SL_R distance, and logs the eventual win/loss outcome
+// alongside those flags -- lets us answer "given a trade reached 50%/75% of
+// its stop, what fraction still won vs lost" from the CSV log, which the
+// MT5 Strategy Tester xlsx report does not expose per-trade.
+//
+// Kept as small parallel arrays (a slot per in-flight tracked position),
+// NOT a single set of scalars, because UseOppositeSignalExit can close a
+// position and OpenTrade() can open its replacement within the SAME
+// CheckNewM2Bar() call, before OnTradeTransaction's close notification for
+// the old ticket has been delivered -- with scalars, the new position's
+// StartMAETracking() call overwrote the old ticket's tracking data first,
+// so the old position's own MAE_OUTCOME line never got logged (confirmed:
+// 349 trades silently dropped from the CSV in one such backtest, all of
+// them opposite-signal-exit closes -- the official xlsx trade/loss counts
+// didn't match what the "corrupted" CSV appeared to show). Slots are found
+// by ticket, not by position/order, so a same-tick close+reopen can never
+// collide.
+#define TRACK_SLOTS 4
+ulong  g_trackTicket[TRACK_SLOTS];
+double g_trackEntry[TRACK_SLOTS], g_trackR[TRACK_SLOTS];
+int    g_trackDir[TRACK_SLOTS];
+bool   g_reached50[TRACK_SLOTS], g_reached75[TRACK_SLOTS];
+string g_trackTag[TRACK_SLOTS];
 
 // -- first-bar-after-entry direction (diagnostic only) ----------------------
 // Checks whether the very next M2 bar to close after entry moved WITH or
 // AGAINST the trade's direction -- tests the hypothesis that an immediate
 // opposite-direction bar predicts a one-way move into the stop.
-bool   g_waitingFirstBar=false;
-bool   g_firstBarKnown=false, g_firstBarOneWay=false;
+bool   g_waitingFirstBar[TRACK_SLOTS];
+bool   g_firstBarKnown[TRACK_SLOTS], g_firstBarOneWay[TRACK_SLOTS];
 
 // -- band-reentry tracking (diagnostic only) ---------------------------------
 // The entry signal is a BB20 breakout; this checks whether price later
@@ -185,80 +211,109 @@ bool   g_firstBarKnown=false, g_firstBarOneWay=false;
 // every tick (no waiting for a bar close), unlike the opposite-signal-candle
 // idea, which only fires on a full new breakout in the other direction and
 // would already be very late. Logged as its own milestone, and also cross-
-// referenced with reached50/75 on the outcome line, to test the hypothesis
-// that "band reentry ALONE" is noisy (many such trades still recover, same
-// as firstBarOneWay) but "band reentry AND deep MAE" together might be a
-// more reliable failure signal than either alone.
-double g_lastBandLevel=0;
-double g_trackBandLevel=0;
-bool   g_bandReentered=false;
+// referenced with reached50/75 on the outcome line. Ground-truth result:
+// bandReentry=true overlapped 100% with reached75=true, so it added no
+// separating power beyond MAE depth alone.
+double g_lastBandLevel=0; // transient handoff value, set right before OpenTrade()
+double g_trackBandLevel[TRACK_SLOTS];
+bool   g_bandReentered[TRACK_SLOTS];
 
 // -- opposite-signal tracking (diagnostic, always on; ACTS only if
-//    UseOppositeSignalExit=true) ------------------------------------------
+//    UseOppositeSignalExit=true AND reached75=true for that slot) ----------
 // Tracks whether a NEW opposite-direction M2 signal candle (same BB20/BB4
 // breakout + R filter used for entries) appeared at any point while the
-// current position was open. Logged regardless of UseOppositeSignalExit so
-// we can first ask "of trades that hit SL, what fraction had an opposite
-// signal candle appear before the loss" with zero trading effect, then
-// separately test the P&L impact of actually acting on it.
-bool   g_trackOppSignalSeen=false;
+// position was open. Logged regardless of UseOppositeSignalExit so we can
+// ask "of trades that hit SL, what fraction had an opposite signal candle
+// appear before the loss" and "of trades where it appeared, what fraction
+// still hit TP anyway" with zero trading effect. Ground truth: unconditional
+// opposite-signal exit (any occurrence) was net negative (NET $17,746 ->
+// $12,245) because it also cut ~131 trades that never got past a shallow
+// pullback and had a 100% natural win rate -- requiring reached75 too
+// targets only the already-known 26%-win-rate danger zone instead.
+bool   g_trackOppSignalSeen[TRACK_SLOTS];
+
+int FindTrackSlot(ulong ticket)
+{
+   for(int i=0;i<TRACK_SLOTS;i++) if(g_trackTicket[i]==ticket) return i;
+   return -1;
+}
+
+int FindFreeTrackSlot()
+{
+   for(int i=0;i<TRACK_SLOTS;i++) if(g_trackTicket[i]==0) return i;
+   return -1;
+}
 
 void StartMAETracking(ulong ticket,double entry,double R,int dir,string tag)
 {
-   g_trackTicket=ticket; g_trackEntry=entry; g_trackR=R; g_trackDir=dir;
-   g_reached50=false; g_reached75=false; g_trackTag=tag;
-   g_waitingFirstBar=true; g_firstBarKnown=false; g_firstBarOneWay=false;
-   g_trackBandLevel=g_lastBandLevel; g_bandReentered=false;
-   g_trackOppSignalSeen=false;
+   int i=FindFreeTrackSlot();
+   if(i<0){ Log("TRACK_SLOTS_FULL","dropping MAE tracking for ticket="+IntegerToString((int)ticket)); return; }
+   g_trackTicket[i]=ticket; g_trackEntry[i]=entry; g_trackR[i]=R; g_trackDir[i]=dir;
+   g_reached50[i]=false; g_reached75[i]=false; g_trackTag[i]=tag;
+   g_waitingFirstBar[i]=true; g_firstBarKnown[i]=false; g_firstBarOneWay[i]=false;
+   g_trackBandLevel[i]=g_lastBandLevel; g_bandReentered[i]=false;
+   g_trackOppSignalSeen[i]=false;
 }
 
 // Called from CheckNewM2Bar with the new bar's raw breakout direction
 // (sigdir, before the stochastic fade/trend decision -- that decision only
 // matters for what a NEW entry would trade, not for detecting that the
-// opposite technical signal fired). If UseOppositeSignalExit is on, also
-// closes the open position at market right away.
+// opposite technical signal fired). If UseOppositeSignalExit is on AND the
+// slot has already reached 75% of SL, also closes the position at market.
 void CheckOppositeSignal(int sigdir)
 {
-   if(g_trackTicket==0 || sigdir==0) return;
-   if(sigdir!=-g_trackDir) return; // only the OPPOSITE of our position's direction counts
-
-   if(!g_trackOppSignalSeen)
+   if(sigdir==0) return;
+   for(int i=0;i<TRACK_SLOTS;i++)
    {
-      g_trackOppSignalSeen=true;
-      Log("MAE_MILESTONE","opposite signal candle appeared | "+g_trackTag);
-   }
+      if(g_trackTicket[i]==0) continue;
+      if(sigdir!=-g_trackDir[i]) continue; // only the OPPOSITE of the position's direction counts
 
-   if(!UseOppositeSignalExit) return;
-   if(!PositionSelectByTicket(g_trackTicket)) return; // already closed
+      if(!g_trackOppSignalSeen[i])
+      {
+         g_trackOppSignalSeen[i]=true;
+         Log("MAE_MILESTONE","opposite signal candle appeared | "+g_trackTag[i]);
+      }
 
-   double profit=PositionGetDouble(POSITION_PROFIT);
-   if(!EnableLiveOrders)
-   {
-      Log("OPP_SIGNAL_EXIT_DRY","ticket="+IntegerToString((int)g_trackTicket)+" profit="+DoubleToString(profit,2)+
-          " (would close, EnableLiveOrders=false) | "+g_trackTag);
-      return;
+      if(!UseOppositeSignalExit) continue;
+      if(!g_reached75[i]) continue; // only act in the already-known danger zone (see input comment)
+      if(!PositionSelectByTicket(g_trackTicket[i])) continue; // already closed
+
+      double profit=PositionGetDouble(POSITION_PROFIT);
+      if(!EnableLiveOrders)
+      {
+         Log("OPP_SIGNAL_EXIT_DRY","ticket="+IntegerToString((int)g_trackTicket[i])+" profit="+DoubleToString(profit,2)+
+             " (would close, EnableLiveOrders=false) | "+g_trackTag[i]);
+         continue;
+      }
+      if(trade.PositionClose(g_trackTicket[i]))
+         Log("OPP_SIGNAL_EXIT_CLOSE","ticket="+IntegerToString((int)g_trackTicket[i])+" profit="+DoubleToString(profit,2)+
+             " | "+g_trackTag[i]);
+      else
+         Log("OPP_SIGNAL_EXIT_FAIL",IntegerToString((int)trade.ResultRetcode())+" | "+trade.ResultRetcodeDescription());
    }
-   if(trade.PositionClose(g_trackTicket))
-      Log("OPP_SIGNAL_EXIT_CLOSE","ticket="+IntegerToString((int)g_trackTicket)+" profit="+DoubleToString(profit,2)+
-          " | "+g_trackTag);
-   else
-      Log("OPP_SIGNAL_EXIT_FAIL",IntegerToString((int)trade.ResultRetcode())+" | "+trade.ResultRetcodeDescription());
 }
 
 void CheckMAEProgress()
 {
-   if(g_trackTicket==0) return;
-   if(!PositionSelectByTicket(g_trackTicket)) return; // closed; OnTradeTransaction logs the outcome
+   bool anyActive=false;
+   for(int i=0;i<TRACK_SLOTS;i++) if(g_trackTicket[i]!=0){ anyActive=true; break; }
+   if(!anyActive) return;
    MqlTick q; if(!SymbolInfoTick(_Symbol,q)) return;
-   double adverseR=(g_trackDir==+1) ? (g_trackEntry-q.bid)/g_trackR : (q.ask-g_trackEntry)/g_trackR;
-   double frac=adverseR/SL_R;
-   if(frac>=0.5  && !g_reached50){ g_reached50=true; Log("MAE_MILESTONE","50% of SL reached | "+g_trackTag); }
-   if(frac>=0.75 && !g_reached75){ g_reached75=true; Log("MAE_MILESTONE","75% of SL reached | "+g_trackTag); }
 
-   if(!g_bandReentered && g_trackBandLevel!=0)
+   for(int i=0;i<TRACK_SLOTS;i++)
    {
-      bool reentered=(g_trackDir==+1) ? (q.bid<g_trackBandLevel) : (q.ask>g_trackBandLevel);
-      if(reentered){ g_bandReentered=true; Log("MAE_MILESTONE","band reentry (breakout failed) | "+g_trackTag); }
+      if(g_trackTicket[i]==0) continue;
+      if(!PositionSelectByTicket(g_trackTicket[i])) continue; // closed; OnTradeTransaction logs the outcome
+      double adverseR=(g_trackDir[i]==+1) ? (g_trackEntry[i]-q.bid)/g_trackR[i] : (q.ask-g_trackEntry[i])/g_trackR[i];
+      double frac=adverseR/SL_R;
+      if(frac>=0.5  && !g_reached50[i]){ g_reached50[i]=true; Log("MAE_MILESTONE","50% of SL reached | "+g_trackTag[i]); }
+      if(frac>=0.75 && !g_reached75[i]){ g_reached75[i]=true; Log("MAE_MILESTONE","75% of SL reached | "+g_trackTag[i]); }
+
+      if(!g_bandReentered[i] && g_trackBandLevel[i]!=0)
+      {
+         bool reentered=(g_trackDir[i]==+1) ? (q.bid<g_trackBandLevel[i]) : (q.ask>g_trackBandLevel[i]);
+         if(reentered){ g_bandReentered[i]=true; Log("MAE_MILESTONE","band reentry (breakout failed) | "+g_trackTag[i]); }
+      }
    }
 }
 
@@ -452,16 +507,17 @@ void CheckNewM2Bar()
    datetime sig=iTime(_Symbol,Timeframe,1);
    if(sig==0){ Log("BAR_DATA_FAIL","iTime(1) returned 0"); return; }
 
-   if(g_waitingFirstBar)
+   for(int i=0;i<TRACK_SLOTS;i++)
    {
+      if(!g_waitingFirstBar[i]) continue;
       // "one-way against": price never moved favorably by even 1 point during
       // this bar -- for a BUY, the bar's high never exceeded the entry price;
       // for a SELL, the bar's low never went below it. Uses h/l (the bar's
       // extremes), not open/close, since a bar can close red while still
       // having ticked favorably first.
-      g_firstBarOneWay=(g_trackDir==+1) ? (h<=g_trackEntry) : (l>=g_trackEntry);
-      g_firstBarKnown=true;
-      g_waitingFirstBar=false;
+      g_firstBarOneWay[i]=(g_trackDir[i]==+1) ? (h<=g_trackEntry[i]) : (l>=g_trackEntry[i]);
+      g_firstBarKnown[i]=true;
+      g_waitingFirstBar[i]=false;
    }
 
    double up20[1],lo20[1],up4[1],lo4[1];
@@ -583,23 +639,25 @@ void OnTick()
 
 void OnTradeTransaction(const MqlTradeTransaction &trans,const MqlTradeRequest &request,const MqlTradeResult &result)
 {
-   if(g_trackTicket==0) return;
    if(trans.type!=TRADE_TRANSACTION_DEAL_ADD) return;
    if(!HistoryDealSelect(trans.deal)) return;
    if((ulong)HistoryDealGetInteger(trans.deal,DEAL_MAGIC)!=MagicNumber) return;
    if(HistoryDealGetString(trans.deal,DEAL_SYMBOL)!=_Symbol) return;
    if((long)HistoryDealGetInteger(trans.deal,DEAL_ENTRY)!=DEAL_ENTRY_OUT) return;
-   if((ulong)HistoryDealGetInteger(trans.deal,DEAL_POSITION_ID)!=g_trackTicket) return;
+
+   ulong posId=(ulong)HistoryDealGetInteger(trans.deal,DEAL_POSITION_ID);
+   int i=FindTrackSlot(posId);
+   if(i<0) return; // not a ticket we're tracking (or already logged)
 
    double profit=HistoryDealGetDouble(trans.deal,DEAL_PROFIT)+HistoryDealGetDouble(trans.deal,DEAL_SWAP);
    string outcome=(profit>0?"WIN":"LOSS");
-   string firstBarStr=(!g_firstBarKnown ? "unknown" : (g_firstBarOneWay?"true":"false"));
-   string bandStr=(g_trackBandLevel==0 ? "n/a(fade)" : (g_bandReentered?"true":"false"));
+   string firstBarStr=(!g_firstBarKnown[i] ? "unknown" : (g_firstBarOneWay[i]?"true":"false"));
+   string bandStr=(g_trackBandLevel[i]==0 ? "n/a(fade)" : (g_bandReentered[i]?"true":"false"));
    Log("MAE_OUTCOME","outcome="+outcome+" profit="+DoubleToString(profit,2)+
-       " reached50="+(g_reached50?"true":"false")+" reached75="+(g_reached75?"true":"false")+
+       " reached50="+(g_reached50[i]?"true":"false")+" reached75="+(g_reached75[i]?"true":"false")+
        " firstBarOneWay="+firstBarStr+" bandReentry="+bandStr+
-       " oppSignalSeen="+(g_trackOppSignalSeen?"true":"false")+" | "+g_trackTag);
-   g_trackTicket=0;
-   g_waitingFirstBar=false;
+       " oppSignalSeen="+(g_trackOppSignalSeen[i]?"true":"false")+" | "+g_trackTag[i]);
+   g_trackTicket[i]=0; // free slot
+   g_waitingFirstBar[i]=false;
 }
 //+------------------------------------------------------------------+
