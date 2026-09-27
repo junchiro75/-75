@@ -112,6 +112,23 @@
 //| against the real trade's own MAE_OUTCOME on trades that did place an   |
 //| order -- both logged with the same TimeCurrent() timestamp and the     |
 //| same signal candle, so they join directly in the CSV.                 |
+//| Ground truth on the slope hypothesis (IgnoreStochastic + cross-        |
+//| referencing SLOPE_CALC against real outcomes): Stochastic itself       |
+//| turned out to matter mostly for tail-risk control, not raw win rate    |
+//| (IgnoreStochastic=true kept win rate at 89.26% vs baseline 90.93%, but |
+//| NET fell 67% and max holding time went from ~30h to ~132h). MA slope   |
+//| does NOT reproduce that role: within TREND-decided trades, FLAT vs     |
+//| STEEP win rates were statistically indistinguishable (~91% both), and  |
+//| skipping TREND+FLAT entirely would forfeit 763 wins to avoid only 74    |
+//| losses (net +47R cost) -- rejected as a Stochastic substitute/filter.  |
+//| CIRCUIT_BREAKER_TRIGGERED / CIRCUIT_BREAKER_(WOULD_)SKIP (diagnostic   |
+//| always on; UseCircuitBreaker ACTS): after CircuitBreakerLossCount      |
+//| consecutive LOSS outcomes (any tag), pauses new entries for            |
+//| CircuitBreakerCooldownHours, on the theory that a losing streak may    |
+//| flag a temporarily bad regime rather than being pure noise -- a        |
+//| different mechanism from every previously-tested idea, which all       |
+//| acted on individual trades rather than withholding entries during a    |
+//| bad stretch. UNTESTED as a live rule.                                  |
 //+------------------------------------------------------------------+
 #property strict
 #include <Trade/Trade.mqh>
@@ -215,9 +232,27 @@ input bool   IgnoreStochastic   = false; // UNTESTED -- bypasses the Stochastic 
                                           // "does 001 still win >90% without the Stochastic filter at all."
                                           // Default false reproduces existing behavior exactly.
 
+input int    CircuitBreakerLossCount    = 2;    // consecutive LOSS outcomes (any tag) that trigger a pause.
+input double CircuitBreakerCooldownHours = 6.0; // how long new entries are paused for once triggered.
+input bool   UseCircuitBreaker  = false; // UNTESTED -- when true, ACTUALLY skips new entries while the
+                                          // cooldown is active. Regardless of this flag, every would-be-
+                                          // skipped entry is logged as CIRCUIT_BREAKER_WOULD_SKIP so the
+                                          // trigger frequency and cooldown overlap can be measured with zero
+                                          // trading effect first. Unlike the MAE-side/opposite-signal exits
+                                          // (all rejected), this doesn't touch any open position -- it only
+                                          // withholds NEW entries during a losing streak, on the theory that a
+                                          // string of losses may signal a temporarily bad regime rather than
+                                          // being pure noise. Default false reproduces existing behavior
+                                          // exactly.
+
 int hBB20=INVALID_HANDLE,hBB4=INVALID_HANDLE,hStoch=INVALID_HANDLE,hADX=INVALID_HANDLE;
 datetime last_m2_bar=0;
 int f_log=INVALID_HANDLE;
+
+// -- consecutive-loss circuit breaker (diagnostic always on; ACTS only if
+//    UseCircuitBreaker=true) --------------------------------------------
+int      g_consecutiveLosses=0;
+datetime g_breakerActiveUntil=0;
 
 // -- MAE-milestone tracking (diagnostic only except UseOppositeSignalExit) --
 // Tracks, for open position(s), whether the adverse excursion has crossed
@@ -562,6 +597,12 @@ void OpenTrade(int dir,double R,string tag)
 {
    if(HasOurPosition()){ Log("ENTRY_SKIPPED","own-Magic position already exists"); return; }
    if(OpposingTrendTooStrong(dir)){ Log("ENTRY_SKIPPED","opposing trend too strong (ADX filter) | "+tag); return; }
+   if(TimeCurrent()<g_breakerActiveUntil)
+   {
+      Log(UseCircuitBreaker?"CIRCUIT_BREAKER_SKIP":"CIRCUIT_BREAKER_WOULD_SKIP",
+          "until="+TS(g_breakerActiveUntil)+" | "+tag);
+      if(UseCircuitBreaker) return;
+   }
    tag=TFPrefix()+tag;
 
    MqlTick q; if(!SymbolInfoTick(_Symbol,q)){ Log("ORDER_FAIL","no current tick"); return; }
@@ -798,6 +839,9 @@ int OnInit()
        " | SlopeLookbackBars="+IntegerToString(SlopeLookbackBars)+" SlopeThresholdDeg="+DoubleToString(SlopeThresholdDeg,1)+
        " SlopeSimTargetR="+DoubleToString(SlopeSimTargetR,2)+" SlopeSimExpiryHours="+DoubleToString(SlopeSimExpiryHours,1)+
        " | IgnoreStochastic="+(IgnoreStochastic?"true":"false")+
+       " | CircuitBreakerLossCount="+IntegerToString(CircuitBreakerLossCount)+
+       " CircuitBreakerCooldownHours="+DoubleToString(CircuitBreakerCooldownHours,1)+
+       " UseCircuitBreaker="+(UseCircuitBreaker?"true":"false")+
        " | Lots="+DoubleToString(Lots,2)+" | Magic="+IntegerToString((int)MagicNumber)+
        " | orders="+(EnableLiveOrders?"ENABLED":"DRY"));
    return INIT_SUCCEEDED;
@@ -851,5 +895,19 @@ void OnTradeTransaction(const MqlTradeTransaction &trans,const MqlTradeRequest &
        " | "+g_trackTag[i]);
    g_trackTicket[i]=0; // free slot
    g_waitingFirstBar[i]=false;
+
+   if(outcome=="LOSS")
+   {
+      g_consecutiveLosses++;
+      if(g_consecutiveLosses>=CircuitBreakerLossCount)
+      {
+         g_breakerActiveUntil=TimeCurrent()+(datetime)(CircuitBreakerCooldownHours*3600);
+         Log("CIRCUIT_BREAKER_TRIGGERED","consecutiveLosses="+IntegerToString(g_consecutiveLosses)+
+             " cooldownUntil="+TS(g_breakerActiveUntil));
+         g_consecutiveLosses=0; // require a fresh streak to trigger again after this cooldown
+      }
+   }
+   else
+      g_consecutiveLosses=0;
 }
 //+------------------------------------------------------------------+
