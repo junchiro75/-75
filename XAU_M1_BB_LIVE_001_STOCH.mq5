@@ -37,9 +37,10 @@
 //| MT5 Optimizer, Recovery Factor max, same procedure as M2/M3):       |
 //| StochK_Period 16->17 (genuine 2-point plateau), StochOversold       |
 //| 30->25, StochOverbought unchanged (confirmed dead parameter here -- |
-//| see its own input comment), MinR_Points unchanged at 400. Ground-   |
-//| truth confirmed NET $17,285.37 -> $19,734.96; full PF/RF/DD pending |
-//| a final single-test confirmation run.                               |
+//| see its own input comment), MinR_Points unchanged at 400, SL_R      |
+//| confirmed at 5.0 (M1-specific -- M2/M3 use 4.0). Ground-truth       |
+//| confirmed result: NET $17,285.37 -> $19,734.96, PF 1.358, Recovery  |
+//| Factor 7.336, WR 93.58%, MaxDD 2.19%/2.63%.                          |
 //+------------------------------------------------------------------+
 #property strict
 #include <Trade/Trade.mqh>
@@ -55,7 +56,7 @@ input double StochOverbought    = 70.0; // DEAD PARAMETER on M1: AllowSellFade=f
                                          // branches entirely, so this value has zero effect (confirmed:
                                          // 7 different thresholds gave byte-identical backtest results)
 input double StochOversold      = 25.0; // re-optimized from 30.0 -- see header for ground-truth numbers
-input double SL_R               = 4.0;
+input double SL_R               = 5.0;  // M1-specific value (M2/M3 use 4.0) -- see header
 input double TP_R               = 0.45;
 input double MinR_Points        = 400;  // skip signal if R (=|close-open| of the M1 signal candle, in
                                          // points) is below this. 0 = no filter.
