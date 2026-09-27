@@ -203,7 +203,7 @@ input int    SlopeLookbackBars  = 5;     // DIAGNOSTIC ONLY, no trading effect -
 input double SlopeThresholdDeg  = 20.0;  // |slope| in a normalized pseudo-angle (see SLOPE_CALC log comment)
                                           // at or below this is classified FLAT; above it, STEEP.
 input double SlopeSimTargetR    = 0.5;   // R-multiple target used for the slope-hypothesis forward simulation.
-input double SlopeSimExpiryHours = 48.0; // give up waiting for the target after this many hours and log
+input double SlopeSimExpiryHours = 6.0;  // give up waiting for the target after this many hours and log
                                           // whatever hit/miss state the simulation is in at that point.
 
 int hBB20=INVALID_HANDLE,hBB4=INVALID_HANDLE,hStoch=INVALID_HANDLE,hADX=INVALID_HANDLE;
