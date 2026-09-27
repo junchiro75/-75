@@ -1,0 +1,16 @@
+Timeframe=3
+Lots=0.1
+StochK_Period=14
+StochD_Period=3
+StochSlowing=3
+StochOverbought=70.0
+StochOversold=25.0
+SL_R=4.0
+TP_R=0.45
+MinR_Points=900
+MagicNumber=95016103
+MaxDeviationPts=50
+EnableLiveOrders=true
+AllowSellFade=false
+TrendBearEuropeOnly=true
+ReverseTrendBearOutsideEurope=false

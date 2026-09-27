@@ -26,8 +26,11 @@
 //| case is the ONE structurally losing direction (PF 0.88, -$4,848),  |
 //| consistent with gold's persistent uptrend bias found elsewhere in  |
 //| this project (005's own SELL-disable finding). The other three    |
-//| cases were all net profitable (combined +$15,050). Default true   |
-//| reproduces V1 exactly; set false to skip that one case entirely.  |
+//| cases were all net profitable (combined +$15,050). Confirmed      |
+//| default is now false (skips that case); set true to reproduce V1  |
+//| exactly. SL_R/TP_R defaults were also corrected from a stale       |
+//| 1.0/0.5 to the confirmed 4.0/0.45 used in every backtest referenced|
+//| throughout this file's header.                                     |
 //| _v2 build: same logic as the live XAU_M2_BB_STOCH_V2 EA this      |
 //| replaces, plus diagnostic logging on previously-silent failure    |
 //| paths in CheckNewM2Bar() (BAR_DATA_FAIL / COPYBUFFER_FAIL) to      |
@@ -147,15 +150,16 @@ input int    StochD_Period      = 3;
 input int    StochSlowing       = 3;
 input double StochOverbought    = 85.0; // re-optimized from 70.0 -- see header for ground-truth numbers
 input double StochOversold      = 30.0; // unchanged -- clean unimodal peak already at 30
-input double SL_R               = 1.0;
-input double TP_R               = 0.5;
+input double SL_R               = 4.0;  // was a stale unsynced 1.0 -- see header
+input double TP_R               = 0.45; // was a stale unsynced 0.5 -- see header
 input double MinR_Points        = 350;  // re-optimized from 400 -- skip signal if R (=|close-open| of
                                          // the M2 signal candle, in points) is below this. 0 = no filter.
 input ulong  MagicNumber        = 95016101;
 input int    MaxDeviationPts    = 50;
 input bool   EnableLiveOrders   = false; // SAFETY: set true only after checks
-input bool   AllowSellFade      = true;  // false = skip the bull+overbought SELL-fade case entirely
-                                          // (ground-truth backtest showed this is the one losing direction)
+input bool   AllowSellFade      = false; // confirmed default (was a stale unsynced true) -- ground-truth
+                                          // backtest showed this is the one structurally losing direction
+                                          // (PF 0.88, -$4,848); set true only to reproduce old V1 behavior
 input bool   SkipTrendBearAsiaSession = true; // A session breakdown (2025.01-2026.09) found STOCH_TREND_BEAR
                                           // is a structural loser specifically during the Asia session
                                           // (06:00-16:00 Korea time -> PF 0.822, -$1,480.89 over 243 trades),
