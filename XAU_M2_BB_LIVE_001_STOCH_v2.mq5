@@ -158,6 +158,16 @@
 //| capped at ~$0 instead). Given SL_R is roughly 9-11x TP_R here, this     |
 //| rule is net positive only if the recovered-WIN fraction among retraced  |
 //| trades is well below roughly TP_R/(TP_R+SL_R). UNTESTED as a live rule. |
+//| Ground truth: rejected -- 90.6% of trades that retraced to breakeven    |
+//| after triggering still recovered to a WIN, ~9x above the ~10.1%        |
+//| breakeven threshold; going live would have cost the +$5,253 this       |
+//| bucket actually made. Diagnostic-only, kept off (UseBreakevenStop=false)|
+//| SIGNAL's touch=BODY/WICK and MAE_OUTCOME's touch= (diagnostic only, no  |
+//| trading effect): the entry condition only requires the signal candle's |
+//| high/low (wick) to reach BB20; this additionally checks whether the    |
+//| CLOSE (body) also broke the band ("BODY") vs wicked through and closed |
+//| back inside ("WICK") -- tests whether a body break (more conviction)   |
+//| behaves differently from a rejection wick.                             |
 //+------------------------------------------------------------------+
 #property strict
 #include <Trade/Trade.mqh>
@@ -339,6 +349,14 @@ double g_lastBandLevel=0; // transient handoff value, set right before OpenTrade
 double g_trackBandLevel[TRACK_SLOTS];
 bool   g_bandReentered[TRACK_SLOTS];
 
+// -- BODY vs WICK touch tracking (diagnostic only, no trading effect) -------
+// Tests whether a signal candle whose CLOSE also broke the band ("BODY")
+// behaves differently from one where only the high/low wicked through it
+// while closing back inside ("WICK") -- a body break arguably shows more
+// conviction/follow-through than a rejection wick.
+bool   g_lastBodyTouch=true; // transient handoff value, set right before OpenTrade()
+bool   g_trackBodyTouch[TRACK_SLOTS];
+
 // -- opposite-signal tracking (diagnostic, always on; ACTS only if
 //    UseOppositeSignalExit=true AND reached75=true for that slot) ----------
 // Tracks whether a NEW opposite-direction M2 signal candle (same BB20/BB4
@@ -445,6 +463,7 @@ void StartMAETracking(ulong ticket,double entry,double R,int dir,string tag)
    g_trackOppSignalSeen[i]=false;
    g_reachedFav50[i]=false; g_reachedFav75[i]=false; g_reachedFav90[i]=false;
    g_beTriggered[i]=false; g_beRetraced[i]=false; g_beMoved[i]=false;
+   g_trackBodyTouch[i]=g_lastBodyTouch;
 }
 
 // Called from CheckNewM2Bar with the new bar's raw breakout direction
@@ -765,6 +784,12 @@ void CheckNewM2Bar()
    else if(c<o && l<=lo20[0] && l<=lo4[0]) sigdir=-1; // bear (down) signal candle
    if(sigdir==0) return;
 
+   // BODY vs WICK touch (diagnostic): the entry condition above only requires
+   // the candle's high/low (wick) to reach BB20 -- this checks whether the
+   // CLOSE (body) also closed beyond BB20, i.e. a "real" break vs a rejection
+   // wick that poked through and closed back inside.
+   bool bodyTouch=(sigdir==+1) ? (c>=up20[0]) : (c<=lo20[0]);
+
    double R=MathAbs(c-o);
    double minR=MathMax(_Point,MinR_Points*_Point);
    if(R<=minR){ Log("SIGNAL_SKIPPED","R too small"); return; }
@@ -869,9 +894,11 @@ void CheckNewM2Bar()
    // toward/across that same band is the EXPECTED favorable direction, not
    // a failure signal, so disable the check there (0 = disabled).
    g_lastBandLevel=(dir==sigdir) ? (sigdir==+1 ? up20[0] : lo20[0]) : 0;
+   g_lastBodyTouch=bodyTouch;
 
    Log("SIGNAL",(sigdir==1?"BULL":"BEAR")+" candle | stochK="+DoubleToString(stochK,2)+
-       " | R="+DoubleToString(R,_Digits)+" | decided dir="+(dir==1?"BUY":"SELL")+" | "+tag);
+       " | R="+DoubleToString(R,_Digits)+" | touch="+(bodyTouch?"BODY":"WICK")+
+       " | decided dir="+(dir==1?"BUY":"SELL")+" | "+tag);
    OpenTrade(dir,R,tag);
 }
 
@@ -968,6 +995,7 @@ void OnTradeTransaction(const MqlTradeTransaction &trans,const MqlTradeRequest &
        " beTriggered="+(g_beTriggered[i]?"true":"false")+
        " beRetraced="+(g_beRetraced[i]?"true":"false")+
        " beMoved="+(g_beMoved[i]?"true":"false")+
+       " touch="+(g_trackBodyTouch[i]?"BODY":"WICK")+
        " | "+g_trackTag[i]);
    g_trackTicket[i]=0; // free slot
    g_waitingFirstBar[i]=false;
