@@ -652,23 +652,43 @@ void CheckNewM2Bar()
 
    // -- MA-slope hypothesis (diagnostic only, no trading effect) --------------
    // See header comment for the exact pseudo-angle definition and rationale.
-   double maNow[1],maPrev[1];
-   int rSlope1=CopyBuffer(hBB20,0,1,1,maNow);
-   int rSlope2=CopyBuffer(hBB20,0,1+SlopeLookbackBars,1,maPrev);
-   if(rSlope1==1 && rSlope2==1)
+   // Also computes the same pseudo-angle at fixed 2/3-bar lookbacks alongside
+   // the configurable SlopeLookbackBars one, so a single backtest can compare
+   // which lookback best separates eventual win/loss without re-running --
+   // the user's own chart-watching suggests a short lookback (2-3 bars right
+   // at the signal candle) may match what they see as "flat" better than a
+   // longer one.
+   double maNow[1];
+   int rNow=CopyBuffer(hBB20,0,1,1,maNow);
+   if(rNow==1)
    {
-      double slopeNorm=(maNow[0]-maPrev[0])/(SlopeLookbackBars*R);
-      double slopeDeg=MathArctan(slopeNorm)*180.0/M_PI;
-      bool   flat=(MathAbs(slopeDeg)<=SlopeThresholdDeg);
-      int    slopeDir=flat ? -sigdir : sigdir; // FLAT=fade the breakout, STEEP=follow it
-      string slopeClass=flat?"FLAT":"STEEP";
-      string slopeTag=(sigdir==1?"BULL":"BEAR")+string("_")+slopeClass;
-      Log("SLOPE_CALC","sigdir="+(sigdir==1?"BULL":"BEAR")+" slopeDeg="+DoubleToString(slopeDeg,2)+
-          " class="+slopeClass+" hypDir="+(slopeDir==1?"BUY":"SELL"));
-      MqlTick sq; if(SymbolInfoTick(_Symbol,sq)) StartSlopeSim((sq.bid+sq.ask)/2.0,R,slopeDir,slopeDeg,slopeTag);
+      double maPrev2[1],maPrev3[1],maPrev5[1],maPrevCfg[1];
+      int r2=CopyBuffer(hBB20,0,1+2,1,maPrev2);
+      int r3=CopyBuffer(hBB20,0,1+3,1,maPrev3);
+      int r5=CopyBuffer(hBB20,0,1+5,1,maPrev5);
+      int rCfg=CopyBuffer(hBB20,0,1+SlopeLookbackBars,1,maPrevCfg);
+      double deg2=(r2==1) ? MathArctan((maNow[0]-maPrev2[0])/(2*R))*180.0/M_PI : 0;
+      double deg3=(r3==1) ? MathArctan((maNow[0]-maPrev3[0])/(3*R))*180.0/M_PI : 0;
+      double deg5=(r5==1) ? MathArctan((maNow[0]-maPrev5[0])/(5*R))*180.0/M_PI : 0;
+
+      if(rCfg==1)
+      {
+         double slopeNorm=(maNow[0]-maPrevCfg[0])/(SlopeLookbackBars*R);
+         double slopeDeg=MathArctan(slopeNorm)*180.0/M_PI;
+         bool   flat=(MathAbs(slopeDeg)<=SlopeThresholdDeg);
+         int    slopeDir=flat ? -sigdir : sigdir; // FLAT=fade the breakout, STEEP=follow it
+         string slopeClass=flat?"FLAT":"STEEP";
+         string slopeTag=(sigdir==1?"BULL":"BEAR")+string("_")+slopeClass;
+         Log("SLOPE_CALC","sigdir="+(sigdir==1?"BULL":"BEAR")+" slopeDeg="+DoubleToString(slopeDeg,2)+
+             " class="+slopeClass+" hypDir="+(slopeDir==1?"BUY":"SELL")+
+             " deg2="+DoubleToString(deg2,2)+" deg3="+DoubleToString(deg3,2)+" deg5="+DoubleToString(deg5,2));
+         MqlTick sq; if(SymbolInfoTick(_Symbol,sq)) StartSlopeSim((sq.bid+sq.ask)/2.0,R,slopeDir,slopeDeg,slopeTag);
+      }
+      else
+         Log("SLOPE_CALC_FAIL","BB20 basis (configured lookback) CopyBuffer failed");
    }
    else
-      Log("SLOPE_CALC_FAIL","BB20 basis CopyBuffer failed");
+      Log("SLOPE_CALC_FAIL","BB20 basis (now) CopyBuffer failed");
 
    double kbuf[1];
    if(CopyBuffer(hStoch,0,1,1,kbuf)!=1){ Log("STOCH_FAIL","no stochastic value"); return; }
