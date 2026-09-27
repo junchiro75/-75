@@ -14,3 +14,4 @@ EnableLiveOrders=true
 AllowSellFade=false
 TrendBearEuropeOnly=true
 ReverseTrendBearOutsideEurope=false
+SkipFadeBearOSWickTouch=true

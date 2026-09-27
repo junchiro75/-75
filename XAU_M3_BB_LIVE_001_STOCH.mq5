@@ -46,12 +46,12 @@
 //| NET $12,831 -> $16,700.99 (+30.2%), PF 1.411 -> 1.818, Recovery     |
 //| Factor 3.43 -> 6.888, WR 92.23% -> 93.86%, MaxDD 3.53%/3.62% ->     |
 //| 1.58%/2.27%.                                                        |
-//| SkipFadeBearOSWickTouch (UNTESTED here): every signal's tag now     |
-//| carries _BODY/_WICK depending on whether the CLOSE also broke BB20  |
-//| or only the high/low wicked through it. Confirmed on M2_v2 (NET     |
-//| +5.5%, PF/RF/WR all improved, DD unchanged) by isolating the ONE    |
-//| tag x touch combination that was net negative (FADE_BEAR_OS+WICK).  |
-//| Needs its own backtest here before trusting the same default.      |
+//| SkipFadeBearOSWickTouch: every signal's tag now carries _BODY/_WICK |
+//| depending on whether the CLOSE also broke BB20 or only the high/low |
+//| wicked through it. CONFIRMED default=true: NET $16,700.99 ->        |
+//| $17,292.99 (+3.5%), PF 1.818 -> 1.934, Recovery Factor 6.888 ->      |
+//| 7.133, WR 93.86% -> 94.38%, DD essentially unchanged -- same pattern |
+//| as M2_v2/M1.                                                         |
 //+------------------------------------------------------------------+
 #property strict
 #include <Trade/Trade.mqh>
@@ -93,13 +93,12 @@ input bool   ReverseTrendBearOutsideEurope = false; // UNTESTED -- instead of SK
                                           // distances are asymmetric and the intrabar price path matters),
                                           // so this needs its own backtest. Tagged
                                           // STOCH_TREND_BEAR_REV_NONEURO for tracking.
-input bool   SkipFadeBearOSWickTouch = false; // UNTESTED here (confirmed on M2_v2: NET +5.5%, PF/RF/WR all
-                                          // improved, DD unchanged) -- when true, skips FADE_BEAR_OS entries
-                                          // whose signal candle only wicked through BB20 without the close
-                                          // (body) also breaking it. Every trade's tag now carries _BODY/_WICK
-                                          // so the xlsx report's own comment column can confirm the same
-                                          // pattern here before trusting this default. Default false
-                                          // reproduces existing behavior exactly.
+input bool   SkipFadeBearOSWickTouch = true; // confirmed default (was UNTESTED=false) -- skips FADE_BEAR_OS
+                                          // entries whose signal candle only wicked through BB20 without the
+                                          // close (body) also breaking it. Ground-truth confirmed result: NET
+                                          // $16,700.99 -> $17,292.99 (+3.5%), PF 1.818 -> 1.934, Recovery
+                                          // Factor 6.888 -> 7.133, WR 93.86% -> 94.38%, DD essentially
+                                          // unchanged (~1.6%/2.3%) -- same pattern as M2_v2/M1.
 
 int hBB20=INVALID_HANDLE,hBB4=INVALID_HANDLE,hStoch=INVALID_HANDLE;
 datetime last_m3_bar=0;
