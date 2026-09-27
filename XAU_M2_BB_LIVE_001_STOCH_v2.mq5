@@ -89,6 +89,29 @@
 //| breakeven/lock-in rule near TP would be favorable. Unlike the MAE-side |
 //| cuts (all rejected), the asymmetry here should run the other way:      |
 //| giving up a small remaining slice of TP_R to avoid a full SL_R loss.   |
+//| SLOPE_CALC / SLOPE_SIM_OUTCOME (diagnostic only, no trading effect):   |
+//| tests the user's hypothesis that the 20-period MA's slope at a BB      |
+//| signal candle predicts whether the breakout continues (trade WITH the  |
+//| candle's direction) or fails (trade AGAINST it). MT5 has no native     |
+//| "MA angle" value -- a raw price-per-bar slope is meaningless without   |
+//| a scale, since the same slope looks like 5 degrees or 60 degrees       |
+//| depending on chart zoom -- so the angle here is a deliberately-defined |
+//| pseudo-angle, normalized by R (this strategy's own volatility unit),   |
+//| not a real chart angle: slopeDeg = arctan((MA[now]-MA[N bars ago]) /   |
+//| (N*R)) in degrees. |slopeDeg| <= SlopeThresholdDeg is classified FLAT  |
+//| (hypothesis: fade the breakout); above it, STEEP (hypothesis: follow   |
+//| the breakout). SLOPE_CALC logs this classification for EVERY signal    |
+//| candle regardless of whether Stochastic/session filters would trade    |
+//| it, so goal 1 (does the hypothesis alone reach SlopeSimTargetR) can be  |
+//| checked against the full signal population. A separate, independent   |
+//| forward simulation (its own tracking slots, no real order placed)      |
+//| checks whether price reaches SlopeSimTargetR (default 0.5R) in the     |
+//| slope-implied direction, logged as SLOPE_SIM_OUTCOME once it hits or   |
+//| SlopeSimExpiryHours elapses. Goal 2 (does adding this to the existing  |
+//| Stochastic decision help) is answered by cross-referencing SLOPE_CALC  |
+//| against the real trade's own MAE_OUTCOME on trades that did place an   |
+//| order -- both logged with the same TimeCurrent() timestamp and the     |
+//| same signal candle, so they join directly in the CSV.                 |
 //+------------------------------------------------------------------+
 #property strict
 #include <Trade/Trade.mqh>
@@ -175,6 +198,14 @@ input bool   UseOppositeSignalExit = false; // UNTESTED -- while holding a posit
                                           // known to be in the 26%-win-rate danger zone. Default false
                                           // reproduces existing behavior exactly.
 
+input int    SlopeLookbackBars  = 5;     // DIAGNOSTIC ONLY, no trading effect -- bars back to measure the
+                                          // BB20 basis-line (20-period MA) slope from, at each signal candle.
+input double SlopeThresholdDeg  = 20.0;  // |slope| in a normalized pseudo-angle (see SLOPE_CALC log comment)
+                                          // at or below this is classified FLAT; above it, STEEP.
+input double SlopeSimTargetR    = 0.5;   // R-multiple target used for the slope-hypothesis forward simulation.
+input double SlopeSimExpiryHours = 48.0; // give up waiting for the target after this many hours and log
+                                          // whatever hit/miss state the simulation is in at that point.
+
 int hBB20=INVALID_HANDLE,hBB4=INVALID_HANDLE,hStoch=INVALID_HANDLE,hADX=INVALID_HANDLE;
 datetime last_m2_bar=0;
 int f_log=INVALID_HANDLE;
@@ -254,6 +285,53 @@ bool   g_trackOppSignalSeen[TRACK_SLOTS];
 // favorable (small give-up vs a large avoided loss) -- the OPPOSITE
 // asymmetry from the MAE-side cuts already tested and rejected.
 bool   g_reachedFav50[TRACK_SLOTS], g_reachedFav75[TRACK_SLOTS], g_reachedFav90[TRACK_SLOTS];
+
+// -- MA-slope hypothesis simulation (diagnostic only, no trading effect,
+//    independent of TRACK_SLOTS/real positions -- see header comment) ------
+// One slot per signal candle (not per position), since this tests every
+// signal regardless of whether Stochastic/session filters would trade it.
+#define SLOPE_SLOTS 32
+bool     g_slopeActive[SLOPE_SLOTS];
+double   g_slopeEntry[SLOPE_SLOTS], g_slopeR[SLOPE_SLOTS];
+int      g_slopeDir[SLOPE_SLOTS];
+bool     g_slopeHit[SLOPE_SLOTS];
+datetime g_slopeStart[SLOPE_SLOTS];
+double   g_slopeDegVal[SLOPE_SLOTS];
+string   g_slopeTag[SLOPE_SLOTS];
+
+void StartSlopeSim(double entry,double R,int dir,double degVal,string tag)
+{
+   int i=-1;
+   for(int k=0;k<SLOPE_SLOTS;k++) if(!g_slopeActive[k]){ i=k; break; }
+   if(i<0){ Log("SLOPE_SLOTS_FULL","dropping slope simulation | "+tag); return; }
+   g_slopeActive[i]=true; g_slopeEntry[i]=entry; g_slopeR[i]=R; g_slopeDir[i]=dir;
+   g_slopeHit[i]=false; g_slopeStart[i]=TimeCurrent(); g_slopeDegVal[i]=degVal; g_slopeTag[i]=tag;
+}
+
+void CheckSlopeSims()
+{
+   bool anyActive=false;
+   for(int i=0;i<SLOPE_SLOTS;i++) if(g_slopeActive[i]){ anyActive=true; break; }
+   if(!anyActive) return;
+   MqlTick q; if(!SymbolInfoTick(_Symbol,q)) return;
+
+   for(int i=0;i<SLOPE_SLOTS;i++)
+   {
+      if(!g_slopeActive[i]) continue;
+      if(!g_slopeHit[i])
+      {
+         double favR=(g_slopeDir[i]==+1) ? (q.bid-g_slopeEntry[i])/g_slopeR[i] : (g_slopeEntry[i]-q.ask)/g_slopeR[i];
+         if(favR>=SlopeSimTargetR) g_slopeHit[i]=true;
+      }
+      double hoursElapsed=(double)(TimeCurrent()-g_slopeStart[i])/3600.0;
+      if(g_slopeHit[i] || hoursElapsed>=SlopeSimExpiryHours)
+      {
+         Log("SLOPE_SIM_OUTCOME","hit="+(g_slopeHit[i]?"true":"false")+" hours="+DoubleToString(hoursElapsed,2)+
+             " slopeDeg="+DoubleToString(g_slopeDegVal[i],2)+" | "+g_slopeTag[i]);
+         g_slopeActive[i]=false;
+      }
+   }
+}
 
 int FindTrackSlot(ulong ticket)
 {
@@ -572,6 +650,26 @@ void CheckNewM2Bar()
 
    CheckOppositeSignal(sigdir);
 
+   // -- MA-slope hypothesis (diagnostic only, no trading effect) --------------
+   // See header comment for the exact pseudo-angle definition and rationale.
+   double maNow[1],maPrev[1];
+   int rSlope1=CopyBuffer(hBB20,0,1,1,maNow);
+   int rSlope2=CopyBuffer(hBB20,0,1+SlopeLookbackBars,1,maPrev);
+   if(rSlope1==1 && rSlope2==1)
+   {
+      double slopeNorm=(maNow[0]-maPrev[0])/(SlopeLookbackBars*R);
+      double slopeDeg=MathArctan(slopeNorm)*180.0/M_PI;
+      bool   flat=(MathAbs(slopeDeg)<=SlopeThresholdDeg);
+      int    slopeDir=flat ? -sigdir : sigdir; // FLAT=fade the breakout, STEEP=follow it
+      string slopeClass=flat?"FLAT":"STEEP";
+      string slopeTag=(sigdir==1?"BULL":"BEAR")+string("_")+slopeClass;
+      Log("SLOPE_CALC","sigdir="+(sigdir==1?"BULL":"BEAR")+" slopeDeg="+DoubleToString(slopeDeg,2)+
+          " class="+slopeClass+" hypDir="+(slopeDir==1?"BUY":"SELL"));
+      MqlTick sq; if(SymbolInfoTick(_Symbol,sq)) StartSlopeSim((sq.bid+sq.ask)/2.0,R,slopeDir,slopeDeg,slopeTag);
+   }
+   else
+      Log("SLOPE_CALC_FAIL","BB20 basis CopyBuffer failed");
+
    double kbuf[1];
    if(CopyBuffer(hStoch,0,1,1,kbuf)!=1){ Log("STOCH_FAIL","no stochastic value"); return; }
    double stochK=kbuf[0];
@@ -645,6 +743,8 @@ int OnInit()
        " | TrendFilterTF="+EnumToString(TrendFilterTimeframe)+" ADXPeriod="+IntegerToString(ADXPeriod)+
        " ADXThreshold="+DoubleToString(ADXThreshold,1)+
        " | UseOppositeSignalExit="+(UseOppositeSignalExit?"true":"false")+
+       " | SlopeLookbackBars="+IntegerToString(SlopeLookbackBars)+" SlopeThresholdDeg="+DoubleToString(SlopeThresholdDeg,1)+
+       " SlopeSimTargetR="+DoubleToString(SlopeSimTargetR,2)+" SlopeSimExpiryHours="+DoubleToString(SlopeSimExpiryHours,1)+
        " | Lots="+DoubleToString(Lots,2)+" | Magic="+IntegerToString((int)MagicNumber)+
        " | orders="+(EnableLiveOrders?"ENABLED":"DRY"));
    return INIT_SUCCEEDED;
@@ -663,6 +763,7 @@ void OnTick()
 {
    MqlTick tick; if(!SymbolInfoTick(_Symbol,tick)) return;
    CheckMAEProgress();
+   CheckSlopeSims();
    CheckTimeStop();
    CheckNewM2Bar();
 }
