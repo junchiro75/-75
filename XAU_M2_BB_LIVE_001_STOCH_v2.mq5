@@ -206,6 +206,15 @@ input double SlopeSimTargetR    = 0.5;   // R-multiple target used for the slope
 input double SlopeSimExpiryHours = 6.0;  // give up waiting for the target after this many hours and log
                                           // whatever hit/miss state the simulation is in at that point.
 
+input bool   IgnoreStochastic   = false; // UNTESTED -- bypasses the Stochastic OB/OS decision (and
+                                          // AllowSellFade, which only applies to that decision) entirely:
+                                          // every signal candle trades its own breakout direction (trend-
+                                          // following), including the bull+overbought case that AllowSellFade
+                                          // normally disables/skips and the bear+oversold case that would
+                                          // otherwise fade. Session filters on TREND_BEAR still apply. Answers
+                                          // "does 001 still win >90% without the Stochastic filter at all."
+                                          // Default false reproduces existing behavior exactly.
+
 int hBB20=INVALID_HANDLE,hBB4=INVALID_HANDLE,hStoch=INVALID_HANDLE,hADX=INVALID_HANDLE;
 datetime last_m2_bar=0;
 int f_log=INVALID_HANDLE;
@@ -690,12 +699,35 @@ void CheckNewM2Bar()
    else
       Log("SLOPE_CALC_FAIL","BB20 basis (now) CopyBuffer failed");
 
-   double kbuf[1];
-   if(CopyBuffer(hStoch,0,1,1,kbuf)!=1){ Log("STOCH_FAIL","no stochastic value"); return; }
-   double stochK=kbuf[0];
+   double stochK=0;
+   if(!IgnoreStochastic)
+   {
+      double kbuf[1];
+      if(CopyBuffer(hStoch,0,1,1,kbuf)!=1){ Log("STOCH_FAIL","no stochastic value"); return; }
+      stochK=kbuf[0];
+   }
 
    int dir=0; string tag="";
-   if(sigdir==+1) // bull signal candle
+   if(IgnoreStochastic)
+   {
+      // UNTESTED -- always trades the breakout's own direction (trend-following),
+      // bypassing the Stochastic OB/OS branch (and AllowSellFade, which only
+      // applies to that branch) entirely. Session filters on TREND_BEAR still
+      // apply since those are a separate, orthogonal finding.
+      if(sigdir==+1) { dir=+1; tag="TREND_BULL_NOSTOCH"; }
+      else
+      {
+         if(InAsiaSessionKST(sig))
+         {
+            if(ReverseTrendBearAsiaSession){ dir=+1; tag="TREND_BEAR_REV_ASIA_NOSTOCH"; }
+            else if(SkipTrendBearAsiaSession)
+            { Log("SIGNAL_SKIPPED","TREND-BEAR disabled during Asia session (06-16 KST) by SkipTrendBearAsiaSession=true"); return; }
+            else { dir=-1; tag="TREND_BEAR_NOSTOCH"; }
+         }
+         else { dir=-1; tag="TREND_BEAR_NOSTOCH"; }
+      }
+   }
+   else if(sigdir==+1) // bull signal candle
    {
       if(stochK>=StochOverbought)
       {
@@ -765,6 +797,7 @@ int OnInit()
        " | UseOppositeSignalExit="+(UseOppositeSignalExit?"true":"false")+
        " | SlopeLookbackBars="+IntegerToString(SlopeLookbackBars)+" SlopeThresholdDeg="+DoubleToString(SlopeThresholdDeg,1)+
        " SlopeSimTargetR="+DoubleToString(SlopeSimTargetR,2)+" SlopeSimExpiryHours="+DoubleToString(SlopeSimExpiryHours,1)+
+       " | IgnoreStochastic="+(IgnoreStochastic?"true":"false")+
        " | Lots="+DoubleToString(Lots,2)+" | Magic="+IntegerToString((int)MagicNumber)+
        " | orders="+(EnableLiveOrders?"ENABLED":"DRY"));
    return INIT_SUCCEEDED;
