@@ -41,6 +41,13 @@
 //| confirmed at 5.0 (M1-specific -- M2/M3 use 4.0). Ground-truth       |
 //| confirmed result: NET $17,285.37 -> $19,734.96, PF 1.358, Recovery  |
 //| Factor 7.336, WR 93.58%, MaxDD 2.19%/2.63%.                          |
+//| SkipFadeBearOSWickTouch (UNTESTED here): every signal's tag now      |
+//| carries _BODY/_WICK depending on whether the CLOSE also broke BB20   |
+//| or only the high/low wicked through it. Confirmed on M2_v2 (NET      |
+//| +5.5%, PF/RF/WR all improved, DD unchanged) by isolating the ONE     |
+//| tag x touch combination that was net negative (FADE_BEAR_OS+WICK).   |
+//| Needs its own backtest here before trusting the same default, since  |
+//| FADE_BEAR_OS is M1's dominant bucket (unlike M2/M3).                 |
 //+------------------------------------------------------------------+
 #property strict
 #include <Trade/Trade.mqh>
@@ -77,6 +84,13 @@ input bool   SkipFadeBearOSAsiaSession = false; // A Korea-time session breakdow
                                           // PF 1.526) hours. This is the OPPOSITE bucket from the same
                                           // Asia-session weakness found on M2 (there it's STOCH_TREND_BEAR),
                                           // so it needs its own separate filter here. Default false
+                                          // reproduces existing behavior exactly.
+input bool   SkipFadeBearOSWickTouch = false; // UNTESTED here (confirmed on M2_v2: NET +5.5%, PF/RF/WR all
+                                          // improved, DD unchanged) -- when true, skips FADE_BEAR_OS entries
+                                          // whose signal candle only wicked through BB20 without the close
+                                          // (body) also breaking it. Every trade's tag now carries _BODY/_WICK
+                                          // so the xlsx report's own comment column can confirm the same
+                                          // pattern here before trusting this default. Default false
                                           // reproduces existing behavior exactly.
 
 int hBB20=INVALID_HANDLE,hBB4=INVALID_HANDLE,hStoch=INVALID_HANDLE;
@@ -231,6 +245,15 @@ void CheckNewM1Bar()
    else if(c<o && l<=lo20[0] && l<=lo4[0]) sigdir=-1; // bear (down) signal candle
    if(sigdir==0) return;
 
+   // BODY vs WICK touch (diagnostic): the entry condition above only requires
+   // the candle's high/low (wick) to reach BB20 -- this checks whether the
+   // CLOSE (body) also closed beyond BB20. Appended to the trade tag so it
+   // shows up in the xlsx report's own comment column (M1 has no separate
+   // CSV log infrastructure like M2_v2) -- see M2_v2's header for the
+   // ground-truth finding this is testing here.
+   bool bodyTouch=(sigdir==+1) ? (c>=up20[0]) : (c<=lo20[0]);
+   string touchTag=bodyTouch?"_BODY":"_WICK";
+
    double R=MathAbs(c-o);
    double minR=MathMax(_Point,MinR_Points*_Point);
    if(R<=minR){ Log("SIGNAL_SKIPPED","R too small"); return; }
@@ -259,13 +282,17 @@ void CheckNewM1Bar()
       {
          if(SkipFadeBearOSAsiaSession && InAsiaSessionKST(sig))
          { Log("SIGNAL_SKIPPED","FADE_BEAR_OS disabled during Asia session (06-16 KST) by SkipFadeBearOSAsiaSession=true"); return; }
+         if(!bodyTouch && SkipFadeBearOSWickTouch)
+         { Log("SIGNAL_SKIPPED","FADE_BEAR_OS disabled on WICK-only touch by SkipFadeBearOSWickTouch=true"); return; }
          dir=+1; tag="STOCH_FADE_BEAR_OS";
       }
       else                    { dir=-1; tag="STOCH_TREND_BEAR"; }
    }
+   tag=tag+touchTag;
 
    Log("SIGNAL",(sigdir==1?"BULL":"BEAR")+" candle | stochK="+DoubleToString(stochK,2)+
-       " | R="+DoubleToString(R,_Digits)+" | decided dir="+(dir==1?"BUY":"SELL")+" | "+tag);
+       " | R="+DoubleToString(R,_Digits)+" | touch="+(bodyTouch?"BODY":"WICK")+
+       " | decided dir="+(dir==1?"BUY":"SELL")+" | "+tag);
    OpenTrade(dir,R,tag);
 }
 
@@ -294,6 +321,7 @@ int OnInit()
        " | AllowSellFade="+(AllowSellFade?"true":"false")+
        " | AllowTrendBull="+(AllowTrendBull?"true":"false")+
        " | SkipFadeBearOSAsiaSession="+(SkipFadeBearOSAsiaSession?"true":"false")+
+       " | SkipFadeBearOSWickTouch="+(SkipFadeBearOSWickTouch?"true":"false")+
        " | Lots="+DoubleToString(Lots,2)+" | Magic="+IntegerToString((int)MagicNumber)+
        " | orders="+(EnableLiveOrders?"ENABLED":"DRY"));
    return INIT_SUCCEEDED;
