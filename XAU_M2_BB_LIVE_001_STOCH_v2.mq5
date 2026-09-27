@@ -162,12 +162,21 @@
 //| after triggering still recovered to a WIN, ~9x above the ~10.1%        |
 //| breakeven threshold; going live would have cost the +$5,253 this       |
 //| bucket actually made. Diagnostic-only, kept off (UseBreakevenStop=false)|
-//| SIGNAL's touch=BODY/WICK and MAE_OUTCOME's touch= (diagnostic only, no  |
-//| trading effect): the entry condition only requires the signal candle's |
-//| high/low (wick) to reach BB20; this additionally checks whether the    |
-//| CLOSE (body) also broke the band ("BODY") vs wicked through and closed |
-//| back inside ("WICK") -- tests whether a body break (more conviction)   |
-//| behaves differently from a rejection wick.                             |
+//| SIGNAL's touch=BODY/WICK and MAE_OUTCOME's touch= (diagnostic always   |
+//| on; SkipFadeBearOSWickTouch ACTS): the entry condition only requires   |
+//| the signal candle's high/low (wick) to reach BB20; this additionally   |
+//| checks whether the CLOSE (body) also broke the band ("BODY") vs        |
+//| wicked through and closed back inside ("WICK") -- tests whether a body |
+//| break (more conviction) behaves differently from a rejection wick.     |
+//| Ground truth (2025.01-2026.09, StochK_Period=8/OB=85/OS=30/MinR=350):  |
+//| BODY beat WICK consistently on every tag, both on win rate and $/trade:|
+//| overall 92.32% ($10.46/trade) vs 89.70% ($0.58/trade, z=2.14) --       |
+//| FADE_BEAR_OS 92.7%/+$18,282 vs 88.7%/-$325 (net NEGATIVE, the only     |
+//| losing tag x touch combination), TREND_BEAR 93.8%/+$5,378 vs 89.7%/    |
+//| +$109, TREND_BULL 91.3%/+$6,031 vs 90.4%/+$563. Only FADE_BEAR_OS+WICK |
+//| is actually net negative, so SkipFadeBearOSWickTouch filters only that |
+//| combination rather than all WICK touches (TREND_BEAR/TREND_BULL WICK   |
+//| are still profitable, just weaker than BODY).                          |
 //+------------------------------------------------------------------+
 #property strict
 #include <Trade/Trade.mqh>
@@ -292,6 +301,16 @@ input bool   UseBreakevenStop   = false; // UNTESTED -- when true, ACTUALLY move
                                           // once BreakevenTriggerFrac of TP_R is reached in favor.
                                           // BE_TRIGGER/BE_RETRACE diagnostic logging always runs regardless
                                           // of this flag. Default false reproduces existing behavior exactly.
+                                          // GROUND TRUTH: rejected (see header) -- keep this false.
+
+input bool   SkipFadeBearOSWickTouch = false; // UNTESTED -- when true, skips FADE_BEAR_OS entries whose
+                                          // signal candle only wicked through BB20 without the close (body)
+                                          // also breaking it. Ground-truth breakdown (2025.01-2026.09,
+                                          // touch=BODY/WICK): FADE_BEAR_OS+WICK was the ONLY body/wick x tag
+                                          // combination that was net negative (195 trades, -$325.40, 88.7%
+                                          // win rate) while every other combination (including FADE_BEAR_OS+
+                                          // BODY at 92.7%/+$18,282) was solidly profitable -- BODY touches beat
+                                          // WICK touches consistently across all three tags (see header).
 
 int hBB20=INVALID_HANDLE,hBB4=INVALID_HANDLE,hStoch=INVALID_HANDLE,hADX=INVALID_HANDLE;
 datetime last_m2_bar=0;
@@ -875,7 +894,12 @@ void CheckNewM2Bar()
    }
    else // bear signal candle
    {
-      if(stochK<StochOversold){ dir=+1; tag="STOCH_FADE_BEAR_OS"; }
+      if(stochK<StochOversold)
+      {
+         if(!bodyTouch && SkipFadeBearOSWickTouch)
+         { Log("SIGNAL_SKIPPED","FADE_BEAR_OS disabled on WICK-only touch by SkipFadeBearOSWickTouch=true"); return; }
+         dir=+1; tag="STOCH_FADE_BEAR_OS";
+      }
       else
       {
          if(InAsiaSessionKST(sig))
@@ -942,6 +966,7 @@ int OnInit()
        " UseCircuitBreaker="+(UseCircuitBreaker?"true":"false")+
        " | BreakevenTriggerFrac="+DoubleToString(BreakevenTriggerFrac,2)+
        " UseBreakevenStop="+(UseBreakevenStop?"true":"false")+
+       " | SkipFadeBearOSWickTouch="+(SkipFadeBearOSWickTouch?"true":"false")+
        " | Lots="+DoubleToString(Lots,2)+" | Magic="+IntegerToString((int)MagicNumber)+
        " | orders="+(EnableLiveOrders?"ENABLED":"DRY"));
    return INIT_SUCCEEDED;
