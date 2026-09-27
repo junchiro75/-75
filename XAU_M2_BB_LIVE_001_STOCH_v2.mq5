@@ -81,6 +81,14 @@
 //| had silently dropped 349 trade outcomes, which is why the corrupted  |
 //| CSV first looked like a huge improvement before the official xlsx    |
 //| report was checked.                                                   |
+//| reachedFav50/75/90 (diagnostic only, no trading effect): the MFE       |
+//| (Maximum Favorable Excursion) mirror of reached50/75 -- true if price |
+//| moved that fraction of the way to TP_R at any point before the        |
+//| position closed. Answers "of trades that got close to TP, what        |
+//| fraction still reversed all the way to a LOSS" -- tests whether a      |
+//| breakeven/lock-in rule near TP would be favorable. Unlike the MAE-side |
+//| cuts (all rejected), the asymmetry here should run the other way:      |
+//| giving up a small remaining slice of TP_R to avoid a full SL_R loss.   |
 //+------------------------------------------------------------------+
 #property strict
 #include <Trade/Trade.mqh>
@@ -232,6 +240,21 @@ bool   g_bandReentered[TRACK_SLOTS];
 // targets only the already-known 26%-win-rate danger zone instead.
 bool   g_trackOppSignalSeen[TRACK_SLOTS];
 
+// -- MFE (Maximum Favorable Excursion) tracking (diagnostic only, no
+//    trading effect) ---------------------------------------------------
+// Mirrors the MAE tracking above but for the FAVORABLE direction: tracks
+// whether price moved 50%/75%/90% of the way to TP_R (in R terms) at any
+// point before the position closed. Since a real TP fill closes the
+// position immediately, this can only ever show "got close to TP, then
+// ended in outcome X" -- not "hit TP and still lost". Answers: of trades
+// that got to 75%/90% of the way to TP, what fraction still reversed all
+// the way to a LOSS instead of continuing on to the TP? Given SL_R is far
+// larger than TP_R here, if that reversal rate is low, a breakeven/lock-in
+// rule once price is most of the way to TP could be asymmetrically
+// favorable (small give-up vs a large avoided loss) -- the OPPOSITE
+// asymmetry from the MAE-side cuts already tested and rejected.
+bool   g_reachedFav50[TRACK_SLOTS], g_reachedFav75[TRACK_SLOTS], g_reachedFav90[TRACK_SLOTS];
+
 int FindTrackSlot(ulong ticket)
 {
    for(int i=0;i<TRACK_SLOTS;i++) if(g_trackTicket[i]==ticket) return i;
@@ -253,6 +276,7 @@ void StartMAETracking(ulong ticket,double entry,double R,int dir,string tag)
    g_waitingFirstBar[i]=true; g_firstBarKnown[i]=false; g_firstBarOneWay[i]=false;
    g_trackBandLevel[i]=g_lastBandLevel; g_bandReentered[i]=false;
    g_trackOppSignalSeen[i]=false;
+   g_reachedFav50[i]=false; g_reachedFav75[i]=false; g_reachedFav90[i]=false;
 }
 
 // Called from CheckNewM2Bar with the new bar's raw breakout direction
@@ -308,6 +332,12 @@ void CheckMAEProgress()
       double frac=adverseR/SL_R;
       if(frac>=0.5  && !g_reached50[i]){ g_reached50[i]=true; Log("MAE_MILESTONE","50% of SL reached | "+g_trackTag[i]); }
       if(frac>=0.75 && !g_reached75[i]){ g_reached75[i]=true; Log("MAE_MILESTONE","75% of SL reached | "+g_trackTag[i]); }
+
+      double favR=(g_trackDir[i]==+1) ? (q.bid-g_trackEntry[i])/g_trackR[i] : (g_trackEntry[i]-q.ask)/g_trackR[i];
+      double favFrac=favR/TP_R;
+      if(favFrac>=0.5  && !g_reachedFav50[i]){ g_reachedFav50[i]=true; Log("MAE_MILESTONE","50% of TP reached (favorable) | "+g_trackTag[i]); }
+      if(favFrac>=0.75 && !g_reachedFav75[i]){ g_reachedFav75[i]=true; Log("MAE_MILESTONE","75% of TP reached (favorable) | "+g_trackTag[i]); }
+      if(favFrac>=0.9  && !g_reachedFav90[i]){ g_reachedFav90[i]=true; Log("MAE_MILESTONE","90% of TP reached (favorable) | "+g_trackTag[i]); }
 
       if(!g_bandReentered[i] && g_trackBandLevel[i]!=0)
       {
@@ -649,14 +679,22 @@ void OnTradeTransaction(const MqlTradeTransaction &trans,const MqlTradeRequest &
    int i=FindTrackSlot(posId);
    if(i<0) return; // not a ticket we're tracking (or already logged)
 
-   double profit=HistoryDealGetDouble(trans.deal,DEAL_PROFIT)+HistoryDealGetDouble(trans.deal,DEAL_SWAP);
+   // Includes DEAL_COMMISSION -- an earlier version omitted it, so a CSV-summed
+   // NET was off from the official xlsx by ~$1.50/trade (the round-turn
+   // commission on a 0.1-lot XAUUSD position on this broker).
+   double profit=HistoryDealGetDouble(trans.deal,DEAL_PROFIT)+HistoryDealGetDouble(trans.deal,DEAL_SWAP)+
+                 HistoryDealGetDouble(trans.deal,DEAL_COMMISSION);
    string outcome=(profit>0?"WIN":"LOSS");
    string firstBarStr=(!g_firstBarKnown[i] ? "unknown" : (g_firstBarOneWay[i]?"true":"false"));
    string bandStr=(g_trackBandLevel[i]==0 ? "n/a(fade)" : (g_bandReentered[i]?"true":"false"));
    Log("MAE_OUTCOME","outcome="+outcome+" profit="+DoubleToString(profit,2)+
        " reached50="+(g_reached50[i]?"true":"false")+" reached75="+(g_reached75[i]?"true":"false")+
        " firstBarOneWay="+firstBarStr+" bandReentry="+bandStr+
-       " oppSignalSeen="+(g_trackOppSignalSeen[i]?"true":"false")+" | "+g_trackTag[i]);
+       " oppSignalSeen="+(g_trackOppSignalSeen[i]?"true":"false")+
+       " reachedFav50="+(g_reachedFav50[i]?"true":"false")+
+       " reachedFav75="+(g_reachedFav75[i]?"true":"false")+
+       " reachedFav90="+(g_reachedFav90[i]?"true":"false")+
+       " | "+g_trackTag[i]);
    g_trackTicket[i]=0; // free slot
    g_waitingFirstBar[i]=false;
 }
