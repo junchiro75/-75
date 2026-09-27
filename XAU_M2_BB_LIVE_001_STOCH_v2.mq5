@@ -138,6 +138,26 @@
 //| StochOversold unchanged at 30, MinR_Points 400->350. Ground-truth       |
 //| confirmed result: NET $16,858.10 -> $24,529.78 (+45.5%), PF 1.286,      |
 //| Recovery Factor 10.33, MaxDD 4.05% -> 2.14%.                            |
+//| BE_TRIGGER / BE_RETRACE / BE_STOP_MOVED (diagnostic always on;          |
+//| UseBreakevenStop ACTS): tests whether moving the stop to breakeven      |
+//| (entry price) once a position reaches BreakevenTriggerFrac of TP_R in   |
+//| its favor can shrink the size of individual losses without giving up    |
+//| much on winners -- distinct from the already-rejected MFE-based         |
+//| "give up a slice of TP" idea (reachedFav50/75/90 above), since this     |
+//| resets to ~$0 instead of locking in a partial profit, and the trigger   |
+//| threshold is independently configurable rather than reusing those      |
+//| fixed 50/75/90% milestones. BE_TRIGGER logs when the threshold is first |
+//| crossed; BE_RETRACE logs if price later comes back to the entry level   |
+//| (the only way this could actually matter, since SL_R >> TP_R here means |
+//| a trade can only reach the real SL by first passing back through        |
+//| breakeven). The key question answerable from BE_RETRACE trades' own     |
+//| MAE_OUTCOME: of trades that retrace all the way back to breakeven after |
+//| triggering, what fraction still recover to a WIN (the cost of this      |
+//| rule, since UseBreakevenStop would have converted that WIN into ~$0)    |
+//| vs continue on to the full LOSS (the benefit, since it would have been  |
+//| capped at ~$0 instead). Given SL_R is roughly 9-11x TP_R here, this     |
+//| rule is net positive only if the recovered-WIN fraction among retraced  |
+//| trades is well below roughly TP_R/(TP_R+SL_R). UNTESTED as a live rule. |
 //+------------------------------------------------------------------+
 #property strict
 #include <Trade/Trade.mqh>
@@ -255,6 +275,14 @@ input bool   UseCircuitBreaker  = false; // UNTESTED -- when true, ACTUALLY skip
                                           // being pure noise. Default false reproduces existing behavior
                                           // exactly.
 
+input double BreakevenTriggerFrac = 0.5; // fraction of TP_R that must be reached in favor before a
+                                          // breakeven-stop becomes a candidate -- see header for the
+                                          // BE_TRIGGER/BE_RETRACE hypothesis and why SL_R >> TP_R matters here.
+input bool   UseBreakevenStop   = false; // UNTESTED -- when true, ACTUALLY moves the SL to the entry price
+                                          // once BreakevenTriggerFrac of TP_R is reached in favor.
+                                          // BE_TRIGGER/BE_RETRACE diagnostic logging always runs regardless
+                                          // of this flag. Default false reproduces existing behavior exactly.
+
 int hBB20=INVALID_HANDLE,hBB4=INVALID_HANDLE,hStoch=INVALID_HANDLE,hADX=INVALID_HANDLE;
 datetime last_m2_bar=0;
 int f_log=INVALID_HANDLE;
@@ -340,6 +368,13 @@ bool   g_trackOppSignalSeen[TRACK_SLOTS];
 // asymmetry from the MAE-side cuts already tested and rejected.
 bool   g_reachedFav50[TRACK_SLOTS], g_reachedFav75[TRACK_SLOTS], g_reachedFav90[TRACK_SLOTS];
 
+// -- breakeven-stop simulation (diagnostic always on; ACTS only if
+//    UseBreakevenStop=true) -- see header for the BE_TRIGGER/BE_RETRACE
+//    hypothesis --------------------------------------------------------
+bool   g_beTriggered[TRACK_SLOTS]; // favFrac >= BreakevenTriggerFrac reached at least once
+bool   g_beRetraced[TRACK_SLOTS];  // price came back to the entry level AFTER g_beTriggered
+bool   g_beMoved[TRACK_SLOTS];     // live SL was actually moved to breakeven (UseBreakevenStop only)
+
 // -- MA-slope hypothesis simulation (diagnostic only, no trading effect,
 //    independent of TRACK_SLOTS/real positions -- see header comment) ------
 // One slot per signal candle (not per position), since this tests every
@@ -409,6 +444,7 @@ void StartMAETracking(ulong ticket,double entry,double R,int dir,string tag)
    g_trackBandLevel[i]=g_lastBandLevel; g_bandReentered[i]=false;
    g_trackOppSignalSeen[i]=false;
    g_reachedFav50[i]=false; g_reachedFav75[i]=false; g_reachedFav90[i]=false;
+   g_beTriggered[i]=false; g_beRetraced[i]=false; g_beMoved[i]=false;
 }
 
 // Called from CheckNewM2Bar with the new bar's raw breakout direction
@@ -475,6 +511,31 @@ void CheckMAEProgress()
       {
          bool reentered=(g_trackDir[i]==+1) ? (q.bid<g_trackBandLevel[i]) : (q.ask>g_trackBandLevel[i]);
          if(reentered){ g_bandReentered[i]=true; Log("MAE_MILESTONE","band reentry (breakout failed) | "+g_trackTag[i]); }
+      }
+
+      if(!g_beTriggered[i] && favFrac>=BreakevenTriggerFrac)
+      {
+         g_beTriggered[i]=true;
+         Log("BE_TRIGGER","favFrac="+DoubleToString(favFrac,3)+" | "+g_trackTag[i]);
+         if(UseBreakevenStop)
+         {
+            double curTP=PositionGetDouble(POSITION_TP);
+            double be=NormalizeDouble(g_trackEntry[i],_Digits);
+            if(!EnableLiveOrders)
+               Log("BE_STOP_MOVE_DRY","would move SL->"+DoubleToString(be,_Digits)+" (EnableLiveOrders=false) | "+g_trackTag[i]);
+            else if(trade.PositionModify(g_trackTicket[i],be,curTP))
+            {
+               g_beMoved[i]=true;
+               Log("BE_STOP_MOVED","SL->"+DoubleToString(be,_Digits)+" | "+g_trackTag[i]);
+            }
+            else
+               Log("BE_STOP_MOVE_FAIL",IntegerToString((int)trade.ResultRetcode())+" | "+trade.ResultRetcodeDescription());
+         }
+      }
+      if(g_beTriggered[i] && !g_beRetraced[i])
+      {
+         bool retraced=(g_trackDir[i]==+1) ? (q.bid<=g_trackEntry[i]) : (q.ask>=g_trackEntry[i]);
+         if(retraced){ g_beRetraced[i]=true; Log("BE_RETRACE","price returned to entry after BE trigger | "+g_trackTag[i]); }
       }
    }
 }
@@ -852,6 +913,8 @@ int OnInit()
        " | CircuitBreakerLossCount="+IntegerToString(CircuitBreakerLossCount)+
        " CircuitBreakerCooldownHours="+DoubleToString(CircuitBreakerCooldownHours,1)+
        " UseCircuitBreaker="+(UseCircuitBreaker?"true":"false")+
+       " | BreakevenTriggerFrac="+DoubleToString(BreakevenTriggerFrac,2)+
+       " UseBreakevenStop="+(UseBreakevenStop?"true":"false")+
        " | Lots="+DoubleToString(Lots,2)+" | Magic="+IntegerToString((int)MagicNumber)+
        " | orders="+(EnableLiveOrders?"ENABLED":"DRY"));
    return INIT_SUCCEEDED;
@@ -902,6 +965,9 @@ void OnTradeTransaction(const MqlTradeTransaction &trans,const MqlTradeRequest &
        " reachedFav50="+(g_reachedFav50[i]?"true":"false")+
        " reachedFav75="+(g_reachedFav75[i]?"true":"false")+
        " reachedFav90="+(g_reachedFav90[i]?"true":"false")+
+       " beTriggered="+(g_beTriggered[i]?"true":"false")+
+       " beRetraced="+(g_beRetraced[i]?"true":"false")+
+       " beMoved="+(g_beMoved[i]?"true":"false")+
        " | "+g_trackTag[i]);
    g_trackTicket[i]=0; // free slot
    g_waitingFirstBar[i]=false;
