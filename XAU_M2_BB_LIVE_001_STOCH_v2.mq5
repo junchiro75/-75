@@ -176,7 +176,10 @@
 //| +$109, TREND_BULL 91.3%/+$6,031 vs 90.4%/+$563. Only FADE_BEAR_OS+WICK |
 //| is actually net negative, so SkipFadeBearOSWickTouch filters only that |
 //| combination rather than all WICK touches (TREND_BEAR/TREND_BULL WICK   |
-//| are still profitable, just weaker than BODY).                          |
+//| are still profitable, just weaker than BODY). CONFIRMED default=true:  |
+//| ground-truth backtest showed NET $24,877.21 -> $26,237.13 (+5.5%), PF   |
+//| 1.304 -> 1.342, Recovery Factor 9.14 -> 9.58, WR 91.86% -> 92.12%, DD    |
+//| essentially unchanged (~2.2%) -- a clean improvement on every metric.  |
 //+------------------------------------------------------------------+
 #property strict
 #include <Trade/Trade.mqh>
@@ -303,14 +306,15 @@ input bool   UseBreakevenStop   = false; // UNTESTED -- when true, ACTUALLY move
                                           // of this flag. Default false reproduces existing behavior exactly.
                                           // GROUND TRUTH: rejected (see header) -- keep this false.
 
-input bool   SkipFadeBearOSWickTouch = false; // UNTESTED -- when true, skips FADE_BEAR_OS entries whose
-                                          // signal candle only wicked through BB20 without the close (body)
-                                          // also breaking it. Ground-truth breakdown (2025.01-2026.09,
-                                          // touch=BODY/WICK): FADE_BEAR_OS+WICK was the ONLY body/wick x tag
-                                          // combination that was net negative (195 trades, -$325.40, 88.7%
-                                          // win rate) while every other combination (including FADE_BEAR_OS+
-                                          // BODY at 92.7%/+$18,282) was solidly profitable -- BODY touches beat
-                                          // WICK touches consistently across all three tags (see header).
+input bool   SkipFadeBearOSWickTouch = true; // confirmed default (was UNTESTED=false) -- skips FADE_BEAR_OS
+                                          // entries whose signal candle only wicked through BB20 without the
+                                          // close (body) also breaking it. Ground-truth breakdown found
+                                          // FADE_BEAR_OS+WICK was the ONLY body/wick x tag combination that was
+                                          // net negative (195 trades, -$325.40, 88.7% win rate) while every
+                                          // other combination (including FADE_BEAR_OS+BODY at 92.7%/+$18,282)
+                                          // was solidly profitable. Ground-truth confirmed result: NET
+                                          // $24,877.21 -> $26,237.13 (+5.5%), PF 1.304 -> 1.342, Recovery
+                                          // Factor 9.14 -> 9.58, WR 91.86% -> 92.12%, DD unchanged (~2.2%).
 
 int hBB20=INVALID_HANDLE,hBB4=INVALID_HANDLE,hStoch=INVALID_HANDLE,hADX=INVALID_HANDLE;
 datetime last_m2_bar=0;

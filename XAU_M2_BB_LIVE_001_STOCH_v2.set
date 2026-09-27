@@ -30,3 +30,6 @@ IgnoreStochastic=false
 CircuitBreakerLossCount=2
 CircuitBreakerCooldownHours=6.0
 UseCircuitBreaker=false
+BreakevenTriggerFrac=0.5
+UseBreakevenStop=false
+SkipFadeBearOSWickTouch=true
