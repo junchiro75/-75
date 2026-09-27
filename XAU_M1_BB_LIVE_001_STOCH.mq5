@@ -33,6 +33,13 @@
 //| consistent with gold's persistent uptrend bias found elsewhere in  |
 //| this project). Includes diagnostic logging (BAR_DATA_FAIL /        |
 //| COPYBUFFER_FAIL) on previously-silent failure paths.               |
+//| Entry-parameter re-optimization (sequential 1-at-a-time sweep via   |
+//| MT5 Optimizer, Recovery Factor max, same procedure as M2/M3):       |
+//| StochK_Period 16->17 (genuine 2-point plateau), StochOversold       |
+//| 30->25, StochOverbought unchanged (confirmed dead parameter here -- |
+//| see its own input comment), MinR_Points unchanged at 400. Ground-   |
+//| truth confirmed NET $17,285.37 -> $19,734.96; full PF/RF/DD pending |
+//| a final single-test confirmation run.                               |
 //+------------------------------------------------------------------+
 #property strict
 #include <Trade/Trade.mqh>
@@ -40,11 +47,14 @@ CTrade trade;
 
 input ENUM_TIMEFRAMES Timeframe = PERIOD_M1; // signal-candle timeframe
 input double Lots               = 0.1;
-input int    StochK_Period      = 16;   // matches user's chart setting (default MT5 is 5)
+input int    StochK_Period      = 17;   // re-optimized from 16 -- see header for ground-truth numbers
 input int    StochD_Period      = 3;
 input int    StochSlowing       = 3;
-input double StochOverbought    = 70.0;
-input double StochOversold      = 30.0;
+input double StochOverbought    = 70.0; // DEAD PARAMETER on M1: AllowSellFade=false AND
+                                         // AllowTrendBull=false together disable both bull-candle
+                                         // branches entirely, so this value has zero effect (confirmed:
+                                         // 7 different thresholds gave byte-identical backtest results)
+input double StochOversold      = 25.0; // re-optimized from 30.0 -- see header for ground-truth numbers
 input double SL_R               = 4.0;
 input double TP_R               = 0.45;
 input double MinR_Points        = 400;  // skip signal if R (=|close-open| of the M1 signal candle, in

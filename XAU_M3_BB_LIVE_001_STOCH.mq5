@@ -39,6 +39,13 @@
 //| STOCH_TREND_BEAR to the Europe session (16-22 KST) only -- a real   |
 //| backtest confirmed a clean improvement on every metric (NET, PF,   |
 //| and drawdown all better); see the input's own comment for numbers. |
+//| Entry-parameter re-optimization (sequential 1-at-a-time sweep via   |
+//| MT5 Optimizer, Recovery Factor max, same procedure as M1/M2):       |
+//| StochK_Period 16->14, StochOversold 30->25, StochOverbought and     |
+//| MinR_Points unchanged (70 / 900). Ground-truth confirmed result:    |
+//| NET $12,831 -> $16,700.99 (+30.2%), PF 1.411 -> 1.818, Recovery     |
+//| Factor 3.43 -> 6.888, WR 92.23% -> 93.86%, MaxDD 3.53%/3.62% ->     |
+//| 1.58%/2.27%.                                                        |
 //+------------------------------------------------------------------+
 #property strict
 #include <Trade/Trade.mqh>
@@ -46,11 +53,11 @@ CTrade trade;
 
 input ENUM_TIMEFRAMES Timeframe = PERIOD_M3; // signal-candle timeframe
 input double Lots               = 0.1;
-input int    StochK_Period      = 16;   // matches user's chart setting (default MT5 is 5)
+input int    StochK_Period      = 14;   // re-optimized from 16 -- see header for ground-truth numbers
 input int    StochD_Period      = 3;
 input int    StochSlowing       = 3;
-input double StochOverbought    = 70.0;
-input double StochOversold      = 30.0;
+input double StochOverbought    = 70.0; // unchanged -- noisy 55-70 sweep, no clear win from changing
+input double StochOversold      = 25.0; // re-optimized from 30.0 -- see header for ground-truth numbers
 input double SL_R               = 4.0;
 input double TP_R               = 0.45;
 input double MinR_Points        = 900;  // skip signal if R (=|close-open| of the M3 signal candle, in

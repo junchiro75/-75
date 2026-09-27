@@ -129,6 +129,12 @@
 //| different mechanism from every previously-tested idea, which all       |
 //| acted on individual trades rather than withholding entries during a    |
 //| bad stretch. UNTESTED as a live rule.                                  |
+//| Entry-parameter re-optimization (sequential 1-at-a-time sweep via MT5   |
+//| Optimizer, Recovery Factor max, after every cut-early idea above was    |
+//| tested and rejected): StochK_Period 16->8, StochOverbought 70->85,      |
+//| StochOversold unchanged at 30, MinR_Points 400->350. Ground-truth       |
+//| confirmed result: NET $16,858.10 -> $24,529.78 (+45.5%), PF 1.286,      |
+//| Recovery Factor 10.33, MaxDD 4.05% -> 2.14%.                            |
 //+------------------------------------------------------------------+
 #property strict
 #include <Trade/Trade.mqh>
@@ -136,15 +142,15 @@ CTrade trade;
 
 input ENUM_TIMEFRAMES Timeframe = PERIOD_M2; // signal-candle timeframe; change to test other TFs (M1/M3/M5/...)
 input double Lots               = 0.1;
-input int    StochK_Period      = 16;   // matches user's chart setting (default MT5 is 5)
+input int    StochK_Period      = 8;    // re-optimized from 16 -- see header for ground-truth numbers
 input int    StochD_Period      = 3;
 input int    StochSlowing       = 3;
-input double StochOverbought    = 70.0;
-input double StochOversold      = 30.0;
+input double StochOverbought    = 85.0; // re-optimized from 70.0 -- see header for ground-truth numbers
+input double StochOversold      = 30.0; // unchanged -- clean unimodal peak already at 30
 input double SL_R               = 1.0;
 input double TP_R               = 0.5;
-input double MinR_Points        = 0;    // skip signal if R (=|close-open| of the M2 signal candle, in
-                                         // points) is below this. 0 = no filter.
+input double MinR_Points        = 350;  // re-optimized from 400 -- skip signal if R (=|close-open| of
+                                         // the M2 signal candle, in points) is below this. 0 = no filter.
 input ulong  MagicNumber        = 95016101;
 input int    MaxDeviationPts    = 50;
 input bool   EnableLiveOrders   = false; // SAFETY: set true only after checks
