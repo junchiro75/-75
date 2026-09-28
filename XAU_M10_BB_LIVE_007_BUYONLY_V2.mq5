@@ -24,18 +24,22 @@
 //| sequence), always countertrend to the signal, so a BEAR signal's    |
 //| touch quality is what's actually being tested here (BUY-only).      |
 //| H1_TREND_CHECK / SkipIfH1TrendAgainst / SkipIfH1NotAgainst          |
-//| (diagnostic always on; flags ACT): checks the H1 bar in progress    |
-//| AND the last fully closed H1 bar at the moment of entry -- if BOTH  |
-//| oppose the entry direction (both bearish for a BUY), tagged         |
+//| (h1Against fixed at SIGNAL time in NewBar(), not re-evaluated at    |
+//| the later entry time; flags ACT in SendEntry()): checks the two H1  |
+//| bars immediately preceding the one in progress when the M10 signal  |
+//| appeared (shift 1 and shift 2, both fully closed) -- if BOTH oppose |
+//| the eventual entry direction (both bearish for a BUY), tagged       |
 //| H1AGAINST, else H1OK. Original theory (SkipIfH1TrendAgainst) was    |
-//| backwards: H1AGAINST trades were the GOOD ones (WR 83.85%, net      |
-//| +$12,561.95, n=991) vs H1OK (WR 76.56%, net -$2,849.65, n=256,      |
-//| z=2.73) -- a genuine H1-aligned extension reads as real capitulation|
-//| where the mean-reversion bounce is more reliable. SkipIfH1NotAgainst|
-//| (keep only H1AGAINST) CONFIRMED default=true: live-flag backtest    |
-//| showed NET $7,579.88 -> $10,518.15 (+38.8%), PF 1.216 -> 1.418,      |
-//| Recovery Factor 2.806 -> 5.007, WR 86.34% -> 87.20%, DD improved     |
-//| too (2.38%/2.66% -> 1.95%/2.07%) -- a clean win on every metric.     |
+//| backwards: H1AGAINST trades were the GOOD ones, since a genuine     |
+//| H1-aligned extension reads as real capitulation where the mean-     |
+//| reversion bounce is more reliable. SkipIfH1NotAgainst (keep only    |
+//| H1AGAINST) default=true reflects that finding, but the ground-truth |
+//| numbers below (NET $7,579.88 -> $10,518.15, PF 1.216 -> 1.418,      |
+//| Recovery Factor 2.806 -> 5.007, WR 86.34% -> 87.20%) were measured  |
+//| on an earlier version of this check anchored at ENTRY time (shift 0 |
+//| in-progress + shift 1 last-closed) -- needs a fresh backtest on     |
+//| this signal-time/shift-1-2 version before re-confirming the exact   |
+//| impact, though the same direction is expected to hold.              |
 //+------------------------------------------------------------------+
 #property strict
 #include <Trade/Trade.mqh>
@@ -61,21 +65,15 @@ input bool LatestSignalOnly=true; // confirmed default (was a stale unsynced fal
                              // signal candle discards any earlier still-pending setup(s) in S[]; only
                              // the most recent signal is ever watched. Ground-truth backtest flipped the
                              // original -$185.63 loss into a +$943.22 profit (Lots=0.02) -- see header.
-input bool SkipIfH1TrendAgainst=false; // GROUND-TRUTH REJECTED -- the original theory was that a
-                             // strong opposing H1 trend (both the in-progress bar and the last closed
-                             // bar against the entry direction) would run over this countertrend entry.
-                             // Backtest found the OPPOSITE: H1AGAINST trades were far better (WR 83.85%,
-                             // net +$12,561.95, n=991) than H1OK trades (WR 76.56%, net -$2,849.65,
-                             // n=256, z=2.73) -- a genuine H1-aligned extension reads as real capitulation,
-                             // where the mean-reversion bounce is more reliable, not less. Keep this
-                             // false; see SkipIfH1NotAgainst for the direction that actually helps.
-input bool SkipIfH1NotAgainst=true; // confirmed default (was UNTESTED=false) -- skips an entry unless
-                             // the H1 bar in progress AND the last closed H1 bar are BOTH against the
-                             // entry direction, keeping only the H1AGAINST bucket. Ground-truth confirmed
-                             // result (live flag, not just the post-hoc split): NET $7,579.88 ->
-                             // $10,518.15 (+38.8%), PF 1.216 -> 1.418, Recovery Factor 2.806 -> 5.007,
-                             // WR 86.34% -> 87.20%, DD 2.38%/2.66% -> 1.95%/2.07% -- a clean improvement
-                             // on every metric.
+input bool SkipIfH1TrendAgainst=false; // GROUND-TRUTH REJECTED (see header) -- the original theory
+                             // was that a strong opposing H1 trend would run over this countertrend
+                             // entry; backtest found the OPPOSITE (H1AGAINST trades were the good ones).
+                             // Keep this false; see SkipIfH1NotAgainst for the direction that helps.
+input bool SkipIfH1NotAgainst=true; // default=true reflects the confirmed direction (see header), but
+                             // h1Against is now fixed at SIGNAL time using shift 1/2 H1 bars instead of
+                             // the ENTRY-time shift 0/1 version the $7,579.88->$10,518.15 numbers in the
+                             // header were measured on -- re-confirm with a fresh backtest on this
+                             // version before fully trusting the exact NET/PF impact.
 
 int h20=INVALID_HANDLE,h4=INVALID_HANDLE;
 datetime lastbar=0;
@@ -96,6 +94,10 @@ struct Setup{
  bool bodyTouch; // diagnostic: did the signal candle's CLOSE also break BB20, or only
                  // the high/low (wick)? See 001 family's ground truth on this same
                  // distinction (FADE_BEAR_OS+WICK was a losing combination there).
+ bool h1Against; // does the eventual (countertrend) entry direction fight BOTH of the
+                 // two H1 bars immediately preceding the one in progress at signal time
+                 // (shift 1 and shift 2 as of NOW, when the M10 signal candle appears)?
+                 // Fixed at signal time, not re-checked at the later entry time.
 };
 Setup S[];
 
@@ -163,6 +165,23 @@ void NewBar(){
  if(!bull&&!bear)return;
  double R=MathAbs(c-o);if(R<=0)return;
  bool bodyTouch=bull?(c>=u20[0]):(c<=d20[0]);
+
+ // H1 trend-against check, evaluated NOW (at signal time), using the two H1
+ // bars immediately preceding the one currently in progress -- i.e. shift 1
+ // and shift 2, both fully closed, never the still-forming shift 0 bar.
+ // Fixed here and carried with the setup, not re-evaluated at the later
+ // entry time (which can be hours/days after the signal, after the
+ // extension+pullback sequence completes).
+ int entryDir=-(bull?1:-1); // the eventual (countertrend) entry direction
+ double h1o1=iOpen(_Symbol,PERIOD_H1,1),h1c1=iClose(_Symbol,PERIOD_H1,1);
+ double h1o2=iOpen(_Symbol,PERIOD_H1,2),h1c2=iClose(_Symbol,PERIOD_H1,2);
+ bool h1_1_bear=h1c1<h1o1, h1_2_bear=h1c2<h1o2;
+ bool h1_1_bull=h1c1>h1o1, h1_2_bull=h1c2>h1o2;
+ bool h1Against=(entryDir==1) ? (h1_1_bear&&h1_2_bear) : (h1_1_bull&&h1_2_bull);
+ Log("H1_TREND_CHECK","entryDir="+(entryDir==1?"BUY":"SELL")+" h1Against="+(h1Against?"true":"false")+
+     " h1bar1="+(h1_1_bear?"BEAR":(h1_1_bull?"BULL":"FLAT"))+
+     " h1bar2="+(h1_2_bear?"BEAR":(h1_2_bull?"BULL":"FLAT")));
+
  if(LatestSignalOnly && ArraySize(S)>0){
   Log("SIGNAL_SUPERSEDES","dropping "+IntegerToString(ArraySize(S))+" pending setup(s) for newer signal");
   ArrayResize(S,0);
@@ -171,6 +190,7 @@ void NewBar(){
  S[n].sig=st;S[n].ct=st+PeriodSeconds(PERIOD_M10);S[n].exp=S[n].ct+MaxExtensionHours*3600;
  S[n].sd=bull?1:-1;S[n].R=R;S[n].o=o;S[n].h=h;S[n].l=l;S[n].c=c;S[n].extreme=c;S[n].ext=false;
  S[n].bodyTouch=bodyTouch;
+ S[n].h1Against=h1Against;
  Log("SIGNAL",(bull?"BULL":"BEAR")+" R="+DoubleToString(R,2)+" touch="+(bodyTouch?"BODY":"WICK"));
 }
 
@@ -182,21 +202,11 @@ bool SendEntry(int i,MqlTick &tk){
   DS(i);return false;
  }
 
- // H1 trend-against filter (diagnostic always on; SkipIfH1TrendAgainst ACTS):
- // the entry is always countertrend (mean-reversion after a 0.95R extension +
- // 0.10R pullback), which is exactly what gets run over in a genuinely strong
- // trend. Checks the H1 bar currently in progress (shift 0, open-to-now) AND
- // the last fully closed H1 bar (shift 1) -- if BOTH are against this entry's
- // direction (both bearish for a BUY, both bullish for a SELL), that's read
- // as a strong higher-timeframe trend the mean-reversion is fighting.
- double h1o0=iOpen(_Symbol,PERIOD_H1,0),h1c0=iClose(_Symbol,PERIOD_H1,0);
- double h1o1=iOpen(_Symbol,PERIOD_H1,1),h1c1=iClose(_Symbol,PERIOD_H1,1);
- bool h1_0_bear=h1c0<h1o0, h1_1_bear=h1c1<h1o1;
- bool h1_0_bull=h1c0>h1o0, h1_1_bull=h1c1>h1o1;
- bool h1Against=(dir==1) ? (h1_0_bear&&h1_1_bear) : (h1_0_bull&&h1_1_bull);
- Log("H1_TREND_CHECK","dir="+(dir==1?"BUY":"SELL")+" h1Against="+(h1Against?"true":"false")+
-     " h1bar0="+(h1_0_bear?"BEAR":(h1_0_bull?"BULL":"FLAT"))+
-     " h1bar1="+(h1_1_bear?"BEAR":(h1_1_bull?"BULL":"FLAT")));
+ // H1 trend-against filter (SkipIfH1TrendAgainst/SkipIfH1NotAgainst ACT):
+ // h1Against was fixed at signal time (see NewBar()), using the two H1 bars
+ // immediately preceding the one in progress when the M10 signal appeared --
+ // not re-evaluated here, since entry can happen hours/days after the signal.
+ bool h1Against=S[i].h1Against;
  if(h1Against && SkipIfH1TrendAgainst){
   Log("SIGNAL_SKIPPED","H1 trend against entry direction (both current+previous H1 bars) by SkipIfH1TrendAgainst=true");
   DS(i);return false;
