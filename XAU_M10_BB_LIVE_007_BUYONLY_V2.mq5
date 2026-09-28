@@ -83,6 +83,12 @@ input bool SkipIfH1NotAgainst=true; // default=true reflects the confirmed direc
                              // the ENTRY-time shift 0/1 version the $7,579.88->$10,518.15 numbers in the
                              // header were measured on -- re-confirm with a fresh backtest on this
                              // version before fully trusting the exact NET/PF impact.
+input bool H1CheckAtEntryTime=false; // false (default) = h1Against uses shift 1/2 fixed at SIGNAL
+                             // time (current behavior, ~549 trades/85 losses in ground-truth testing).
+                             // true = reproduces the earlier, more profitable version instead: shift 0
+                             // (in progress) + shift 1 (last closed), re-evaluated at the later ENTRY
+                             // time (~997 trades/163 losses, NET $10,518.15). Lets both be A/B tested
+                             // (e.g. alongside NEXT5_AFTER_SIGNAL) without losing either version.
 
 int h20=INVALID_HANDLE,h4=INVALID_HANDLE;
 datetime lastbar=0;
@@ -253,10 +259,19 @@ bool SendEntry(int i,MqlTick &tk){
  }
 
  // H1 trend-against filter (SkipIfH1TrendAgainst/SkipIfH1NotAgainst ACT):
- // h1Against was fixed at signal time (see NewBar()), using the two H1 bars
- // immediately preceding the one in progress when the M10 signal appeared --
- // not re-evaluated here, since entry can happen hours/days after the signal.
+ // by default h1Against was fixed at signal time (see NewBar()), using the
+ // two H1 bars immediately preceding the one in progress when the M10 signal
+ // appeared. H1CheckAtEntryTime=true instead reproduces the earlier, more
+ // profitable version: shift 0 (in progress) + shift 1 (last closed),
+ // re-evaluated NOW since entry can happen hours/days after the signal.
  bool h1Against=S[i].h1Against;
+ if(H1CheckAtEntryTime){
+  double eh1o0=iOpen(_Symbol,PERIOD_H1,0),eh1c0=iClose(_Symbol,PERIOD_H1,0);
+  double eh1o1=iOpen(_Symbol,PERIOD_H1,1),eh1c1=iClose(_Symbol,PERIOD_H1,1);
+  bool eh1_0_bear=eh1c0<eh1o0, eh1_1_bear=eh1c1<eh1o1;
+  bool eh1_0_bull=eh1c0>eh1o0, eh1_1_bull=eh1c1>eh1o1;
+  h1Against=(dir==1) ? (eh1_0_bear&&eh1_1_bear) : (eh1_0_bull&&eh1_1_bull);
+ }
  if(h1Against && SkipIfH1TrendAgainst){
   Log("SIGNAL_SKIPPED","H1 trend against entry direction (both current+previous H1 bars) by SkipIfH1TrendAgainst=true");
   DS(i);return false;
@@ -474,7 +489,9 @@ int OnInit(){
 
  Log("START","M10 | PB=0.10R | SL="+DoubleToString(InitialSL_R,2)+
      "R | LatestSignalOnly="+(LatestSignalOnly?"true":"false")+
-     " | SkipIfH1TrendAgainst="+(SkipIfH1TrendAgainst?"true":"false")+" | Lots="+DoubleToString(Lots,2)+
+     " | SkipIfH1TrendAgainst="+(SkipIfH1TrendAgainst?"true":"false")+
+     " | SkipIfH1NotAgainst="+(SkipIfH1NotAgainst?"true":"false")+
+     " | H1CheckAtEntryTime="+(H1CheckAtEntryTime?"true":"false")+" | Lots="+DoubleToString(Lots,2)+
      " | Magic="+IntegerToString((int)MagicNumber)+" | orders="+(EnableLiveOrders?"ENABLED":"DRY"));
  Log("NOTE","EXIT: +0.5R whole-position SL -> +0.25R; +1.0R close half; runner +0.25R; final signal-close opposite 0.90R");
  return INIT_SUCCEEDED;
