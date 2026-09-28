@@ -32,19 +32,21 @@
 //| +$12,561.95, n=991) vs H1OK (WR 76.56%, net -$2,849.65, n=256,      |
 //| z=2.73) -- a genuine H1-aligned extension reads as real capitulation|
 //| where the mean-reversion bounce is more reliable. SkipIfH1NotAgainst|
-//| (keep only H1AGAINST) is the direction that actually helps; still   |
-//| needs its own live-flag backtest to confirm the exact NET/PF impact.|
+//| (keep only H1AGAINST) CONFIRMED default=true: live-flag backtest    |
+//| showed NET $7,579.88 -> $10,518.15 (+38.8%), PF 1.216 -> 1.418,      |
+//| Recovery Factor 2.806 -> 5.007, WR 86.34% -> 87.20%, DD improved     |
+//| too (2.38%/2.66% -> 1.95%/2.07%) -- a clean win on every metric.     |
 //+------------------------------------------------------------------+
 #property strict
 #include <Trade/Trade.mqh>
 CTrade trade;
 
-input double Lots=0.02;
+input double Lots=0.1; // confirmed default (was a stale unsynced 0.02) -- scale to account size
 input bool EnableLiveOrders=false;
 input long MagicNumber=95011207; // distinct from original 007 (95011007) and BUYONLY (95011107)
 input double ExtensionR=0.95;
 input double PullbackR=0.10;
-input double InitialSL_R=2.0;
+input double InitialSL_R=2.25; // confirmed default (was a stale unsynced 2.0) -- see header
 input double ProtectTriggerR=0.50;
 input double PartialTriggerR=1.0;
 input double ProtectR=0.25;
@@ -55,9 +57,10 @@ input int MaxPositionHours=168;
 input bool AllowShort=false; // Ground-truth MT5 tick backtest (2025.01-2026.09) showed SELL
                              // entries net -$1,196.19 vs BUY entries net -$185.63 (both negative,
                              // but SELL far worse) in a secular gold uptrend. Default false: BUY-only.
-input bool LatestSignalOnly=false; // true = a new BB-breakout signal candle discards any earlier
-                             // still-pending setup(s) in S[]; only the most recent signal is ever
-                             // watched. false = old behavior (multiple pending setups allowed).
+input bool LatestSignalOnly=true; // confirmed default (was a stale unsynced false) -- a new BB-breakout
+                             // signal candle discards any earlier still-pending setup(s) in S[]; only
+                             // the most recent signal is ever watched. Ground-truth backtest flipped the
+                             // original -$185.63 loss into a +$943.22 profit (Lots=0.02) -- see header.
 input bool SkipIfH1TrendAgainst=false; // GROUND-TRUTH REJECTED -- the original theory was that a
                              // strong opposing H1 trend (both the in-progress bar and the last closed
                              // bar against the entry direction) would run over this countertrend entry.
@@ -66,14 +69,13 @@ input bool SkipIfH1TrendAgainst=false; // GROUND-TRUTH REJECTED -- the original 
                              // n=256, z=2.73) -- a genuine H1-aligned extension reads as real capitulation,
                              // where the mean-reversion bounce is more reliable, not less. Keep this
                              // false; see SkipIfH1NotAgainst for the direction that actually helps.
-input bool SkipIfH1NotAgainst=false; // UNTESTED as a live rule -- when true, skips an entry unless the
-                             // H1 bar in progress AND the last closed H1 bar are BOTH against the entry
-                             // direction, keeping only the H1AGAINST bucket. The post-hoc split of a
-                             // SkipIfH1NotAgainst=false backtest showed H1AGAINST trades net +$12,561.95
-                             // (WR 83.85%, n=991) vs H1OK's net -$2,849.65 (WR 76.56%, n=256, z=2.73) --
-                             // but since skipping an entry here can free the MAX1 slot for a different
-                             // pending setup, needs its own backtest with this flag actually true before
-                             // trusting that the live NET/PF impact matches the naive post-hoc split.
+input bool SkipIfH1NotAgainst=true; // confirmed default (was UNTESTED=false) -- skips an entry unless
+                             // the H1 bar in progress AND the last closed H1 bar are BOTH against the
+                             // entry direction, keeping only the H1AGAINST bucket. Ground-truth confirmed
+                             // result (live flag, not just the post-hoc split): NET $7,579.88 ->
+                             // $10,518.15 (+38.8%), PF 1.216 -> 1.418, Recovery Factor 2.806 -> 5.007,
+                             // WR 86.34% -> 87.20%, DD 2.38%/2.66% -> 1.95%/2.07% -- a clean improvement
+                             // on every metric.
 
 int h20=INVALID_HANDLE,h4=INVALID_HANDLE;
 datetime lastbar=0;
