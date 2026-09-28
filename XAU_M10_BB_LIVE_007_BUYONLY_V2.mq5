@@ -23,13 +23,17 @@
 //| Note the entry itself happens later (after the extension+pullback  |
 //| sequence), always countertrend to the signal, so a BEAR signal's    |
 //| touch quality is what's actually being tested here (BUY-only).      |
-//| H1_TREND_CHECK / SkipIfH1TrendAgainst (diagnostic always on; flag   |
-//| ACTS): this entry is always countertrend, which is exactly what     |
-//| gets run over in a genuinely strong trend. Checks the H1 bar in     |
-//| progress AND the last fully closed H1 bar at the moment of entry -- |
-//| if BOTH oppose the entry direction (both bearish for a BUY), that's |
-//| read as a strong higher-timeframe trend. Every trade's tag also     |
-//| carries _H1OK/_H1AGAINST. UNTESTED as a live rule.                  |
+//| H1_TREND_CHECK / SkipIfH1TrendAgainst / SkipIfH1NotAgainst          |
+//| (diagnostic always on; flags ACT): checks the H1 bar in progress    |
+//| AND the last fully closed H1 bar at the moment of entry -- if BOTH  |
+//| oppose the entry direction (both bearish for a BUY), tagged         |
+//| H1AGAINST, else H1OK. Original theory (SkipIfH1TrendAgainst) was    |
+//| backwards: H1AGAINST trades were the GOOD ones (WR 83.85%, net      |
+//| +$12,561.95, n=991) vs H1OK (WR 76.56%, net -$2,849.65, n=256,      |
+//| z=2.73) -- a genuine H1-aligned extension reads as real capitulation|
+//| where the mean-reversion bounce is more reliable. SkipIfH1NotAgainst|
+//| (keep only H1AGAINST) is the direction that actually helps; still   |
+//| needs its own live-flag backtest to confirm the exact NET/PF impact.|
 //+------------------------------------------------------------------+
 #property strict
 #include <Trade/Trade.mqh>
@@ -54,13 +58,22 @@ input bool AllowShort=false; // Ground-truth MT5 tick backtest (2025.01-2026.09)
 input bool LatestSignalOnly=false; // true = a new BB-breakout signal candle discards any earlier
                              // still-pending setup(s) in S[]; only the most recent signal is ever
                              // watched. false = old behavior (multiple pending setups allowed).
-input bool SkipIfH1TrendAgainst=false; // UNTESTED -- when true, ACTUALLY skips an entry when the H1
-                             // bar in progress AND the last fully closed H1 bar are BOTH against the
-                             // entry direction (both bearish for a BUY) -- the theory being that this
-                             // mean-reversion entry gets run over in a genuinely strong H1 trend.
-                             // H1_TREND_CHECK diagnostic logging always runs regardless of this flag,
-                             // and every trade's tag also carries _H1OK/_H1AGAINST. Default false
-                             // reproduces existing behavior exactly.
+input bool SkipIfH1TrendAgainst=false; // GROUND-TRUTH REJECTED -- the original theory was that a
+                             // strong opposing H1 trend (both the in-progress bar and the last closed
+                             // bar against the entry direction) would run over this countertrend entry.
+                             // Backtest found the OPPOSITE: H1AGAINST trades were far better (WR 83.85%,
+                             // net +$12,561.95, n=991) than H1OK trades (WR 76.56%, net -$2,849.65,
+                             // n=256, z=2.73) -- a genuine H1-aligned extension reads as real capitulation,
+                             // where the mean-reversion bounce is more reliable, not less. Keep this
+                             // false; see SkipIfH1NotAgainst for the direction that actually helps.
+input bool SkipIfH1NotAgainst=false; // UNTESTED as a live rule -- when true, skips an entry unless the
+                             // H1 bar in progress AND the last closed H1 bar are BOTH against the entry
+                             // direction, keeping only the H1AGAINST bucket. The post-hoc split of a
+                             // SkipIfH1NotAgainst=false backtest showed H1AGAINST trades net +$12,561.95
+                             // (WR 83.85%, n=991) vs H1OK's net -$2,849.65 (WR 76.56%, n=256, z=2.73) --
+                             // but since skipping an entry here can free the MAX1 slot for a different
+                             // pending setup, needs its own backtest with this flag actually true before
+                             // trusting that the live NET/PF impact matches the naive post-hoc split.
 
 int h20=INVALID_HANDLE,h4=INVALID_HANDLE;
 datetime lastbar=0;
@@ -184,6 +197,10 @@ bool SendEntry(int i,MqlTick &tk){
      " h1bar1="+(h1_1_bear?"BEAR":(h1_1_bull?"BULL":"FLAT")));
  if(h1Against && SkipIfH1TrendAgainst){
   Log("SIGNAL_SKIPPED","H1 trend against entry direction (both current+previous H1 bars) by SkipIfH1TrendAgainst=true");
+  DS(i);return false;
+ }
+ if(!h1Against && SkipIfH1NotAgainst){
+  Log("SIGNAL_SKIPPED","H1 trend NOT against entry direction (ground-truth: H1OK bucket was net negative) by SkipIfH1NotAgainst=true");
   DS(i);return false;
  }
 
