@@ -69,8 +69,10 @@
 //| weekend-gap risk, not market behavior. Blocks a real entry once it's  |
 //| Friday at/after FridayNightCutoffHour (22:00) server time; the Setup   |
 //| is dropped rather than held for Monday, since its extension+pullback  |
-//| state is stale by then anyway. UNTESTED as a live rule (needs its own |
-//| backtest before trusting the exact NET/PF impact).                    |
+//| state is stale by then anyway. CONFIRMED default=true: NET $10,518.15 |
+//| -> $12,479.87 (+18.6%), PF 1.418 -> 1.542, Recovery Factor 5.007 ->    |
+//| 6.887, WR 87.20% -> 87.59%, DD 1.95%/2.07% -> 1.62%/1.78% -- a clean   |
+//| win on every metric, bigger than the raw dollars removed.             |
 //+------------------------------------------------------------------+
 #property strict
 #include <Trade/Trade.mqh>
@@ -131,12 +133,15 @@ input int  FridayNightCutoffHour=22; // server-time hour on Friday after which n
                              // sat over the weekend close and hit their SL right at Monday reopen
                              // (exit timestamp 01:01 on every single one) -- 100% mechanical weekend-
                              // gap risk, not market behavior. -$1,902.85 combined.
-input bool SkipFridayNightEntry=false; // UNTESTED as a live rule -- when true, blocks a real entry
+input bool SkipFridayNightEntry=true; // confirmed default (was UNTESTED=false) -- blocks a real entry
                              // (SendEntry) once it's Friday at/after FridayNightCutoffHour server time.
                              // The underlying Setup is dropped, not held for Monday, since the
                              // extension+pullback state it was waiting on is stale by then anyway.
-                             // Diagnostic logging (FRIDAY_NIGHT_CHECK) always runs regardless of this
-                             // flag. Default false reproduces existing behavior exactly.
+                             // Ground-truth confirmed result: NET $10,518.15 -> $12,479.87 (+18.6%),
+                             // PF 1.418 -> 1.542, Recovery Factor 5.007 -> 6.887, WR 87.20% -> 87.59%,
+                             // DD 1.95%/2.07% -> 1.62%/1.78% -- a clean improvement on every metric,
+                             // bigger than the raw -$1,902.85 removed (fewer weekend-held positions
+                             // also compressed drawdown).
 
 int h20=INVALID_HANDLE,h4=INVALID_HANDLE;
 datetime lastbar=0;
