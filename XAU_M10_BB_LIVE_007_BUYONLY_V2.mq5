@@ -15,6 +15,14 @@
 //| M10 dual BB -> +0.95R extension -> 0.10R pullback -> countertrend|
 //| SL2R; +0.5R arms +0.25R SL; +1R closes 0.01; final target          |
 //| = signal close + countertrend 0.90R                              |
+//| BODY vs WICK touch (diagnostic only, no trading effect): tags     |
+//| every trade's comment with _BODY/_WICK depending on whether the    |
+//| SIGNAL candle's close also broke BB20 or only its high/low wicked  |
+//| through it -- same distinction the 001 family confirmed matters    |
+//| (FADE_BEAR_OS+WICK was a losing combination on M1/M2/M3 there).    |
+//| Note the entry itself happens later (after the extension+pullback  |
+//| sequence), always countertrend to the signal, so a BEAR signal's    |
+//| touch quality is what's actually being tested here (BUY-only).      |
 //+------------------------------------------------------------------+
 #property strict
 #include <Trade/Trade.mqh>
@@ -56,6 +64,9 @@ struct Setup{
  int sd;
  double R,o,h,l,c,extreme;
  bool ext;
+ bool bodyTouch; // diagnostic: did the signal candle's CLOSE also break BB20, or only
+                 // the high/low (wick)? See 001 family's ground truth on this same
+                 // distinction (FADE_BEAR_OS+WICK was a losing combination there).
 };
 Setup S[];
 
@@ -122,6 +133,7 @@ void NewBar(){
  bool bull=c>o&&h>=u20[0]&&h>=u4[0], bear=c<o&&l<=d20[0]&&l<=d4[0];
  if(!bull&&!bear)return;
  double R=MathAbs(c-o);if(R<=0)return;
+ bool bodyTouch=bull?(c>=u20[0]):(c<=d20[0]);
  if(LatestSignalOnly && ArraySize(S)>0){
   Log("SIGNAL_SUPERSEDES","dropping "+IntegerToString(ArraySize(S))+" pending setup(s) for newer signal");
   ArrayResize(S,0);
@@ -129,7 +141,8 @@ void NewBar(){
  int n=ArraySize(S);ArrayResize(S,n+1);
  S[n].sig=st;S[n].ct=st+PeriodSeconds(PERIOD_M10);S[n].exp=S[n].ct+MaxExtensionHours*3600;
  S[n].sd=bull?1:-1;S[n].R=R;S[n].o=o;S[n].h=h;S[n].l=l;S[n].c=c;S[n].extreme=c;S[n].ext=false;
- Log("SIGNAL",(bull?"BULL":"BEAR")+" R="+DoubleToString(R,2));
+ S[n].bodyTouch=bodyTouch;
+ Log("SIGNAL",(bull?"BULL":"BEAR")+" R="+DoubleToString(R,2)+" touch="+(bodyTouch?"BODY":"WICK"));
 }
 
 bool SendEntry(int i,MqlTick &tk){
@@ -142,12 +155,13 @@ bool SendEntry(int i,MqlTick &tk){
  double entry=(dir==1?tk.ask:tk.bid);
  double sl=entry-dir*InitialSL_R*R;
  double finaltp=S[i].c+dir*SignalOppositeTP_R*R;
+ string tag="LIVE007_P05P10"+(S[i].bodyTouch?"_BODY":"_WICK");
  trade.SetExpertMagicNumber(MagicNumber);
  trade.SetTypeFillingBySymbol(_Symbol);
  bool ok=false;
  if(EnableLiveOrders){
-  ok=(dir==1)?trade.Buy(Lots,_Symbol,0,sl,finaltp,"LIVE007_P05P10")
-             :trade.Sell(Lots,_Symbol,0,sl,finaltp,"LIVE007_P05P10");
+  ok=(dir==1)?trade.Buy(Lots,_Symbol,0,sl,finaltp,tag)
+             :trade.Sell(Lots,_Symbol,0,sl,finaltp,tag);
  }else{
   Log("DRY_ENTRY",(dir==1?"BUY":"SELL")+" entry~"+DoubleToString(entry,_Digits)+
       " R="+DoubleToString(R,2)+" SL="+DoubleToString(sl,_Digits)+" finalTP="+DoubleToString(finaltp,_Digits));
