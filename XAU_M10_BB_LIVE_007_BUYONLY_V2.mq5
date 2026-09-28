@@ -23,6 +23,13 @@
 //| Note the entry itself happens later (after the extension+pullback  |
 //| sequence), always countertrend to the signal, so a BEAR signal's    |
 //| touch quality is what's actually being tested here (BUY-only).      |
+//| H1_TREND_CHECK / SkipIfH1TrendAgainst (diagnostic always on; flag   |
+//| ACTS): this entry is always countertrend, which is exactly what     |
+//| gets run over in a genuinely strong trend. Checks the H1 bar in     |
+//| progress AND the last fully closed H1 bar at the moment of entry -- |
+//| if BOTH oppose the entry direction (both bearish for a BUY), that's |
+//| read as a strong higher-timeframe trend. Every trade's tag also     |
+//| carries _H1OK/_H1AGAINST. UNTESTED as a live rule.                  |
 //+------------------------------------------------------------------+
 #property strict
 #include <Trade/Trade.mqh>
@@ -47,6 +54,13 @@ input bool AllowShort=false; // Ground-truth MT5 tick backtest (2025.01-2026.09)
 input bool LatestSignalOnly=false; // true = a new BB-breakout signal candle discards any earlier
                              // still-pending setup(s) in S[]; only the most recent signal is ever
                              // watched. false = old behavior (multiple pending setups allowed).
+input bool SkipIfH1TrendAgainst=false; // UNTESTED -- when true, ACTUALLY skips an entry when the H1
+                             // bar in progress AND the last fully closed H1 bar are BOTH against the
+                             // entry direction (both bearish for a BUY) -- the theory being that this
+                             // mean-reversion entry gets run over in a genuinely strong H1 trend.
+                             // H1_TREND_CHECK diagnostic logging always runs regardless of this flag,
+                             // and every trade's tag also carries _H1OK/_H1AGAINST. Default false
+                             // reproduces existing behavior exactly.
 
 int h20=INVALID_HANDLE,h4=INVALID_HANDLE;
 datetime lastbar=0;
@@ -152,10 +166,31 @@ bool SendEntry(int i,MqlTick &tk){
   Log("SIGNAL_SKIPPED","SELL disabled by AllowShort=false (data-driven direction filter)");
   DS(i);return false;
  }
+
+ // H1 trend-against filter (diagnostic always on; SkipIfH1TrendAgainst ACTS):
+ // the entry is always countertrend (mean-reversion after a 0.95R extension +
+ // 0.10R pullback), which is exactly what gets run over in a genuinely strong
+ // trend. Checks the H1 bar currently in progress (shift 0, open-to-now) AND
+ // the last fully closed H1 bar (shift 1) -- if BOTH are against this entry's
+ // direction (both bearish for a BUY, both bullish for a SELL), that's read
+ // as a strong higher-timeframe trend the mean-reversion is fighting.
+ double h1o0=iOpen(_Symbol,PERIOD_H1,0),h1c0=iClose(_Symbol,PERIOD_H1,0);
+ double h1o1=iOpen(_Symbol,PERIOD_H1,1),h1c1=iClose(_Symbol,PERIOD_H1,1);
+ bool h1_0_bear=h1c0<h1o0, h1_1_bear=h1c1<h1o1;
+ bool h1_0_bull=h1c0>h1o0, h1_1_bull=h1c1>h1o1;
+ bool h1Against=(dir==1) ? (h1_0_bear&&h1_1_bear) : (h1_0_bull&&h1_1_bull);
+ Log("H1_TREND_CHECK","dir="+(dir==1?"BUY":"SELL")+" h1Against="+(h1Against?"true":"false")+
+     " h1bar0="+(h1_0_bear?"BEAR":(h1_0_bull?"BULL":"FLAT"))+
+     " h1bar1="+(h1_1_bear?"BEAR":(h1_1_bull?"BULL":"FLAT")));
+ if(h1Against && SkipIfH1TrendAgainst){
+  Log("SIGNAL_SKIPPED","H1 trend against entry direction (both current+previous H1 bars) by SkipIfH1TrendAgainst=true");
+  DS(i);return false;
+ }
+
  double entry=(dir==1?tk.ask:tk.bid);
  double sl=entry-dir*InitialSL_R*R;
  double finaltp=S[i].c+dir*SignalOppositeTP_R*R;
- string tag="LIVE007_P05P10"+(S[i].bodyTouch?"_BODY":"_WICK");
+ string tag="LIVE007_P05P10"+(S[i].bodyTouch?"_BODY":"_WICK")+(h1Against?"_H1AGAINST":"_H1OK");
  trade.SetExpertMagicNumber(MagicNumber);
  trade.SetTypeFillingBySymbol(_Symbol);
  bool ok=false;
@@ -359,7 +394,8 @@ int OnInit(){
  }
 
  Log("START","M10 | PB=0.10R | SL="+DoubleToString(InitialSL_R,2)+
-     "R | LatestSignalOnly="+(LatestSignalOnly?"true":"false")+" | Lots="+DoubleToString(Lots,2)+
+     "R | LatestSignalOnly="+(LatestSignalOnly?"true":"false")+
+     " | SkipIfH1TrendAgainst="+(SkipIfH1TrendAgainst?"true":"false")+" | Lots="+DoubleToString(Lots,2)+
      " | Magic="+IntegerToString((int)MagicNumber)+" | orders="+(EnableLiveOrders?"ENABLED":"DRY"));
  Log("NOTE","EXIT: +0.5R whole-position SL -> +0.25R; +1.0R close half; runner +0.25R; final signal-close opposite 0.90R");
  return INIT_SUCCEEDED;
