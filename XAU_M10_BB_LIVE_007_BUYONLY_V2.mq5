@@ -48,7 +48,16 @@
 //| lifecycle (still completes even if LatestSignalOnly discards the     |
 //| setup or it never becomes a real trade), joined externally against   |
 //| a trade's own outcome via the shared sig= timestamp now also logged  |
-//| on ENTRY_OK.                                                         |
+//| on ENTRY_OK. Ground truth (2025.01-2026.09, H1CheckAtEntryTime=true): |
+//| losing trades averaged bearCount 2.90 vs winning trades' 2.65, and    |
+//| bearCount>=4 was 28.2% of losses vs only 18.3% of wins (z=2.89) --    |
+//| a losing trade's signal tends to get followed by stronger one-way     |
+//| continuation, consistent with the mean-reversion bounce failing when  |
+//| the move is genuinely still running. NEXT5_CHECK / SkipIfNext5Bearish |
+//| (flag ACTS): skips an entry once next5Ready is true (5 bars already   |
+//| closed by entry time) AND next5BearCount>=Next5BearThreshold (4).     |
+//| Has NO effect on fast setups entering before those 5 bars exist yet.  |
+//| UNTESTED as a live rule.                                              |
 //+------------------------------------------------------------------+
 #property strict
 #include <Trade/Trade.mqh>
@@ -89,6 +98,16 @@ input bool H1CheckAtEntryTime=false; // false (default) = h1Against uses shift 1
                              // (in progress) + shift 1 (last closed), re-evaluated at the later ENTRY
                              // time (~997 trades/163 losses, NET $10,518.15). Lets both be A/B tested
                              // (e.g. alongside NEXT5_AFTER_SIGNAL) without losing either version.
+input int  Next5BearThreshold=4; // ground-truth threshold (2025.01-2026.09, H1CheckAtEntryTime=true):
+                             // among the 163 losing trades, 28.2% had next5BearCount>=4 vs only 18.3%
+                             // of the 834 winners (z=2.89) -- see Setup.next5BearCount for the full
+                             // finding.
+input bool SkipIfNext5Bearish=false; // UNTESTED as a live rule -- when true, skips an entry if
+                             // next5Ready is true (5 M10 bars after the signal have already closed by
+                             // entry time) AND next5BearCount>=Next5BearThreshold. Has NO effect on
+                             // fast setups where entry happens before those 5 bars exist yet (still the
+                             // majority of trades) -- needs its own backtest to see the real impact
+                             // given it can only ever filter the subset it actually has data for.
 
 int h20=INVALID_HANDLE,h4=INVALID_HANDLE;
 datetime lastbar=0;
@@ -113,6 +132,14 @@ struct Setup{
                  // two H1 bars immediately preceding the one in progress at signal time
                  // (shift 1 and shift 2 as of NOW, when the M10 signal candle appears)?
                  // Fixed at signal time, not re-checked at the later entry time.
+ int  next5BearCount; // -1 until CheckLookaheads() fills it in (5 bars after the signal
+                 // have closed) -- how many of those 5 M10 bars were bearish. Ground-
+                 // truth: losing trades average 2.90 vs winning trades' 2.65, and a
+                 // bearCount>=4 more than doubles the loss-rate odds (28.2% vs 18.3% of
+                 // trades, z=2.89) -- see header.
+ bool next5Ready; // true once next5BearCount is actually known. Can still be false at
+                 // entry time for fast setups (extension+pullback done within 50 min of
+                 // the signal) -- SkipIfNext5Bearish only ever acts when this is true.
 };
 Setup S[];
 
@@ -150,6 +177,12 @@ void CheckLookaheads(datetime barTime,double barOpen,double barClose){
   if(la_totalCount[i]>=5){
    Log("NEXT5_AFTER_SIGNAL","sig="+TimeToString(la_sig[i])+" sd="+(la_sd[i]==1?"BULL":"BEAR")+
        " touch="+(la_bodyTouch[i]?"BODY":"WICK")+" bearCount="+IntegerToString(la_bearCount[i])+"/5");
+   // Write the result back into any still-pending Setup for this same signal
+   // (a fast setup that already entered and left S[] just won't see this --
+   // SkipIfNext5Bearish can only ever act when next5Ready is true at entry).
+   for(int k=0;k<ArraySize(S);k++){
+    if(S[k].sig==la_sig[i]){ S[k].next5BearCount=la_bearCount[i]; S[k].next5Ready=true; }
+   }
    la_active[i]=false;
   }
  }
@@ -246,6 +279,7 @@ void NewBar(){
  S[n].sd=bull?1:-1;S[n].R=R;S[n].o=o;S[n].h=h;S[n].l=l;S[n].c=c;S[n].extreme=c;S[n].ext=false;
  S[n].bodyTouch=bodyTouch;
  S[n].h1Against=h1Against;
+ S[n].next5BearCount=-1;S[n].next5Ready=false;
  StartLookahead(st,S[n].sd,bodyTouch);
  Log("SIGNAL",(bull?"BULL":"BEAR")+" R="+DoubleToString(R,2)+" touch="+(bodyTouch?"BODY":"WICK"));
 }
@@ -278,6 +312,18 @@ bool SendEntry(int i,MqlTick &tk){
  }
  if(!h1Against && SkipIfH1NotAgainst){
   Log("SIGNAL_SKIPPED","H1 trend NOT against entry direction (ground-truth: H1OK bucket was net negative) by SkipIfH1NotAgainst=true");
+  DS(i);return false;
+ }
+
+ // NEXT5_AFTER_SIGNAL filter (SkipIfNext5Bearish ACTS): only ever applies
+ // when next5Ready is true, i.e. the 5 M10 bars after the signal already
+ // closed by the time this setup is ready to enter (fast setups still get
+ // no filtering at all here, by construction).
+ Log("NEXT5_CHECK","ready="+(S[i].next5Ready?"true":"false")+
+     " bearCount="+(S[i].next5Ready?IntegerToString(S[i].next5BearCount)+"/5":"n/a"));
+ if(S[i].next5Ready && S[i].next5BearCount>=Next5BearThreshold && SkipIfNext5Bearish){
+  Log("SIGNAL_SKIPPED","next5BearCount="+IntegerToString(S[i].next5BearCount)+"/5 >= threshold "+
+      IntegerToString(Next5BearThreshold)+" by SkipIfNext5Bearish=true");
   DS(i);return false;
  }
 
@@ -491,7 +537,9 @@ int OnInit(){
      "R | LatestSignalOnly="+(LatestSignalOnly?"true":"false")+
      " | SkipIfH1TrendAgainst="+(SkipIfH1TrendAgainst?"true":"false")+
      " | SkipIfH1NotAgainst="+(SkipIfH1NotAgainst?"true":"false")+
-     " | H1CheckAtEntryTime="+(H1CheckAtEntryTime?"true":"false")+" | Lots="+DoubleToString(Lots,2)+
+     " | H1CheckAtEntryTime="+(H1CheckAtEntryTime?"true":"false")+
+     " | Next5BearThreshold="+IntegerToString(Next5BearThreshold)+
+     " SkipIfNext5Bearish="+(SkipIfNext5Bearish?"true":"false")+" | Lots="+DoubleToString(Lots,2)+
      " | Magic="+IntegerToString((int)MagicNumber)+" | orders="+(EnableLiveOrders?"ENABLED":"DRY"));
  Log("NOTE","EXIT: +0.5R whole-position SL -> +0.25R; +1.0R close half; runner +0.25R; final signal-close opposite 0.90R");
  return INIT_SUCCEEDED;
