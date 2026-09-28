@@ -88,80 +88,30 @@
 #include <Trade/Trade.mqh>
 CTrade trade;
 
-input double Lots=0.1; // confirmed default (was a stale unsynced 0.02) -- scale to account size
-input bool EnableLiveOrders=false;
-input long MagicNumber=95011207; // distinct from original 007 (95011007) and BUYONLY (95011107)
-input double ExtensionR=0.95;
-input double PullbackR=0.10;
-input double InitialSL_R=2.25; // confirmed default (was a stale unsynced 2.0) -- see header
-input double ProtectTriggerR=0.50;
-input double PartialTriggerR=1.0;
-input double ProtectR=0.25;
-input double SignalOppositeTP_R=0.90;
-input int MaxExtensionHours=72;
-input int MaxPullbackHours=72;
-input int MaxPositionHours=168;
-input bool AllowShort=false; // Ground-truth MT5 tick backtest (2025.01-2026.09) showed SELL
-                             // entries net -$1,196.19 vs BUY entries net -$185.63 (both negative,
-                             // but SELL far worse) in a secular gold uptrend. Default false: BUY-only.
-input bool LatestSignalOnly=true; // confirmed default (was a stale unsynced false) -- a new BB-breakout
-                             // signal candle discards any earlier still-pending setup(s) in S[]; only
-                             // the most recent signal is ever watched. Ground-truth backtest flipped the
-                             // original -$185.63 loss into a +$943.22 profit (Lots=0.02) -- see header.
-input bool SkipIfH1TrendAgainst=false; // GROUND-TRUTH REJECTED (see header) -- the original theory
-                             // was that a strong opposing H1 trend would run over this countertrend
-                             // entry; backtest found the OPPOSITE (H1AGAINST trades were the good ones).
-                             // Keep this false; see SkipIfH1NotAgainst for the direction that helps.
-input bool SkipIfH1NotAgainst=true; // default=true reflects the confirmed direction (see header), but
-                             // h1Against is now fixed at SIGNAL time using shift 1/2 H1 bars instead of
-                             // the ENTRY-time shift 0/1 version the $7,579.88->$10,518.15 numbers in the
-                             // header were measured on -- re-confirm with a fresh backtest on this
-                             // version before fully trusting the exact NET/PF impact.
-input bool H1CheckAtEntryTime=false; // false (default) = h1Against uses shift 1/2 fixed at SIGNAL
-                             // time (current behavior, ~549 trades/85 losses in ground-truth testing).
-                             // true = reproduces the earlier, more profitable version instead: shift 0
-                             // (in progress) + shift 1 (last closed), re-evaluated at the later ENTRY
-                             // time (~997 trades/163 losses, NET $10,518.15). Lets both be A/B tested
-                             // (e.g. alongside NEXT5_AFTER_SIGNAL) without losing either version.
-input int  Next5BearThreshold=4; // ground-truth threshold (2025.01-2026.09, H1CheckAtEntryTime=true):
-                             // among the 163 losing trades, 28.2% had next5BearCount>=4 vs only 18.3%
-                             // of the 834 winners (z=2.89) -- see Setup.next5BearCount for the full
-                             // finding.
-input bool SkipIfNext5Bearish=false; // GROUND-TRUTH REJECTED (see header) -- the z=2.89 correlation
-                             // was measured using bearCount values known only in hindsight (whenever
-                             // the 5 bars eventually closed, regardless of whether that was before or
-                             // after this trade's own entry). Live-flag backtest found next5Ready was
-                             // true for only ~20 of 1336 trades at their actual entry moment (most
-                             // entries fire within the first 50 min, before the 5 bars exist), and
-                             // filtering that tiny subset made every metric slightly WORSE (NET
-                             // $10,518.15 -> $9,959.27, PF 1.418 -> 1.399, Recovery Factor 5.007 ->
-                             // 4.523). Keep this false.
-input int  FridayNightCutoffHour=22; // server-time hour on Friday after which new entries are
-                             // blocked (see SkipFridayNightEntry). Root cause found by inspecting
-                             // the ~50-hour "slow bleed" losses (2025.01-2026.09, H1CheckAtEntryTime=
-                             // true): all 5 were Friday-night entries (22:30-23:41 server time) that
-                             // sat over the weekend close and hit their SL right at Monday reopen
-                             // (exit timestamp 01:01 on every single one) -- 100% mechanical weekend-
-                             // gap risk, not market behavior. -$1,902.85 combined.
-input bool SkipFridayNightEntry=true; // confirmed default (was UNTESTED=false) -- blocks a real entry
-                             // (SendEntry) once it's Friday at/after FridayNightCutoffHour server time.
-                             // The underlying Setup is dropped, not held for Monday, since the
-                             // extension+pullback state it was waiting on is stale by then anyway.
-                             // Ground-truth confirmed result: NET $10,518.15 -> $12,479.87 (+18.6%),
-                             // PF 1.418 -> 1.542, Recovery Factor 5.007 -> 6.887, WR 87.20% -> 87.59%,
-                             // DD 1.95%/2.07% -> 1.62%/1.78% -- a clean improvement on every metric,
-                             // bigger than the raw -$1,902.85 removed (fewer weekend-held positions
-                             // also compressed drawdown).
-input int  EntryFromNthSignal=2; // require this many consecutive same-direction M10 signals (see
-                             // SkipEarlySignalsInStreak) before a signal is allowed to become a real
-                             // Setup. 1 = no change (every signal counts). User's chart observation:
-                             // in a strong trend, the FIRST BB signal in a run tends to get run over,
-                             // while a later one in the same run works better.
-input bool SkipEarlySignalsInStreak=false; // UNTESTED as a live rule -- when true, ACTUALLY skips
-                             // signals whose position in their same-direction streak is below
-                             // EntryFromNthSignal (e.g. with the default 2, only the 2nd+ consecutive
-                             // same-direction signal is ever traded; the 1st is always skipped).
-                             // SIGNAL_STREAK diagnostic logging always runs regardless of this flag.
+input double Lots=0.1; // Lot size
+input bool EnableLiveOrders=false; // Enable live orders
+input long MagicNumber=95011207; // Magic number
+input double ExtensionR=0.95; // Extension (R) before pullback watch starts
+input double PullbackR=0.10; // Pullback (R) from extension extreme to trigger entry
+input double InitialSL_R=2.25; // Initial stop loss (R)
+input double ProtectTriggerR=0.50; // Break-even/protect trigger (R)
+input double PartialTriggerR=1.0; // Partial close trigger (R)
+input double ProtectR=0.25; // Protect SL level (R)
+input double SignalOppositeTP_R=0.90; // Final target beyond signal close (R)
+input int MaxExtensionHours=72; // Max hours waiting for extension
+input int MaxPullbackHours=72; // Max hours waiting for pullback
+input int MaxPositionHours=168; // Max hours holding a position
+input bool AllowShort=false; // Allow SELL entries (default BUY-only, see header)
+input bool LatestSignalOnly=true; // New signal cancels older pending setups (see header)
+input bool SkipIfH1TrendAgainst=false; // H1 filter: skip when H1 against entry (REJECTED, see header)
+input bool SkipIfH1NotAgainst=true; // H1 filter: keep only H1-against trades (CONFIRMED, see header)
+input bool H1CheckAtEntryTime=false; // H1 filter anchor: false=signal time, true=entry time (see header)
+input int  Next5BearThreshold=4; // NEXT5 diagnostic: bearish-bar threshold (see header)
+input bool SkipIfNext5Bearish=false; // NEXT5 filter: skip if next5 bearish (REJECTED, see header)
+input int  FridayNightCutoffHour=22; // Friday-night cutoff hour, server time (see header)
+input bool SkipFridayNightEntry=true; // Block entries after Friday cutoff (CONFIRMED, see header)
+input int  EntryFromNthSignal=2; // Min signal position in same-direction streak to allow entry
+input bool SkipEarlySignalsInStreak=false; // Streak filter: skip early signals (UNTESTED, see header)
                              // NEXT5_AFTER_SIGNAL still tracks every signal, skipped or not. Default
                              // false reproduces existing behavior exactly.
 

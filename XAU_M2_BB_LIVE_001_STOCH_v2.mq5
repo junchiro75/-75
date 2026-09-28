@@ -180,141 +180,59 @@
 //| ground-truth backtest showed NET $24,877.21 -> $26,237.13 (+5.5%), PF   |
 //| 1.304 -> 1.342, Recovery Factor 9.14 -> 9.58, WR 91.86% -> 92.12%, DD    |
 //| essentially unchanged (~2.2%) -- a clean improvement on every metric.  |
+//| AsiaSessionStartHour/EndHour (default 6/16, Korea time): the           |
+//| SkipTrendBearAsiaSession window bounds. An hour-by-hour breakdown of    |
+//| the same data found losses actually concentrate in 06-11 KST, while     |
+//| 12-17 KST is profitable -- try narrowing EndHour to 11 to test keeping  |
+//| those hours active. Hourly samples are much smaller (20-45 trades/hour  |
+//| vs 200+ for the 8h blocks), so treat this as a follow-up experiment,    |
+//| not a confirmed result yet.                                            |
 //+------------------------------------------------------------------+
 #property strict
 #include <Trade/Trade.mqh>
 CTrade trade;
 
-input ENUM_TIMEFRAMES Timeframe = PERIOD_M2; // signal-candle timeframe; change to test other TFs (M1/M3/M5/...)
-input double Lots               = 0.1;
-input int    StochK_Period      = 8;    // re-optimized from 16 -- see header for ground-truth numbers
-input int    StochD_Period      = 3;
-input int    StochSlowing       = 3;
-input double StochOverbought    = 85.0; // re-optimized from 70.0 -- see header for ground-truth numbers
-input double StochOversold      = 30.0; // unchanged -- clean unimodal peak already at 30
-input double SL_R               = 4.0;  // was a stale unsynced 1.0 -- see header
-input double TP_R               = 0.45; // was a stale unsynced 0.5 -- see header
-input double MinR_Points        = 350;  // re-optimized from 400 -- skip signal if R (=|close-open| of
-                                         // the M2 signal candle, in points) is below this. 0 = no filter.
-input ulong  MagicNumber        = 95016101;
-input int    MaxDeviationPts    = 50;
-input bool   EnableLiveOrders   = false; // SAFETY: set true only after checks
-input bool   AllowSellFade      = false; // confirmed default (was a stale unsynced true) -- ground-truth
-                                          // backtest showed this is the one structurally losing direction
-                                          // (PF 0.88, -$4,848); set true only to reproduce old V1 behavior
-input bool   SkipTrendBearAsiaSession = true; // A session breakdown (2025.01-2026.09) found STOCH_TREND_BEAR
-                                          // is a structural loser specifically during the Asia session
-                                          // (06:00-16:00 Korea time -> PF 0.822, -$1,480.89 over 243 trades),
-                                          // while the same signal is solidly profitable during Europe (16-22)
-                                          // and especially US (22-06) hours. Skips TREND_BEAR only during
-                                          // that Korea-time window; other signals/sessions unaffected.
-                                          // Ground-truth backtest confirmed this default: NET $17,004.08 ->
-                                          // $17,746.29 (+$742.21), PF 1.225 -> 1.260, DD down to 3.25%/3.96%
-                                          // -- a clean improvement on every metric. Set false to restore the
-                                          // old always-on TREND_BEAR behavior.
-input int    AsiaSessionStartHour = 6;   // Korea-time hour the Asia-session skip window starts (inclusive).
-                                          // An hour-by-hour breakdown of the same data found the losses
-                                          // actually concentrate in 06-11 KST, while 12-17 KST is profitable
-                                          // -- try narrowing AsiaSessionEndHour to 11 to test keeping those
-                                          // hours active. Hourly samples are much smaller than the 8h-block
-                                          // ones (20-45 trades/hour vs 200+), so treat this as a follow-up
-                                          // experiment, not a confirmed result yet.
-input int    AsiaSessionEndHour   = 16;  // Korea-time hour the Asia-session skip window ends (exclusive).
-input bool   ReverseTrendBearAsiaSession = false; // UNTESTED -- instead of SKIPPING TREND_BEAR during the
-                                          // Asia session, trade the OPPOSITE direction (BUY) there instead.
-                                          // Takes priority over SkipTrendBearAsiaSession when both would
-                                          // apply. A losing SELL and a winning reversed BUY are NOT
-                                          // mathematically equivalent (SL/TP distances are asymmetric and the
-                                          // intrabar price path matters), so this needs its own backtest to
-                                          // know whether the Asia-session weakness is a reversible edge or
-                                          // just noise to avoid. Tagged STOCH_TREND_BEAR_REV_ASIA for tracking.
-input int    MaxMinutesWithoutProgress = 0; // 0 = disabled (default, no behavior change). Holding-time analysis
-                                          // (2025.01-2026.09) found trades that hit TP resolve in ~3min median,
-                                          // while trades that hit SL take ~36min median (9-18x longer) --
-                                          // a position still open past N minutes is disproportionately likely
-                                          // to end in a loss. HOWEVER: 12-26% of WINNING trades also take
-                                          // longer than typical cutoffs (15-30min), and this data can't show
-                                          // their intrabar P&L path at the cutoff moment, so a blind time-stop
-                                          // could cut some future winners at an unknown (possibly negative)
-                                          // price. UNTESTED as a live rule -- set >0 (e.g. 20/30/45) to close
-                                          // any open position early once it's been open this many minutes,
-                                          // and backtest the real net effect before trusting it.
-input bool   UseTrendFilter     = false; // UNTESTED -- skip an entry if a strong opposing trend is already in
-                                          // place on a higher timeframe (checked via ADX/DI), on the theory
-                                          // that trades lost to a one-way run against the position happen when
-                                          // that opposing trend was already established before entry. Default
-                                          // false reproduces existing behavior exactly.
-input ENUM_TIMEFRAMES TrendFilterTimeframe = PERIOD_M15; // higher timeframe to measure the opposing trend on
-                                          // (not the same M2 the signal fires on, since that's noisy/local --
-                                          // the idea is to detect the larger-picture regime, not the signal
-                                          // candle itself).
-input int    ADXPeriod          = 14;    // standard ADX period
-input double ADXThreshold       = 25.0;  // ADX >= this is considered "trending" (standard convention); below
-                                          // this the market is considered range-bound/no dominant trend
+input ENUM_TIMEFRAMES Timeframe = PERIOD_M2; // signal-candle timeframe
+input double Lots               = 0.1; // Lot size
+input int    StochK_Period      = 8;    // Stoch %K period
+input int    StochD_Period      = 3; // Stoch %D period
+input int    StochSlowing       = 3; // Stoch slowing
+input double StochOverbought    = 85.0; // Stoch overbought level
+input double StochOversold      = 30.0; // Stoch oversold level
+input double SL_R               = 4.0;  // Stop loss (R)
+input double TP_R               = 0.45; // Take profit (R)
+input double MinR_Points        = 350;  // Min signal-candle body (points) to trade, 0=no filter
+input ulong  MagicNumber        = 95016101; // Magic number
+input int    MaxDeviationPts    = 50; // Max price deviation (points)
+input bool   EnableLiveOrders   = false; // Enable live orders
+input bool   AllowSellFade      = false; // Allow bull+overbought SELL-fade case (CONFIRMED false, see header)
+input bool   SkipTrendBearAsiaSession = true; // Skip TREND_BEAR during Asia session (CONFIRMED, see header)
+input int    AsiaSessionStartHour = 6;   // Asia-session skip window start hour, Korea time
+input int    AsiaSessionEndHour   = 16;  // Asia-session skip window end hour, Korea time
+input bool   ReverseTrendBearAsiaSession = false; // Reverse TREND_BEAR in Asia session to BUY (UNTESTED, see header)
+input int    MaxMinutesWithoutProgress = 0; // Close position after N min regardless of P&L, 0=disabled (UNTESTED, see header)
+input bool   UseTrendFilter     = false; // Skip entry if opposing trend on higher TF (UNTESTED, see header)
+input ENUM_TIMEFRAMES TrendFilterTimeframe = PERIOD_M15; // Higher timeframe for UseTrendFilter
+input int    ADXPeriod          = 14;    // ADX period for UseTrendFilter
+input double ADXThreshold       = 25.0;  // ADX trending threshold for UseTrendFilter
 
-input bool   UseOppositeSignalExit = false; // UNTESTED -- while holding a position that has ALSO reached 75%
-                                          // of SL_R (the same danger threshold reached50/75 tracks), close it
-                                          // immediately at market if a NEW opposite-direction M2 signal candle
-                                          // (BB20/BB4 breakout, same R filter as entries) appears -- regardless
-                                          // of what direction that new signal would itself trade (the
-                                          // stochastic fade/trend decision only matters for entries, not for
-                                          // this check). A first version that closed on ANY opposite signal
-                                          // (no 75% requirement) was ground-truth backtested and REJECTED: NET
-                                          // fell from $17,746 to $12,245 because it also cut ~131 trades that
-                                          // had only a shallow pullback and would have gone on to hit TP anyway
-                                          // (that subgroup's natural win rate was 100%). Requiring reached75
-                                          // first is meant to keep those safe, and only cut the trades already
-                                          // known to be in the 26%-win-rate danger zone. Default false
-                                          // reproduces existing behavior exactly.
+input bool   UseOppositeSignalExit = false; // Close on opposite signal past 75% SL_R (UNTESTED, see header)
 
-input int    SlopeLookbackBars  = 5;     // DIAGNOSTIC ONLY, no trading effect -- bars back to measure the
-                                          // BB20 basis-line (20-period MA) slope from, at each signal candle.
-input double SlopeThresholdDeg  = 20.0;  // |slope| in a normalized pseudo-angle (see SLOPE_CALC log comment)
-                                          // at or below this is classified FLAT; above it, STEEP.
-input double SlopeSimTargetR    = 0.5;   // R-multiple target used for the slope-hypothesis forward simulation.
-input double SlopeSimExpiryHours = 6.0;  // give up waiting for the target after this many hours and log
-                                          // whatever hit/miss state the simulation is in at that point.
+input int    SlopeLookbackBars  = 5;     // MA slope diagnostic: lookback bars (no trading effect)
+input double SlopeThresholdDeg  = 20.0;  // MA slope diagnostic: FLAT/STEEP threshold (degrees)
+input double SlopeSimTargetR    = 0.5;   // MA slope diagnostic: simulated target (R)
+input double SlopeSimExpiryHours = 6.0;  // MA slope diagnostic: simulation expiry (hours)
 
-input bool   IgnoreStochastic   = false; // UNTESTED -- bypasses the Stochastic OB/OS decision (and
-                                          // AllowSellFade, which only applies to that decision) entirely:
-                                          // every signal candle trades its own breakout direction (trend-
-                                          // following), including the bull+overbought case that AllowSellFade
-                                          // normally disables/skips and the bear+oversold case that would
-                                          // otherwise fade. Session filters on TREND_BEAR still apply. Answers
-                                          // "does 001 still win >90% without the Stochastic filter at all."
-                                          // Default false reproduces existing behavior exactly.
+input bool   IgnoreStochastic   = false; // Bypass Stochastic decision entirely (UNTESTED, see header)
 
-input int    CircuitBreakerLossCount    = 2;    // consecutive LOSS outcomes (any tag) that trigger a pause.
-input double CircuitBreakerCooldownHours = 6.0; // how long new entries are paused for once triggered.
-input bool   UseCircuitBreaker  = false; // UNTESTED -- when true, ACTUALLY skips new entries while the
-                                          // cooldown is active. Regardless of this flag, every would-be-
-                                          // skipped entry is logged as CIRCUIT_BREAKER_WOULD_SKIP so the
-                                          // trigger frequency and cooldown overlap can be measured with zero
-                                          // trading effect first. Unlike the MAE-side/opposite-signal exits
-                                          // (all rejected), this doesn't touch any open position -- it only
-                                          // withholds NEW entries during a losing streak, on the theory that a
-                                          // string of losses may signal a temporarily bad regime rather than
-                                          // being pure noise. Default false reproduces existing behavior
-                                          // exactly.
+input int    CircuitBreakerLossCount    = 2;    // Consecutive losses that trigger a pause
+input double CircuitBreakerCooldownHours = 6.0; // Pause duration after circuit breaker trips (hours)
+input bool   UseCircuitBreaker  = false; // Actually pause entries after a losing streak (UNTESTED, see header)
 
-input double BreakevenTriggerFrac = 0.5; // fraction of TP_R that must be reached in favor before a
-                                          // breakeven-stop becomes a candidate -- see header for the
-                                          // BE_TRIGGER/BE_RETRACE hypothesis and why SL_R >> TP_R matters here.
-input bool   UseBreakevenStop   = false; // UNTESTED -- when true, ACTUALLY moves the SL to the entry price
-                                          // once BreakevenTriggerFrac of TP_R is reached in favor.
-                                          // BE_TRIGGER/BE_RETRACE diagnostic logging always runs regardless
-                                          // of this flag. Default false reproduces existing behavior exactly.
-                                          // GROUND TRUTH: rejected (see header) -- keep this false.
+input double BreakevenTriggerFrac = 0.5; // Fraction of TP_R to arm breakeven stop
+input bool   UseBreakevenStop   = false; // Move SL to breakeven once armed (REJECTED, see header)
 
-input bool   SkipFadeBearOSWickTouch = true; // confirmed default (was UNTESTED=false) -- skips FADE_BEAR_OS
-                                          // entries whose signal candle only wicked through BB20 without the
-                                          // close (body) also breaking it. Ground-truth breakdown found
-                                          // FADE_BEAR_OS+WICK was the ONLY body/wick x tag combination that was
-                                          // net negative (195 trades, -$325.40, 88.7% win rate) while every
-                                          // other combination (including FADE_BEAR_OS+BODY at 92.7%/+$18,282)
-                                          // was solidly profitable. Ground-truth confirmed result: NET
-                                          // $24,877.21 -> $26,237.13 (+5.5%), PF 1.304 -> 1.342, Recovery
-                                          // Factor 9.14 -> 9.58, WR 91.86% -> 92.12%, DD unchanged (~2.2%).
+input bool   SkipFadeBearOSWickTouch = true; // Skip FADE_BEAR_OS wick-only touches (CONFIRMED, see header)
 
 int hBB20=INVALID_HANDLE,hBB4=INVALID_HANDLE,hStoch=INVALID_HANDLE,hADX=INVALID_HANDLE;
 datetime last_m2_bar=0;

@@ -48,51 +48,36 @@
 //| 8.211, WR 93.58% -> 93.73%, DD 2.19%/2.63% -> 1.92%/2.17% -- a clean  |
 //| improvement on every metric despite FADE_BEAR_OS being M1's          |
 //| dominant bucket, same pattern as M2_v2/M3.                            |
+//| SkipFadeBearOSAsiaSession (default false): a Korea-time session       |
+//| breakdown (2025.01-2026.09) found STOCH_FADE_BEAR_OS -- M1's          |
+//| dominant bucket -- is a structural loser specifically during the      |
+//| Asia session (06:00-16:00 KST): PF 0.907, -$1,926.30 over 628 trades, |
+//| while solidly profitable in Europe (PF 1.293) and US (PF 1.526)       |
+//| hours. Opposite bucket from the same Asia weakness found on M2        |
+//| (there it's STOCH_TREND_BEAR), so it needs its own filter here.       |
+//| Default false reproduces existing behavior exactly.                   |
 //+------------------------------------------------------------------+
 #property strict
 #include <Trade/Trade.mqh>
 CTrade trade;
 
 input ENUM_TIMEFRAMES Timeframe = PERIOD_M1; // signal-candle timeframe
-input double Lots               = 0.1;
-input int    StochK_Period      = 17;   // re-optimized from 16 -- see header for ground-truth numbers
-input int    StochD_Period      = 3;
-input int    StochSlowing       = 3;
-input double StochOverbought    = 70.0; // DEAD PARAMETER on M1: AllowSellFade=false AND
-                                         // AllowTrendBull=false together disable both bull-candle
-                                         // branches entirely, so this value has zero effect (confirmed:
-                                         // 7 different thresholds gave byte-identical backtest results)
-input double StochOversold      = 25.0; // re-optimized from 30.0 -- see header for ground-truth numbers
-input double SL_R               = 5.0;  // M1-specific value (M2/M3 use 4.0) -- see header
-input double TP_R               = 0.45;
-input double MinR_Points        = 400;  // skip signal if R (=|close-open| of the M1 signal candle, in
-                                         // points) is below this. 0 = no filter.
-input ulong  MagicNumber        = 95016102; // distinct from the M2 sibling (95016101) so both can run
-                                             // side by side without one seeing the other's position
-input int    MaxDeviationPts    = 50;
-input bool   EnableLiveOrders   = false; // SAFETY: set true only after checks
-input bool   AllowSellFade      = false; // false = skip the bull+overbought SELL-fade case entirely
-                                          // (ground-truth backtest showed this is the one losing direction)
-input bool   AllowTrendBull     = false; // false = skip the bull+not-overbought TREND-BUY case entirely
-                                          // (M1-specific finding: this bucket is a loser at SL_R=4.0-5.0
-                                          // here, unlike the same bucket on M2/M3 where it's profitable)
-input bool   SkipFadeBearOSAsiaSession = false; // A Korea-time session breakdown (2025.01-2026.09) found
-                                          // STOCH_FADE_BEAR_OS -- M1's dominant bucket -- is a structural
-                                          // loser specifically during the Asia session (06:00-16:00 KST):
-                                          // PF 0.907, -$1,926.30 over 628 trades, while it's solidly
-                                          // profitable in Europe (16-22 KST, PF 1.293) and US (22-06 KST,
-                                          // PF 1.526) hours. This is the OPPOSITE bucket from the same
-                                          // Asia-session weakness found on M2 (there it's STOCH_TREND_BEAR),
-                                          // so it needs its own separate filter here. Default false
-                                          // reproduces existing behavior exactly.
-input bool   SkipFadeBearOSWickTouch = true; // confirmed default (was UNTESTED=false) -- skips FADE_BEAR_OS
-                                          // entries whose signal candle only wicked through BB20 without the
-                                          // close (body) also breaking it. Ground-truth confirmed result (at
-                                          // the correct SL_R=5.0 -- an earlier test run at a stale SL_R=4.0
-                                          // gave a misleadingly mixed result): NET $19,734.96 -> $20,871.16
-                                          // (+5.8%), PF 1.358 -> 1.405, Recovery Factor 7.336 -> 8.211, WR
-                                          // 93.58% -> 93.73%, DD 2.19%/2.63% -> 1.92%/2.17% (also improved) --
-                                          // a clean improvement on every metric, same pattern as M2_v2/M3.
+input double Lots               = 0.1; // Lot size
+input int    StochK_Period      = 17;   // Stoch %K period
+input int    StochD_Period      = 3; // Stoch %D period
+input int    StochSlowing       = 3; // Stoch slowing
+input double StochOverbought    = 70.0; // Stoch overbought level (dead param on M1, see header)
+input double StochOversold      = 25.0; // Stoch oversold level
+input double SL_R               = 5.0;  // Stop loss (R)
+input double TP_R               = 0.45; // Take profit (R)
+input double MinR_Points        = 400;  // Min signal-candle body (points) to trade, 0=no filter
+input ulong  MagicNumber        = 95016102; // Magic number
+input int    MaxDeviationPts    = 50; // Max price deviation (points)
+input bool   EnableLiveOrders   = false; // Enable live orders
+input bool   AllowSellFade      = false; // Allow bull+overbought SELL-fade case
+input bool   AllowTrendBull     = false; // Allow bull+not-overbought TREND-BUY case
+input bool   SkipFadeBearOSAsiaSession = false; // Skip FADE_BEAR_OS during Asia session (see header)
+input bool   SkipFadeBearOSWickTouch = true; // Skip FADE_BEAR_OS wick-only touches (CONFIRMED, see header)
 
 int hBB20=INVALID_HANDLE,hBB4=INVALID_HANDLE,hStoch=INVALID_HANDLE;
 datetime last_m1_bar=0;

@@ -52,53 +52,33 @@
 //| $17,292.99 (+3.5%), PF 1.818 -> 1.934, Recovery Factor 6.888 ->      |
 //| 7.133, WR 93.86% -> 94.38%, DD essentially unchanged -- same pattern |
 //| as M2_v2/M1.                                                         |
+//| ReverseTrendBearOutsideEurope (default false, UNTESTED): instead of   |
+//| skipping TREND_BEAR outside Europe (Asia/US, both losers on M3),      |
+//| trade the OPPOSITE direction (BUY) there instead. Takes priority      |
+//| over TrendBearEuropeOnly when both apply. Tagged                      |
+//| STOCH_TREND_BEAR_REV_NONEURO for tracking; needs its own backtest.    |
 //+------------------------------------------------------------------+
 #property strict
 #include <Trade/Trade.mqh>
 CTrade trade;
 
 input ENUM_TIMEFRAMES Timeframe = PERIOD_M3; // signal-candle timeframe
-input double Lots               = 0.1;
-input int    StochK_Period      = 14;   // re-optimized from 16 -- see header for ground-truth numbers
-input int    StochD_Period      = 3;
-input int    StochSlowing       = 3;
-input double StochOverbought    = 70.0; // unchanged -- noisy 55-70 sweep, no clear win from changing
-input double StochOversold      = 25.0; // re-optimized from 30.0 -- see header for ground-truth numbers
-input double SL_R               = 4.0;
-input double TP_R               = 0.45;
-input double MinR_Points        = 900;  // skip signal if R (=|close-open| of the M3 signal candle, in
-                                         // points) is below this. 0 = no filter.
-input ulong  MagicNumber        = 95016103; // distinct from the M2 (95016101) and M1 (95016102)
-                                             // siblings so all three can run side by side
-input int    MaxDeviationPts    = 50;
-input bool   EnableLiveOrders   = false; // SAFETY: set true only after checks
-input bool   AllowSellFade      = false; // false = skip the bull+overbought SELL-fade case entirely
-                                          // (ground-truth backtest showed this is the one losing direction)
-input bool   TrendBearEuropeOnly = true;  // A Korea-time session breakdown (2025.01-2026.09) found
-                                          // STOCH_TREND_BEAR loses in BOTH Asia (06-16 KST: PF 0.586,
-                                          // -$1,616.72, 46 trades) and US hours (22-06 KST: PF 0.709,
-                                          // -$1,225.20, 51 trades) on M3, and is only profitable during
-                                          // Europe (16-22 KST: PF 3.596, +$1,157.86, 26 trades) -- a
-                                          // different pattern from M2 (Asia-only weakness) and M1 (a
-                                          // different bucket entirely, left untouched by choice).
-                                          // Ground-truth backtest confirmed this default: NET $16,186.37 ->
-                                          // $20,749.43 (+$4,563.06), PF 1.725 -> 2.264, DD down to 1.85%/
-                                          // 2.64% -- a clean improvement on every metric. Set false to
-                                          // restore the old always-on TREND_BEAR behavior.
-input bool   ReverseTrendBearOutsideEurope = false; // UNTESTED -- instead of SKIPPING TREND_BEAR outside the
-                                          // Europe session (i.e. during Asia and US, both losers on M3),
-                                          // trade the OPPOSITE direction (BUY) there instead. Takes priority
-                                          // over TrendBearEuropeOnly when both would apply. A losing SELL and
-                                          // a winning reversed BUY are NOT mathematically equivalent (SL/TP
-                                          // distances are asymmetric and the intrabar price path matters),
-                                          // so this needs its own backtest. Tagged
-                                          // STOCH_TREND_BEAR_REV_NONEURO for tracking.
-input bool   SkipFadeBearOSWickTouch = true; // confirmed default (was UNTESTED=false) -- skips FADE_BEAR_OS
-                                          // entries whose signal candle only wicked through BB20 without the
-                                          // close (body) also breaking it. Ground-truth confirmed result: NET
-                                          // $16,700.99 -> $17,292.99 (+3.5%), PF 1.818 -> 1.934, Recovery
-                                          // Factor 6.888 -> 7.133, WR 93.86% -> 94.38%, DD essentially
-                                          // unchanged (~1.6%/2.3%) -- same pattern as M2_v2/M1.
+input double Lots               = 0.1; // Lot size
+input int    StochK_Period      = 14;   // Stoch %K period
+input int    StochD_Period      = 3; // Stoch %D period
+input int    StochSlowing       = 3; // Stoch slowing
+input double StochOverbought    = 70.0; // Stoch overbought level
+input double StochOversold      = 25.0; // Stoch oversold level
+input double SL_R               = 4.0; // Stop loss (R)
+input double TP_R               = 0.45; // Take profit (R)
+input double MinR_Points        = 900;  // Min signal-candle body (points) to trade, 0=no filter
+input ulong  MagicNumber        = 95016103; // Magic number
+input int    MaxDeviationPts    = 50; // Max price deviation (points)
+input bool   EnableLiveOrders   = false; // Enable live orders
+input bool   AllowSellFade      = false; // Allow bull+overbought SELL-fade case
+input bool   TrendBearEuropeOnly = true;  // Restrict TREND_BEAR to Europe session (CONFIRMED, see header)
+input bool   ReverseTrendBearOutsideEurope = false; // Reverse TREND_BEAR outside Europe to BUY (UNTESTED, see header)
+input bool   SkipFadeBearOSWickTouch = true; // Skip FADE_BEAR_OS wick-only touches (CONFIRMED, see header)
 
 int hBB20=INVALID_HANDLE,hBB4=INVALID_HANDLE,hStoch=INVALID_HANDLE;
 datetime last_m3_bar=0;
