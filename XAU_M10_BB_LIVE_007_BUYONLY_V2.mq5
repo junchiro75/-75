@@ -48,16 +48,19 @@
 //| lifecycle (still completes even if LatestSignalOnly discards the     |
 //| setup or it never becomes a real trade), joined externally against   |
 //| a trade's own outcome via the shared sig= timestamp now also logged  |
-//| on ENTRY_OK. Ground truth (2025.01-2026.09, H1CheckAtEntryTime=true): |
-//| losing trades averaged bearCount 2.90 vs winning trades' 2.65, and    |
-//| bearCount>=4 was 28.2% of losses vs only 18.3% of wins (z=2.89) --    |
-//| a losing trade's signal tends to get followed by stronger one-way     |
-//| continuation, consistent with the mean-reversion bounce failing when  |
-//| the move is genuinely still running. NEXT5_CHECK / SkipIfNext5Bearish |
-//| (flag ACTS): skips an entry once next5Ready is true (5 bars already   |
-//| closed by entry time) AND next5BearCount>=Next5BearThreshold (4).     |
-//| Has NO effect on fast setups entering before those 5 bars exist yet.  |
-//| UNTESTED as a live rule.                                              |
+//| on ENTRY_OK. A post-hoc correlation (2025.01-2026.09, H1CheckAtEntry  |
+//| Time=true) found losing trades averaged bearCount 2.90 vs winning     |
+//| trades' 2.65, and bearCount>=4 was 28.2% of losses vs only 18.3% of   |
+//| wins (z=2.89) -- but that used bearCount values known only in         |
+//| hindsight (whenever the 5 bars eventually closed, not necessarily by  |
+//| the trade's own entry time). NEXT5_CHECK / SkipIfNext5Bearish         |
+//| GROUND-TRUTH REJECTED once actually tried live: next5Ready was true   |
+//| for only ~20 of 1336 trades AT their real entry moment (most entries  |
+//| fire within the first 50 min, before the 5 bars even exist), and      |
+//| filtering that tiny subset made every metric slightly worse (NET      |
+//| $10,518.15 -> $9,959.27, PF 1.418 -> 1.399, Recovery Factor 5.007 ->  |
+//| 4.523). Lesson: a correlation measured with hindsight-only data does  |
+//| not automatically transfer to a real-time filter -- keep this false.  |
 //+------------------------------------------------------------------+
 #property strict
 #include <Trade/Trade.mqh>
@@ -102,12 +105,15 @@ input int  Next5BearThreshold=4; // ground-truth threshold (2025.01-2026.09, H1C
                              // among the 163 losing trades, 28.2% had next5BearCount>=4 vs only 18.3%
                              // of the 834 winners (z=2.89) -- see Setup.next5BearCount for the full
                              // finding.
-input bool SkipIfNext5Bearish=false; // UNTESTED as a live rule -- when true, skips an entry if
-                             // next5Ready is true (5 M10 bars after the signal have already closed by
-                             // entry time) AND next5BearCount>=Next5BearThreshold. Has NO effect on
-                             // fast setups where entry happens before those 5 bars exist yet (still the
-                             // majority of trades) -- needs its own backtest to see the real impact
-                             // given it can only ever filter the subset it actually has data for.
+input bool SkipIfNext5Bearish=false; // GROUND-TRUTH REJECTED (see header) -- the z=2.89 correlation
+                             // was measured using bearCount values known only in hindsight (whenever
+                             // the 5 bars eventually closed, regardless of whether that was before or
+                             // after this trade's own entry). Live-flag backtest found next5Ready was
+                             // true for only ~20 of 1336 trades at their actual entry moment (most
+                             // entries fire within the first 50 min, before the 5 bars exist), and
+                             // filtering that tiny subset made every metric slightly WORSE (NET
+                             // $10,518.15 -> $9,959.27, PF 1.418 -> 1.399, Recovery Factor 5.007 ->
+                             // 4.523). Keep this false.
 
 int h20=INVALID_HANDLE,h4=INVALID_HANDLE;
 datetime lastbar=0;
