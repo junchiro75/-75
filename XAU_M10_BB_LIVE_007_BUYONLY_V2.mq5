@@ -73,6 +73,16 @@
 //| -> $12,479.87 (+18.6%), PF 1.418 -> 1.542, Recovery Factor 5.007 ->    |
 //| 6.887, WR 87.20% -> 87.59%, DD 1.95%/2.07% -> 1.62%/1.78% -- a clean   |
 //| win on every metric, bigger than the raw dollars removed.             |
+//| SIGNAL_STREAK / SkipEarlySignalsInStreak (diagnostic always on; flag   |
+//| ACTS): user's chart observation -- in a strong trend, the FIRST BB    |
+//| signal in a same-direction run tends to get run over (stopped out),   |
+//| while a LATER one in the run (closer to real exhaustion) works        |
+//| better. Counts consecutive same-direction M10 signals, reset to 1 on  |
+//| any direction flip; when SkipEarlySignalsInStreak=true, only the      |
+//| EntryFromNthSignal'th (default 2nd) and later signals in a run are    |
+//| ever allowed to become a real Setup -- earlier ones in the run are    |
+//| skipped entirely (no extension/pullback tracking wasted on them).     |
+//| UNTESTED as a live rule.                                              |
 //+------------------------------------------------------------------+
 #property strict
 #include <Trade/Trade.mqh>
@@ -142,9 +152,22 @@ input bool SkipFridayNightEntry=true; // confirmed default (was UNTESTED=false) 
                              // DD 1.95%/2.07% -> 1.62%/1.78% -- a clean improvement on every metric,
                              // bigger than the raw -$1,902.85 removed (fewer weekend-held positions
                              // also compressed drawdown).
+input int  EntryFromNthSignal=2; // require this many consecutive same-direction M10 signals (see
+                             // SkipEarlySignalsInStreak) before a signal is allowed to become a real
+                             // Setup. 1 = no change (every signal counts). User's chart observation:
+                             // in a strong trend, the FIRST BB signal in a run tends to get run over,
+                             // while a later one in the same run works better.
+input bool SkipEarlySignalsInStreak=false; // UNTESTED as a live rule -- when true, ACTUALLY skips
+                             // signals whose position in their same-direction streak is below
+                             // EntryFromNthSignal (e.g. with the default 2, only the 2nd+ consecutive
+                             // same-direction signal is ever traded; the 1st is always skipped).
+                             // SIGNAL_STREAK diagnostic logging always runs regardless of this flag.
+                             // NEXT5_AFTER_SIGNAL still tracks every signal, skipped or not. Default
+                             // false reproduces existing behavior exactly.
 
 int h20=INVALID_HANDLE,h4=INVALID_HANDLE;
 datetime lastbar=0;
+int      g_consecSignalCount=0,g_lastSignalSd=0; // consecutive same-direction M10 signal streak
 int f_log=INVALID_HANDLE;
 
 string TS(datetime t){ return TimeToString(t,TIME_DATE|TIME_MINUTES|TIME_SECONDS); }
@@ -287,6 +310,23 @@ void NewBar(){
  if(!bull&&!bear)return;
  double R=MathAbs(c-o);if(R<=0)return;
  bool bodyTouch=bull?(c>=u20[0]):(c<=d20[0]);
+ int sd=bull?1:-1;
+
+ // Consecutive same-direction signal streak (SkipEarlySignalsInStreak ACTS):
+ // user's chart observation -- in a strong trend, the FIRST BB signal in a
+ // same-direction run tends to get run over (stopped out), while a LATER
+ // one in the same run (closer to real exhaustion) works better. Counts
+ // how many M10 signals in a row have fired in the same direction, reset
+ // to 1 whenever the direction flips.
+ if(sd==g_lastSignalSd) g_consecSignalCount++;
+ else { g_consecSignalCount=1; g_lastSignalSd=sd; }
+ Log("SIGNAL_STREAK","sd="+(bull?"BULL":"BEAR")+" count="+IntegerToString(g_consecSignalCount));
+ if(SkipEarlySignalsInStreak && g_consecSignalCount<EntryFromNthSignal){
+  Log("SIGNAL_SKIPPED","streak count="+IntegerToString(g_consecSignalCount)+" < EntryFromNthSignal="+
+      IntegerToString(EntryFromNthSignal)+" by SkipEarlySignalsInStreak=true");
+  StartLookahead(st,sd,bodyTouch); // NEXT5 diagnostic still tracks every signal, traded or not
+  return;
+ }
 
  // H1 trend-against check, evaluated NOW (at signal time), using the two H1
  // bars immediately preceding the one currently in progress -- i.e. shift 1
@@ -593,7 +633,9 @@ int OnInit(){
      " | Next5BearThreshold="+IntegerToString(Next5BearThreshold)+
      " SkipIfNext5Bearish="+(SkipIfNext5Bearish?"true":"false")+
      " | FridayNightCutoffHour="+IntegerToString(FridayNightCutoffHour)+
-     " SkipFridayNightEntry="+(SkipFridayNightEntry?"true":"false")+" | Lots="+DoubleToString(Lots,2)+
+     " SkipFridayNightEntry="+(SkipFridayNightEntry?"true":"false")+
+     " | EntryFromNthSignal="+IntegerToString(EntryFromNthSignal)+
+     " SkipEarlySignalsInStreak="+(SkipEarlySignalsInStreak?"true":"false")+" | Lots="+DoubleToString(Lots,2)+
      " | Magic="+IntegerToString((int)MagicNumber)+" | orders="+(EnableLiveOrders?"ENABLED":"DRY"));
  Log("NOTE","EXIT: +0.5R whole-position SL -> +0.25R; +1.0R close half; runner +0.25R; final signal-close opposite 0.90R");
  return INIT_SUCCEEDED;
