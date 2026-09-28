@@ -61,6 +61,16 @@
 //| $10,518.15 -> $9,959.27, PF 1.418 -> 1.399, Recovery Factor 5.007 ->  |
 //| 4.523). Lesson: a correlation measured with hindsight-only data does  |
 //| not automatically transfer to a real-time filter -- keep this false.  |
+//| FRIDAY_NIGHT_CHECK / SkipFridayNightEntry (diagnostic always on; flag  |
+//| ACTS): found by inspecting the ~50-hour "slow bleed" losses -- all 5   |
+//| were Friday-night entries (22:30-23:41 server time) that sat over the |
+//| closed weekend and got stopped right at Monday reopen (exit timestamp |
+//| 01:01 on every single one, -$1,902.85 combined). 100% mechanical      |
+//| weekend-gap risk, not market behavior. Blocks a real entry once it's  |
+//| Friday at/after FridayNightCutoffHour (22:00) server time; the Setup   |
+//| is dropped rather than held for Monday, since its extension+pullback  |
+//| state is stale by then anyway. UNTESTED as a live rule (needs its own |
+//| backtest before trusting the exact NET/PF impact).                    |
 //+------------------------------------------------------------------+
 #property strict
 #include <Trade/Trade.mqh>
@@ -114,6 +124,19 @@ input bool SkipIfNext5Bearish=false; // GROUND-TRUTH REJECTED (see header) -- th
                              // filtering that tiny subset made every metric slightly WORSE (NET
                              // $10,518.15 -> $9,959.27, PF 1.418 -> 1.399, Recovery Factor 5.007 ->
                              // 4.523). Keep this false.
+input int  FridayNightCutoffHour=22; // server-time hour on Friday after which new entries are
+                             // blocked (see SkipFridayNightEntry). Root cause found by inspecting
+                             // the ~50-hour "slow bleed" losses (2025.01-2026.09, H1CheckAtEntryTime=
+                             // true): all 5 were Friday-night entries (22:30-23:41 server time) that
+                             // sat over the weekend close and hit their SL right at Monday reopen
+                             // (exit timestamp 01:01 on every single one) -- 100% mechanical weekend-
+                             // gap risk, not market behavior. -$1,902.85 combined.
+input bool SkipFridayNightEntry=false; // UNTESTED as a live rule -- when true, blocks a real entry
+                             // (SendEntry) once it's Friday at/after FridayNightCutoffHour server time.
+                             // The underlying Setup is dropped, not held for Monday, since the
+                             // extension+pullback state it was waiting on is stale by then anyway.
+                             // Diagnostic logging (FRIDAY_NIGHT_CHECK) always runs regardless of this
+                             // flag. Default false reproduces existing behavior exactly.
 
 int h20=INVALID_HANDLE,h4=INVALID_HANDLE;
 datetime lastbar=0;
@@ -290,11 +313,29 @@ void NewBar(){
  Log("SIGNAL",(bull?"BULL":"BEAR")+" R="+DoubleToString(R,2)+" touch="+(bodyTouch?"BODY":"WICK"));
 }
 
+// Friday day_of_week==5 in MQL5 (0=Sunday...6=Saturday), server time.
+bool IsFridayNightCutoff(datetime t){
+ MqlDateTime dt; TimeToStruct(t,dt);
+ return (dt.day_of_week==5 && dt.hour>=FridayNightCutoffHour);
+}
+
 bool SendEntry(int i,MqlTick &tk){
  ulong old; if(OwnPosition(old)){DS(i);return false;} // strict own-Magic MAX1; consume setup
  int dir=-S[i].sd; double R=S[i].R;
  if(dir==-1 && !AllowShort){
   Log("SIGNAL_SKIPPED","SELL disabled by AllowShort=false (data-driven direction filter)");
+  DS(i);return false;
+ }
+
+ // Friday-night weekend-gap filter (SkipFridayNightEntry ACTS): root cause
+ // found in the ~50-hour "slow bleed" losses -- all were Friday-night entries
+ // that sat over the closed weekend and got stopped right at Monday reopen.
+ datetime nowT=(datetime)(tk.time_msc/1000);
+ bool fridayNight=IsFridayNightCutoff(nowT);
+ Log("FRIDAY_NIGHT_CHECK","fridayNight="+(fridayNight?"true":"false")+" now="+TimeToString(nowT));
+ if(fridayNight && SkipFridayNightEntry){
+  Log("SIGNAL_SKIPPED","Friday >= "+IntegerToString(FridayNightCutoffHour)+
+      ":00 server time (weekend-gap risk) by SkipFridayNightEntry=true");
   DS(i);return false;
  }
 
@@ -545,7 +586,9 @@ int OnInit(){
      " | SkipIfH1NotAgainst="+(SkipIfH1NotAgainst?"true":"false")+
      " | H1CheckAtEntryTime="+(H1CheckAtEntryTime?"true":"false")+
      " | Next5BearThreshold="+IntegerToString(Next5BearThreshold)+
-     " SkipIfNext5Bearish="+(SkipIfNext5Bearish?"true":"false")+" | Lots="+DoubleToString(Lots,2)+
+     " SkipIfNext5Bearish="+(SkipIfNext5Bearish?"true":"false")+
+     " | FridayNightCutoffHour="+IntegerToString(FridayNightCutoffHour)+
+     " SkipFridayNightEntry="+(SkipFridayNightEntry?"true":"false")+" | Lots="+DoubleToString(Lots,2)+
      " | Magic="+IntegerToString((int)MagicNumber)+" | orders="+(EnableLiveOrders?"ENABLED":"DRY"));
  Log("NOTE","EXIT: +0.5R whole-position SL -> +0.25R; +1.0R close half; runner +0.25R; final signal-close opposite 0.90R");
  return INIT_SUCCEEDED;
