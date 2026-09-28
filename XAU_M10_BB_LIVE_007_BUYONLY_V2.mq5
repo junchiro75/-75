@@ -40,6 +40,15 @@
 //| in-progress + shift 1 last-closed) -- needs a fresh backtest on     |
 //| this signal-time/shift-1-2 version before re-confirming the exact   |
 //| impact, though the same direction is expected to hold.              |
+//| NEXT5_AFTER_SIGNAL (diagnostic only, no trading effect): for every   |
+//| M10 signal candle, counts how many of the 5 M10 bars starting right  |
+//| after it (inclusive) are bearish (close<open) -- answers "did a      |
+//| losing (stopped-out) trade's signal get followed by a strong,        |
+//| one-way continuation, or something choppier?" Independent of S[]'s   |
+//| lifecycle (still completes even if LatestSignalOnly discards the     |
+//| setup or it never becomes a real trade), joined externally against   |
+//| a trade's own outcome via the shared sig= timestamp now also logged  |
+//| on ENTRY_OK.                                                         |
 //+------------------------------------------------------------------+
 #property strict
 #include <Trade/Trade.mqh>
@@ -101,6 +110,45 @@ struct Setup{
 };
 Setup S[];
 
+// -- NEXT5_AFTER_SIGNAL lookahead (diagnostic only, no trading effect) ------
+// For every M10 signal candle (regardless of whether LatestSignalOnly later
+// discards it, or whether it ever turns into a real trade), counts how many
+// of the 5 M10 bars starting right after the signal candle (inclusive) are
+// bearish (close<open). Independent pool, not tied to Setup's lifecycle,
+// since a signal can be discarded from S[] long before 5 more bars close.
+#define LOOKAHEAD_SLOTS 32
+bool     la_active[LOOKAHEAD_SLOTS];
+datetime la_sig[LOOKAHEAD_SLOTS];
+int      la_bearCount[LOOKAHEAD_SLOTS], la_totalCount[LOOKAHEAD_SLOTS];
+int      la_sd[LOOKAHEAD_SLOTS];
+bool     la_bodyTouch[LOOKAHEAD_SLOTS];
+
+void StartLookahead(datetime sig,int sd,bool bodyTouch){
+ int i=-1;
+ for(int k=0;k<LOOKAHEAD_SLOTS;k++) if(!la_active[k]){i=k;break;}
+ if(i<0){Log("LOOKAHEAD_SLOTS_FULL","dropping lookahead for sig="+TimeToString(sig));return;}
+ la_active[i]=true;la_sig[i]=sig;la_bearCount[i]=0;la_totalCount[i]=0;la_sd[i]=sd;la_bodyTouch[i]=bodyTouch;
+}
+
+// Called once per new M10 bar, using the bar that just closed (shift 1).
+void CheckLookaheads(datetime barTime,double barOpen,double barClose){
+ bool anyActive=false;
+ for(int k=0;k<LOOKAHEAD_SLOTS;k++) if(la_active[k]){anyActive=true;break;}
+ if(!anyActive)return;
+ bool bearBar=barClose<barOpen;
+ for(int i=0;i<LOOKAHEAD_SLOTS;i++){
+  if(!la_active[i])continue;
+  if(barTime<=la_sig[i])continue; // only bars strictly after the signal bar
+  la_totalCount[i]++;
+  if(bearBar)la_bearCount[i]++;
+  if(la_totalCount[i]>=5){
+   Log("NEXT5_AFTER_SIGNAL","sig="+TimeToString(la_sig[i])+" sd="+(la_sd[i]==1?"BULL":"BEAR")+
+       " touch="+(la_bodyTouch[i]?"BODY":"WICK")+" bearCount="+IntegerToString(la_bearCount[i])+"/5");
+   la_active[i]=false;
+  }
+ }
+}
+
 bool protection_armed=false;
 bool managed_partial=false;
 datetime tracked_entry_time=0;
@@ -158,6 +206,7 @@ void NewBar(){
  datetime q=iTime(_Symbol,PERIOD_M10,0); if(!q||q==lastbar)return; lastbar=q;
  datetime st=iTime(_Symbol,PERIOD_M10,1);
  double o=iOpen(_Symbol,PERIOD_M10,1),h=iHigh(_Symbol,PERIOD_M10,1),l=iLow(_Symbol,PERIOD_M10,1),c=iClose(_Symbol,PERIOD_M10,1);
+ CheckLookaheads(st,o,c); // every bar, regardless of whether THIS bar is itself a new signal
  double u20[1],d20[1],u4[1],d4[1];
  if(CopyBuffer(h20,1,1,1,u20)!=1||CopyBuffer(h20,2,1,1,d20)!=1||
     CopyBuffer(h4,1,1,1,u4)!=1||CopyBuffer(h4,2,1,1,d4)!=1)return;
@@ -191,6 +240,7 @@ void NewBar(){
  S[n].sd=bull?1:-1;S[n].R=R;S[n].o=o;S[n].h=h;S[n].l=l;S[n].c=c;S[n].extreme=c;S[n].ext=false;
  S[n].bodyTouch=bodyTouch;
  S[n].h1Against=h1Against;
+ StartLookahead(st,S[n].sd,bodyTouch);
  Log("SIGNAL",(bull?"BULL":"BEAR")+" R="+DoubleToString(R,2)+" touch="+(bodyTouch?"BODY":"WICK"));
 }
 
@@ -240,7 +290,7 @@ bool SendEntry(int i,MqlTick &tk){
  tracked_R=R;tracked_sigclose=S[i].c;tracked_dir=dir;protection_armed=false;managed_partial=false;
  SaveTrack();
  Log("ENTRY_OK",(dir==1?"BUY":"SELL")+" entry="+DoubleToString(tracked_entry,_Digits)+
-     " R="+DoubleToString(R,2)+" lots="+DoubleToString(Lots,2));
+     " R="+DoubleToString(R,2)+" lots="+DoubleToString(Lots,2)+" sig="+TimeToString(S[i].sig));
  DS(i);return true;
 }
 
