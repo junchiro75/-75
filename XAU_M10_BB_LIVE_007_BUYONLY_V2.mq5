@@ -82,7 +82,12 @@
 //| EntryFromNthSignal'th (default 2nd) and later signals in a run are    |
 //| ever allowed to become a real Setup -- earlier ones in the run are    |
 //| skipped entirely (no extension/pullback tracking wasted on them).     |
-//| UNTESTED as a live rule.                                              |
+//| GROUND-TRUTH REJECTED: on top of the confirmed SkipTuesdayEntry/       |
+//| SkipHourAEntry/SkipHourBEntry baseline (650 trades, WR 84.31%, NET     |
+//| $14,922.00, PF 2.236, Recovery Factor 8.234), turning this on cut      |
+//| trades to 463 (-28.8%) and made every metric worse: NET $9,320.97      |
+//| (-37.5%), WR 82.29%, PF 1.908, Recovery Factor 4.873 (nearly halved).  |
+//| Keep this false.                                                       |
 //| SkipTuesdayEntry / SkipHourAEntry / SkipHourBEntry (CONFIRMED          |
 //| default=true, all three together): a KST day-of-week and 2h-bucket    |
 //| breakdown of the confirmed-default backtest (2025.01-2026.09,         |
@@ -139,7 +144,7 @@ input bool SkipIfNext5Bearish=false; // NEXT5 filter: skip if next5 bearish (REJ
 input int  FridayNightCutoffHour=22; // Friday-night cutoff hour, server time (see header)
 input bool SkipFridayNightEntry=true; // Block entries after Friday cutoff (CONFIRMED, see header)
 input int  EntryFromNthSignal=2; // Min signal position in same-direction streak to allow entry
-input bool SkipEarlySignalsInStreak=false; // Streak filter: skip early signals (UNTESTED, see header)
+input bool SkipEarlySignalsInStreak=false; // Streak filter: skip early signals (REJECTED, see header)
 input bool SkipTuesdayEntry=true; // Block all entries on Tuesday, KST (CONFIRMED, see header)
 input int  SkipHourAStartKST=8; // Hour-dip A window start, KST (see header, SkipHourAEntry)
 input int  SkipHourAEndKST=10; // Hour-dip A window end, KST, exclusive (see header, SkipHourAEntry)
