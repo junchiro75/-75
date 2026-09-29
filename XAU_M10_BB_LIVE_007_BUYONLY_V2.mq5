@@ -116,20 +116,27 @@
 //| 82.84%, not 87.59% -- the NET total matches exactly either way        |
 //| ($12,479.87), only the trade-count/WR denominator differs. Treat any  |
 //| WR% in this file from before this note as the inflated MT5 figure.    |
-//| MinR_Points (CONFIRMED=400): unlike every 001_STOCH/005_RFILTER       |
-//| sibling in this project (each tuned its own MinR_Points per           |
-//| timeframe -- M1=350-400, M2=200-350, M3=900), 007 never had a signal- |
-//| candle-body floor at all -- only R>0 was required. Added here and     |
-//| swept 0-800 step 50 (Optimizer, sorted by Recovery Factor) on top of  |
-//| the confirmed baseline (SkipTuesdayEntry/SkipHourAEntry/SkipHourB-    |
-//| Entry all true, SkipEarlySignalsInStreak=false). A clear plateau      |
-//| from 350-800 beats 0 on every metric; best is 400:                    |
-//|   MinR_Points=0   (old): NET $9,320.97,  PF 1.908, RF 4.873, 624 trades, DD 1.890% |
-//|   MinR_Points=400 (new): NET $11,241.11, PF 2.349, RF 6.033, 409 trades, DD 1.821% |
-//| NOTE: the optimizer XML reports only NET/PF/RF/Trades/DD, not WR --   |
-//| a single (non-optimizer) confirmation run with MinR_Points=400 is     |
-//| still needed to get the true per-entry WR (007 has partial closes,    |
-//| see WIN RATE ACCOUNTING note above) before quoting one.                |
+//| MinR_Points (default 0, UNTESTED -- see confound note below): unlike  |
+//| every 001_STOCH/005_RFILTER sibling in this project (each tuned its   |
+//| own MinR_Points per timeframe -- M1=350-400, M2=200-350, M3=900), 007 |
+//| never had a signal-candle-body floor at all -- only R>0 was required. |
+//| A 0-800 step-50 Optimizer sweep was run and briefly (wrongly)         |
+//| confirmed MinR_Points=400, but that sweep's MinR_Points=0 baseline    |
+//| row (NET $9,320.97, PF 1.908, RF 4.873, 624 trades) is an EXACT       |
+//| match for the already-REJECTED SkipEarlySignalsInStreak=true test,    |
+//| not the true confirmed baseline (SkipEarlySignalsInStreak=false,      |
+//| Tuesday/HourA/HourB all true: NET $14,922.00, PF 2.236, 650 trades,   |
+//| WR 84.31%) -- meaning SkipEarlySignalsInStreak was almost certainly   |
+//| still stuck at true (leftover from an earlier test) in the Tester's   |
+//| Inputs tab when the whole 17-pass sweep was run, confounding every    |
+//| result including the apparent best (400). REVERTED to UNTESTED/0     |
+//| pending a re-run of the same sweep with SkipEarlySignalsInStreak      |
+//| verified =false (and SkipTuesdayEntry/SkipHourAEntry/SkipHourBEntry   |
+//| all =true) so results are measured against the real baseline. The    |
+//| optimizer XML also never reports WR, only NET/PF/RF/Trades/DD -- a    |
+//| single (non-optimizer) confirmation run will still be needed to get  |
+//| the true per-entry WR (007 has partial closes, see WIN RATE           |
+//| ACCOUNTING note above) once a clean MinR_Points value is chosen.       |
 //+------------------------------------------------------------------+
 #property strict
 #include <Trade/Trade.mqh>
@@ -145,7 +152,7 @@ input double ProtectTriggerR=0.50; // Break-even/protect trigger (R)
 input double PartialTriggerR=1.0; // Partial close trigger (R)
 input double ProtectR=0.25; // Protect SL level (R)
 input double SignalOppositeTP_R=0.90; // Final target beyond signal close (R)
-input int  MinR_Points=400; // Min signal-candle body (points) to trade, 0=no filter (CONFIRMED, see header)
+input int  MinR_Points=0; // Min signal-candle body (points) to trade, 0=no filter (UNTESTED, see header -- prior sweep confounded)
 input int MaxExtensionHours=72; // Max hours waiting for extension
 input int MaxPullbackHours=72; // Max hours waiting for pullback
 input int MaxPositionHours=168; // Max hours holding a position
