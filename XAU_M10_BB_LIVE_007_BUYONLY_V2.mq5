@@ -83,6 +83,29 @@
 //| ever allowed to become a real Setup -- earlier ones in the run are    |
 //| skipped entirely (no extension/pullback tracking wasted on them).     |
 //| UNTESTED as a live rule.                                              |
+//| SkipTuesdayEntry / SkipHourAEntry / SkipHourBEntry (default false,     |
+//| UNTESTED): a KST day-of-week and 2h-bucket breakdown of the           |
+//| confirmed-default backtest (2025.01-2026.09, H1CheckAtEntryTime=      |
+//| true, SkipFridayNightEntry=true) using PER-ENTRY accounting (see      |
+//| note below) -- 979 trades, WR 82.84%, NET $12,479.87 -- found:        |
+//| Tuesday is the ONLY net-negative weekday (202 trades, WR 76.7%,       |
+//| NET -$2,342.43, vs every other weekday positive); 08-10 KST (82       |
+//| trades, WR 75.6%, NET -$569.95) and 16-18 KST (89 trades, WR 83.1%,   |
+//| NET -$1,857.95, large losses despite a decent win rate) are the       |
+//| only two negative 2h buckets out of twelve. All three flags block     |
+//| new entries (SendEntry) independently. Needs a real backtest with     |
+//| each flag on before trusting it.                                      |
+//| NOTE ON WIN RATE ACCOUNTING: every WR%/trade-count figure elsewhere    |
+//| in this header (86.34%/87.20%/87.59% etc.) was read directly from     |
+//| MT5's own report stat, which counts each PartialTriggerR=1.0 partial  |
+//| close as a separate "trade" from its later final close -- inflating   |
+//| both trade count and WR (a partial is always a win by construction).  |
+//| Reconstructing PER-ENTRY outcomes (summing profit+commission+swap     |
+//| across a position's partial+final deals, keyed to its own entry) on   |
+//| the same 1313-deal-count backtest gives 979 real entries at WR        |
+//| 82.84%, not 87.59% -- the NET total matches exactly either way        |
+//| ($12,479.87), only the trade-count/WR denominator differs. Treat any  |
+//| WR% in this file from before this note as the inflated MT5 figure.    |
 //+------------------------------------------------------------------+
 #property strict
 #include <Trade/Trade.mqh>
@@ -112,8 +135,13 @@ input int  FridayNightCutoffHour=22; // Friday-night cutoff hour, server time (s
 input bool SkipFridayNightEntry=true; // Block entries after Friday cutoff (CONFIRMED, see header)
 input int  EntryFromNthSignal=2; // Min signal position in same-direction streak to allow entry
 input bool SkipEarlySignalsInStreak=false; // Streak filter: skip early signals (UNTESTED, see header)
-                             // NEXT5_AFTER_SIGNAL still tracks every signal, skipped or not. Default
-                             // false reproduces existing behavior exactly.
+input bool SkipTuesdayEntry=false; // Block all entries on Tuesday, KST (UNTESTED, see header)
+input int  SkipHourAStartKST=8; // Hour-dip A window start, KST (see header, SkipHourAEntry)
+input int  SkipHourAEndKST=10; // Hour-dip A window end, KST, exclusive (see header, SkipHourAEntry)
+input bool SkipHourAEntry=false; // Block entries in [SkipHourAStartKST,SkipHourAEndKST) KST (UNTESTED, see header)
+input int  SkipHourBStartKST=16; // Hour-dip B window start, KST (see header, SkipHourBEntry)
+input int  SkipHourBEndKST=18; // Hour-dip B window end, KST, exclusive (see header, SkipHourBEntry)
+input bool SkipHourBEntry=false; // Block entries in [SkipHourBStartKST,SkipHourBEndKST) KST (UNTESTED, see header)
 
 int h20=INVALID_HANDLE,h4=INVALID_HANDLE;
 datetime lastbar=0;
@@ -314,6 +342,32 @@ bool IsFridayNightCutoff(datetime t){
  return (dt.day_of_week==5 && dt.hour>=FridayNightCutoffHour);
 }
 
+datetime LastSundayOfMonth(int year,int month,int daysInMonth)
+{
+   MqlDateTime dt; dt.year=year; dt.mon=month; dt.day=daysInMonth;
+   dt.hour=0; dt.min=0; dt.sec=0;
+   datetime d=StructToTime(dt);
+   MqlDateTime cur; TimeToStruct(d,cur);
+   d-=cur.day_of_week*86400; // day_of_week: 0=Sunday
+   return d;
+}
+
+bool IsEUDST(datetime server_now)
+{
+   MqlDateTime t; TimeToStruct(server_now,t);
+   datetime dstStart=LastSundayOfMonth(t.year,3,31);
+   datetime dstEnd  =LastSundayOfMonth(t.year,10,31);
+   return (server_now>=dstStart && server_now<dstEnd);
+}
+
+// KST = server time + 6h (EU DST) or +7h (otherwise), same convention as the 001_STOCH family.
+void KST_HourDow(datetime server_now,int &hour,int &dow)
+{
+   int offsetHours=IsEUDST(server_now)?6:7;
+   MqlDateTime t; TimeToStruct(server_now+offsetHours*3600,t);
+   hour=t.hour; dow=t.day_of_week; // 0=Sunday...6=Saturday
+}
+
 bool SendEntry(int i,MqlTick &tk){
  ulong old; if(OwnPosition(old)){DS(i);return false;} // strict own-Magic MAX1; consume setup
  int dir=-S[i].sd; double R=S[i].R;
@@ -331,6 +385,29 @@ bool SendEntry(int i,MqlTick &tk){
  if(fridayNight && SkipFridayNightEntry){
   Log("SIGNAL_SKIPPED","Friday >= "+IntegerToString(FridayNightCutoffHour)+
       ":00 server time (weekend-gap risk) by SkipFridayNightEntry=true");
+  DS(i);return false;
+ }
+
+ // Day-of-week / hour-of-day dip filters (SkipTuesdayEntry/SkipHourAEntry/
+ // SkipHourBEntry ACT): found via a KST day-of-week and 2h-bucket breakdown
+ // of the confirmed-default backtest -- see header for the numbers.
+ int kstHour,kstDow; KST_HourDow(nowT,kstHour,kstDow);
+ bool isTuesday=(kstDow==2); // MQL5 day_of_week: 0=Sunday...6=Saturday
+ bool inHourA=(kstHour>=SkipHourAStartKST && kstHour<SkipHourAEndKST);
+ bool inHourB=(kstHour>=SkipHourBStartKST && kstHour<SkipHourBEndKST);
+ Log("DOW_HOUR_CHECK","kstDow="+IntegerToString(kstDow)+" kstHour="+IntegerToString(kstHour)+
+     " isTuesday="+(isTuesday?"true":"false")+" inHourA="+(inHourA?"true":"false")+
+     " inHourB="+(inHourB?"true":"false"));
+ if(isTuesday && SkipTuesdayEntry){
+  Log("SIGNAL_SKIPPED","Tuesday KST (ground-truth: only NET-negative day) by SkipTuesdayEntry=true");
+  DS(i);return false;
+ }
+ if(inHourA && SkipHourAEntry){
+  Log("SIGNAL_SKIPPED","KST hour in ["+IntegerToString(SkipHourAStartKST)+","+IntegerToString(SkipHourAEndKST)+") by SkipHourAEntry=true");
+  DS(i);return false;
+ }
+ if(inHourB && SkipHourBEntry){
+  Log("SIGNAL_SKIPPED","KST hour in ["+IntegerToString(SkipHourBStartKST)+","+IntegerToString(SkipHourBEndKST)+") by SkipHourBEntry=true");
   DS(i);return false;
  }
 
