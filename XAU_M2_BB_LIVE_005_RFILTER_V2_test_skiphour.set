@@ -16,4 +16,4 @@ EnableLiveOrders=true
 AllowShort=false
 SkipHourStartKST=20
 SkipHourEndKST=22
-SkipEntryHourKST=false
+SkipEntryHourKST=true

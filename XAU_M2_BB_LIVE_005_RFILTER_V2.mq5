@@ -13,6 +13,16 @@
 //| the high win rate). Supersedes the earlier InitialSL_R=2.0/       |
 //| MinR_Points=0 result (NET $16,281, ported into 007/001_STOCH_v2's |
 //| own LatestSignalOnly finding) which is now stale.                 |
+//| SkipEntryHourKST (default false, UNTESTED): a KST hour-of-day      |
+//| breakdown of the confirmed-default backtest above found the        |
+//| 20-22 KST window is the weakest of twelve 2-hour buckets -- WR     |
+//| 86.3% (vs 90.46% overall) and lowest $/trade (n=291, NET only      |
+//| $620.20), sitting right at the Europe/US session handoff. The      |
+//| very next bucket (22-24 KST) is the STRONGEST (WR 92.2%, NET       |
+//| $8,069.30), so this is a narrow dip, not a broader session         |
+//| weakness. Blocks new entries while the KST hour is in              |
+//| [SkipHourStartKST,SkipHourEndKST). Needs a real backtest with      |
+//| the flag on before trusting it.                                    |
 //| ---- inherited from 005_RFILTER_V1.mq5 ----                       |
 //| R-filter variant of 005_BUYONLY, built for symbols (e.g. NAS100+) |
 //| where the unfiltered signal has a losing edge (gross PF<1) but a  |
@@ -52,6 +62,9 @@ input ulong  MagicNumber          = 95012101; // Magic number
 input int    MaxDeviationPts      = 50; // Max price deviation (points)
 input bool   EnableLiveOrders     = false; // Enable live orders
 input bool   AllowShort           = false; // Allow SELL entries (default BUY-only, see header)
+input int    SkipHourStartKST     = 20; // KST hour skip window start (see header, SkipEntryHourKST)
+input int    SkipHourEndKST       = 22; // KST hour skip window end, exclusive (see header, SkipEntryHourKST)
+input bool   SkipEntryHourKST     = false; // Block entries in [SkipHourStartKST,SkipHourEndKST) KST (UNTESTED, see header)
 
 int hBB20=INVALID_HANDLE,hBB4=INVALID_HANDLE;
 datetime last_m2_bar=0;
@@ -80,6 +93,37 @@ int v_entries=0,v_sl_n=0,v_lock_n=0,v_tp_n=0,v_timeout_n=0;
 double v_totalR=0;
 
 string TS(datetime t){ return TimeToString(t,TIME_DATE|TIME_MINUTES|TIME_SECONDS); }
+
+datetime LastSundayOfMonth(int year,int month,int daysInMonth)
+{
+   MqlDateTime dt; dt.year=year; dt.mon=month; dt.day=daysInMonth;
+   dt.hour=0; dt.min=0; dt.sec=0;
+   datetime d=StructToTime(dt);
+   MqlDateTime cur; TimeToStruct(d,cur);
+   d-=cur.day_of_week*86400; // day_of_week: 0=Sunday
+   return d;
+}
+
+bool IsEUDST(datetime server_now)
+{
+   MqlDateTime t; TimeToStruct(server_now,t);
+   datetime dstStart=LastSundayOfMonth(t.year,3,31);
+   datetime dstEnd  =LastSundayOfMonth(t.year,10,31);
+   return (server_now>=dstStart && server_now<dstEnd);
+}
+
+int KST_Hour(datetime server_now)
+{
+   int offsetHours=IsEUDST(server_now)?6:7;
+   MqlDateTime t; TimeToStruct(server_now+offsetHours*3600,t);
+   return t.hour;
+}
+
+bool InSkipHourKST(datetime server_now)
+{
+   int h=KST_Hour(server_now);
+   return (h>=SkipHourStartKST && h<SkipHourEndKST);
+}
 
 void Log(string event,string detail="")
 {
@@ -242,6 +286,14 @@ bool OpenCountertrend(Setup &s,MqlTick &tick)
    if(dir==-1 && !AllowShort)
    {
       Log("ENTRY_SKIPPED","SELL disabled by AllowShort=false (data-driven direction filter)");
+      return false;
+   }
+   datetime entryNow=(datetime)(tick.time_msc/1000);
+   bool skipHour=InSkipHourKST(entryNow);
+   Log("SKIP_HOUR_CHECK","skipHour="+(skipHour?"true":"false")+" kstHour="+IntegerToString(KST_Hour(entryNow)));
+   if(skipHour && SkipEntryHourKST)
+   {
+      Log("ENTRY_SKIPPED","blocked by SkipEntryHourKST=true (KST hour in ["+IntegerToString(SkipHourStartKST)+","+IntegerToString(SkipHourEndKST)+"))");
       return false;
    }
    if(!EnableLiveOrders)
