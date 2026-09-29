@@ -2,9 +2,18 @@
 //| XAU_M1_BB_LIVE_005_RFILTER_V2.mq5                                |
 //| M1 sibling of XAU_M2_BB_LIVE_005_RFILTER_V2.mq5 -- identical      |
 //| engine, just Timeframe default=PERIOD_M1 and a distinct Magic     |
-//| Number so it can run alongside the M2 version. UNTESTED on M1 --  |
-//| every ground-truth number in the inherited header below is        |
-//| M2-specific and does not automatically transfer.                  |
+//| Number so it can run alongside the M2 version. Most ground-truth  |
+//| numbers in the inherited header below are M2-specific and do not  |
+//| automatically transfer.                                            |
+//| MinR_Points (CONFIRMED on M1 =350, was inherited stale M2 value    |
+//| 200): an MT5 Optimizer sweep (2025.01-2026.09, 150-600 step 25,    |
+//| Recovery Factor objective) found a genuine plateau at 325-400 --   |
+//| RF 7.37-7.58 there vs 5.12 at the inherited MinR_Points=200 -- with |
+//| 350 the single best (RF 7.578, PF 1.510, NET $19,240.36, 1768      |
+//| trades, DD 2.12%, vs 200's RF 5.117, PF 1.351, NET $20,468.58,     |
+//| 3652 trades, DD 3.23%). Fewer trades and slightly lower NET, but    |
+//| a clean quality improvement on RF/PF/DD, same pattern as the        |
+//| 001_STOCH family's own per-timeframe MinR tuning.                   |
 //| ---- inherited from XAU_M2_BB_LIVE_005_RFILTER_V2.mq5 ----        |
 //| V2: added LatestSignalOnly -- when true, a new BB-breakout signal |
 //| candle discards ANY still-pending earlier setup(s) instead of     |
@@ -53,7 +62,7 @@ input double InitialSL_R          = 3.5; // Initial stop loss (R) (CONFIRMED on 
 input double TP1_R                = 0.50; // Partial/lock trigger (R)
 input double Lock_R               = 0.30; // Lock SL level (R) (CONFIRMED on M2, see header)
 input double TP2_R                = 0.90; // Final target (R)
-input double MinR_Points          = 200; // Min signal-candle body (points) to trade, 0=no filter (CONFIRMED on M2, see header)
+input double MinR_Points          = 350; // Min signal-candle body (points) to trade, 0=no filter (CONFIRMED on M1, see header)
 input bool   LatestSignalOnly     = true; // New signal cancels older pending setups (CONFIRMED on M2, see header)
 input int    MaxExtensionHours    = 72; // Max hours waiting for extension
 input int    MaxPullbackHours     = 72; // Max hours waiting for pullback

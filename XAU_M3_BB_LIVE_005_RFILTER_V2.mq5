@@ -2,9 +2,21 @@
 //| XAU_M3_BB_LIVE_005_RFILTER_V2.mq5                                |
 //| M3 sibling of XAU_M2_BB_LIVE_005_RFILTER_V2.mq5 -- identical      |
 //| engine, just Timeframe default=PERIOD_M3 and a distinct Magic     |
-//| Number so it can run alongside the M2 version. UNTESTED on M3 --  |
-//| every ground-truth number in the inherited header below is        |
-//| M2-specific and does not automatically transfer.                  |
+//| Number so it can run alongside the M2 version. Most ground-truth  |
+//| numbers in the inherited header below are M2-specific and do not  |
+//| automatically transfer.                                            |
+//| MinR_Points (CONFIRMED to KEEP the inherited 200 on M3): an MT5    |
+//| Optimizer sweep (2025.01-2026.09, 400-1200 step 50, Recovery       |
+//| Factor objective) found every value in that range UNDERPERFORMS    |
+//| the inherited MinR_Points=200 -- best swept was 450 (RF 2.902, PF  |
+//| 1.369, NET $11,770.49) vs 200's RF 3.586, PF 1.262, NET $11,812.16 |
+//| (measured separately, outside the swept range). Opposite of the    |
+//| 001_STOCH family's own M3 tuning (which raised MinR to 900) --      |
+//| likely because 005's Extension(0.95R)+Pullback(0.10R) staging      |
+//| already filters weak signals, so an additional R floor here just    |
+//| prunes good trades too. Keep MinR_Points=200; a downward sweep      |
+//| (e.g. 50-200) is untried but not urgent given 200 already beats      |
+//| everything tested above it.                                         |
 //| ---- inherited from XAU_M2_BB_LIVE_005_RFILTER_V2.mq5 ----        |
 //| V2: added LatestSignalOnly -- when true, a new BB-breakout signal |
 //| candle discards ANY still-pending earlier setup(s) instead of     |
