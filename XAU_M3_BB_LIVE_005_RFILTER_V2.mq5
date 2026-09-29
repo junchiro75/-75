@@ -1,84 +1,70 @@
 //+------------------------------------------------------------------+
-//| XAU_M2_BB_LIVE_005_RFILTER_V2.mq5                                |
-//| Generalized to a Timeframe input (default PERIOD_M2, unchanged    |
-//| behavior) so the same engine can run on other timeframes -- see   |
-//| the M1/M3 sibling files (XAU_M1_BB_LIVE_005_RFILTER_V2.mq5 /       |
-//| XAU_M3_BB_LIVE_005_RFILTER_V2.mq5), each just a copy with a        |
-//| different Timeframe default and Magic Number. All ground-truth     |
-//| numbers below are M2-specific; M1/M3 are UNTESTED.                 |
+//| XAU_M3_BB_LIVE_005_RFILTER_V2.mq5                                |
+//| M3 sibling of XAU_M2_BB_LIVE_005_RFILTER_V2.mq5 -- identical      |
+//| engine, just Timeframe default=PERIOD_M3 and a distinct Magic     |
+//| Number so it can run alongside the M2 version. UNTESTED on M3 --  |
+//| every ground-truth number in the inherited header below is        |
+//| M2-specific and does not automatically transfer.                  |
+//| ---- inherited from XAU_M2_BB_LIVE_005_RFILTER_V2.mq5 ----        |
 //| V2: added LatestSignalOnly -- when true, a new BB-breakout signal |
 //| candle discards ANY still-pending earlier setup(s) instead of     |
 //| letting them keep waiting alongside it. Default false reproduces  |
 //| V1 exactly (multiple concurrent pending setups allowed).          |
-//| CONFIRMED defaults (ground-truth MT5 tick backtest, 2025.01-      |
-//| 2026.09, M2, Lots=0.1): InitialSL_R=3.5 (was stale 2.0),          |
+//| CONFIRMED defaults on M2 (ground-truth MT5 tick backtest,         |
+//| 2025.01-2026.09, M2, Lots=0.1): InitialSL_R=3.5 (was stale 2.0),  |
 //| MinR_Points=200 (was stale 0), LatestSignalOnly=true -- NET       |
 //| $28,172.55, PF 1.61, Recovery Factor 9.80, WR 90.46% (2664W/      |
 //| 281L, 2945 trades, BUY-only), MaxDD 1.07%/2.72%. Avg win +$27.92  |
 //| vs avg loss -$148.70 (wide-SL/narrow-lock asymmetry, offset by    |
-//| the high win rate). Supersedes the earlier InitialSL_R=2.0/       |
-//| MinR_Points=0 result (NET $16,281, ported into 007/001_STOCH_v2's |
-//| own LatestSignalOnly finding) which is now stale.                 |
-//| SkipEntryHourKST (CONFIRMED default=true): a KST hour-of-day       |
-//| breakdown of the confirmed-default backtest above found the        |
-//| 20-22 KST window is the weakest of twelve 2-hour buckets -- WR     |
-//| 86.3% (vs 90.46% overall) and lowest $/trade (n=291, NET only      |
-//| $620.20), sitting right at the Europe/US session handoff. The      |
-//| very next bucket (22-24 KST) is the STRONGEST (WR 92.2%, NET       |
-//| $8,069.30), so this is a narrow dip, not a broader session         |
-//| weakness. Blocks new entries while the KST hour is in              |
-//| [SkipHourStartKST,SkipHourEndKST). Ground-truth backtest (same     |
-//| period, Lock_R=0.30) confirmed: 2945->2657 trades (-288, the       |
-//| 20-22 KST bucket removed), NET $28,172.55->$28,329.75 (~flat),     |
-//| PF 1.610->1.709, WR 90.46%->90.97%, MaxDD 1.07%/2.72%->1.28%/      |
-//| 2.71% -- fewer trades at the same NET with better PF/WR, so the    |
-//| removed bucket was low-quality. Lock_R was also raised 0.25->0.30  |
-//| in that same test (see Lock_R), so this isn't a fully isolated     |
-//| A/B, but the direction is corroborated by the original hour        |
-//| breakdown.                                                          |
+//| the high win rate).                                                |
+//| SkipEntryHourKST (CONFIRMED on M2, default=true here too pending  |
+//| its own M3 backtest): a KST hour-of-day breakdown of the M2       |
+//| confirmed-default backtest found 20-22 KST is the weakest of      |
+//| twelve 2-hour buckets -- WR 86.3% (vs 90.46% overall) and lowest  |
+//| $/trade (n=291, NET only $620.20). Blocks new entries while the   |
+//| KST hour is in [SkipHourStartKST,SkipHourEndKST). Confirmed on M2 |
+//| (2945->2657 trades, NET $28,172.55->$28,329.75, PF 1.610->1.709,  |
+//| WR 90.46%->90.97%) but UNTESTED on M3 -- needs its own backtest.  |
 //| ---- inherited from 005_RFILTER_V1.mq5 ----                       |
 //| R-filter variant of 005_BUYONLY, built for symbols (e.g. NAS100+) |
 //| where the unfiltered signal has a losing edge (gross PF<1) but a  |
 //| large right-skewed R distribution -- same idea that turned MA120  |
 //| V12 from PF 0.88 to PF 1.18 on NAS100 by keeping only the biggest  |
-//| R (=M2 signal candle body) setups. Adds MinR_Points: skip signals  |
+//| R (=signal candle body) setups. Adds MinR_Points: skip signals     |
 //| whose R is below this threshold. MinR_Points=0 reproduces          |
 //| 005_BUYONLY exactly.                                                |
 //| ---- inherited from 005_FINAL_BUYONLY.mq5 ----                     |
-//| BUY-ONLY variant of 005 (AllowShort=false by default).          |
-//| Real MT5 tick backtest (2025.01-2026.09): SELL trades alone were |
-//| net -$540.86 vs BUY alone net +$1,697.03. Disabling SELL turns   |
-//| the EA's 21-month result from +$1,156.17 to +$1,697.03. Re-enable|
-//| SELL via the AllowShort input if you want the original behavior. |
-//| M2 Dual-BB -> +0.95R extension -> 0.10R pullback -> countertrend |
-//| LIVE FORWARD TEST EA | own-Magic MAX1                             |
-//| NOTE: at 0.01 lot, 30% partial close is impossible on 0.01 step.  |
-//| At TP1 this EA moves the whole position SL to +0.25R.             |
+//| BUY-ONLY variant of 005 (AllowShort=false by default). On M2, a   |
+//| real MT5 tick backtest (2025.01-2026.09) found SELL trades alone  |
+//| net -$540.86 vs BUY alone net +$1,697.03 -- UNTESTED whether the   |
+//| same BUY-only bias holds on M3.                                    |
+//| Dual-BB -> +0.95R extension -> 0.10R pullback -> countertrend      |
+//| LIVE FORWARD TEST EA | own-Magic MAX1                              |
 //+------------------------------------------------------------------+
 #property strict
 #include <Trade/Trade.mqh>
 CTrade trade;
 
-input ENUM_TIMEFRAMES Timeframe   = PERIOD_M2; // signal-candle timeframe
+input ENUM_TIMEFRAMES Timeframe   = PERIOD_M3; // signal-candle timeframe
 input double Lots                 = 0.1; // Lot size
 input double ExtensionR           = 0.95; // Extension (R) before pullback watch starts
 input double PullbackR            = 0.10; // Pullback (R) from extension extreme to trigger entry
-input double InitialSL_R          = 3.5; // Initial stop loss (R) (CONFIRMED, see header)
+input double InitialSL_R          = 3.5; // Initial stop loss (R) (CONFIRMED on M2, see header)
 input double TP1_R                = 0.50; // Partial/lock trigger (R)
-input double Lock_R               = 0.30; // Lock SL level (R) (CONFIRMED, see header)
+input double Lock_R               = 0.30; // Lock SL level (R) (CONFIRMED on M2, see header)
 input double TP2_R                = 0.90; // Final target (R)
-input double MinR_Points          = 200; // Min signal-candle body (points) to trade, 0=no filter (CONFIRMED, see header)
-input bool   LatestSignalOnly     = true; // New signal cancels older pending setups (CONFIRMED, see header)
+input double MinR_Points          = 200; // Min signal-candle body (points) to trade, 0=no filter (CONFIRMED on M2, see header)
+input bool   LatestSignalOnly     = true; // New signal cancels older pending setups (CONFIRMED on M2, see header)
 input int    MaxExtensionHours    = 72; // Max hours waiting for extension
 input int    MaxPullbackHours     = 72; // Max hours waiting for pullback
 input int    MaxVirtualExitHours  = 168; // Max hours holding a position
-input ulong  MagicNumber          = 95012101; // Magic number
+input ulong  MagicNumber          = 95012103; // Magic number
 input int    MaxDeviationPts      = 50; // Max price deviation (points)
 input bool   EnableLiveOrders     = false; // Enable live orders
 input bool   AllowShort           = false; // Allow SELL entries (default BUY-only, see header)
 input int    SkipHourStartKST     = 20; // KST hour skip window start (see header, SkipEntryHourKST)
 input int    SkipHourEndKST       = 22; // KST hour skip window end, exclusive (see header, SkipEntryHourKST)
-input bool   SkipEntryHourKST     = true; // Block entries in [SkipHourStartKST,SkipHourEndKST) KST (CONFIRMED, see header)
+input bool   SkipEntryHourKST     = true; // Block entries in [SkipHourStartKST,SkipHourEndKST) KST (CONFIRMED on M2, see header)
 
 int hBB20=INVALID_HANDLE,hBB4=INVALID_HANDLE;
 datetime last_m2_bar=0;
