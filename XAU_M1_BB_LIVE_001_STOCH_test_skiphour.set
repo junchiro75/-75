@@ -17,4 +17,4 @@ SkipFadeBearOSAsiaSession=false
 SkipFadeBearOSWickTouch=true
 SkipHourStartKST=14
 SkipHourEndKST=16
-SkipHourEntryKST=false
+SkipHourEntryKST=true

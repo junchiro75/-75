@@ -56,6 +56,14 @@
 //| hours. Opposite bucket from the same Asia weakness found on M2        |
 //| (there it's STOCH_TREND_BEAR), so it needs its own filter here.       |
 //| Default false reproduces existing behavior exactly.                   |
+//| SkipHourEntryKST (default false, UNTESTED): a KST 2h-bucket           |
+//| breakdown of the confirmed-default backtest (2025.01-2026.09, 2168    |
+//| trades, WR 93.73%, NET $20,871.16) found 14-16 KST is the only        |
+//| clearly negative bucket with a real sample (172 trades, NET           |
+//| -$2,506.40) -- 06-08 (-$318.82, 65 trades) and 10-12 (-$590.16, 253    |
+//| trades) are smaller dips. Blocks new entries while the KST hour is    |
+//| in [SkipHourStartKST,SkipHourEndKST). Needs a real backtest with      |
+//| the flag on before trusting it.                                       |
 //+------------------------------------------------------------------+
 #property strict
 #include <Trade/Trade.mqh>
@@ -78,6 +86,9 @@ input bool   AllowSellFade      = false; // Allow bull+overbought SELL-fade case
 input bool   AllowTrendBull     = false; // Allow bull+not-overbought TREND-BUY case
 input bool   SkipFadeBearOSAsiaSession = false; // Skip FADE_BEAR_OS during Asia session (see header)
 input bool   SkipFadeBearOSWickTouch = true; // Skip FADE_BEAR_OS wick-only touches (CONFIRMED, see header)
+input int    SkipHourStartKST   = 14; // Hour-dip window start, KST (see header, SkipHourEntryKST)
+input int    SkipHourEndKST     = 16; // Hour-dip window end, KST, exclusive (see header, SkipHourEntryKST)
+input bool   SkipHourEntryKST   = false; // Block entries in [SkipHourStartKST,SkipHourEndKST) KST (UNTESTED, see header)
 
 int hBB20=INVALID_HANDLE,hBB4=INVALID_HANDLE,hStoch=INVALID_HANDLE;
 datetime last_m1_bar=0;
@@ -164,6 +175,14 @@ string TFPrefix()
 void OpenTrade(int dir,double R,string tag)
 {
    if(HasOurPosition()){ Log("ENTRY_SKIPPED","own-Magic position already exists"); return; }
+   int kstHour=KST_Hour(TimeCurrent());
+   bool inSkipHour=(kstHour>=SkipHourStartKST && kstHour<SkipHourEndKST);
+   Log("SKIP_HOUR_CHECK","kstHour="+IntegerToString(kstHour)+" inSkipHour="+(inSkipHour?"true":"false"));
+   if(inSkipHour && SkipHourEntryKST)
+   {
+      Log("ENTRY_SKIPPED","KST hour in ["+IntegerToString(SkipHourStartKST)+","+IntegerToString(SkipHourEndKST)+") by SkipHourEntryKST=true");
+      return;
+   }
    tag=TFPrefix()+tag;
 
    MqlTick q; if(!SymbolInfoTick(_Symbol,q)){ Log("ORDER_FAIL","no current tick"); return; }
