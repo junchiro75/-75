@@ -13,7 +13,7 @@
 //| the high win rate). Supersedes the earlier InitialSL_R=2.0/       |
 //| MinR_Points=0 result (NET $16,281, ported into 007/001_STOCH_v2's |
 //| own LatestSignalOnly finding) which is now stale.                 |
-//| SkipEntryHourKST (default false, UNTESTED): a KST hour-of-day      |
+//| SkipEntryHourKST (CONFIRMED default=true): a KST hour-of-day       |
 //| breakdown of the confirmed-default backtest above found the        |
 //| 20-22 KST window is the weakest of twelve 2-hour buckets -- WR     |
 //| 86.3% (vs 90.46% overall) and lowest $/trade (n=291, NET only      |
@@ -21,8 +21,15 @@
 //| very next bucket (22-24 KST) is the STRONGEST (WR 92.2%, NET       |
 //| $8,069.30), so this is a narrow dip, not a broader session         |
 //| weakness. Blocks new entries while the KST hour is in              |
-//| [SkipHourStartKST,SkipHourEndKST). Needs a real backtest with      |
-//| the flag on before trusting it.                                    |
+//| [SkipHourStartKST,SkipHourEndKST). Ground-truth backtest (same     |
+//| period, Lock_R=0.30) confirmed: 2945->2657 trades (-288, the       |
+//| 20-22 KST bucket removed), NET $28,172.55->$28,329.75 (~flat),     |
+//| PF 1.610->1.709, WR 90.46%->90.97%, MaxDD 1.07%/2.72%->1.28%/      |
+//| 2.71% -- fewer trades at the same NET with better PF/WR, so the    |
+//| removed bucket was low-quality. Lock_R was also raised 0.25->0.30  |
+//| in that same test (see Lock_R), so this isn't a fully isolated     |
+//| A/B, but the direction is corroborated by the original hour        |
+//| breakdown.                                                          |
 //| ---- inherited from 005_RFILTER_V1.mq5 ----                       |
 //| R-filter variant of 005_BUYONLY, built for symbols (e.g. NAS100+) |
 //| where the unfiltered signal has a losing edge (gross PF<1) but a  |
@@ -51,7 +58,7 @@ input double ExtensionR           = 0.95; // Extension (R) before pullback watch
 input double PullbackR            = 0.10; // Pullback (R) from extension extreme to trigger entry
 input double InitialSL_R          = 3.5; // Initial stop loss (R) (CONFIRMED, see header)
 input double TP1_R                = 0.50; // Partial/lock trigger (R)
-input double Lock_R               = 0.25; // Lock SL level (R)
+input double Lock_R               = 0.30; // Lock SL level (R) (CONFIRMED, see header)
 input double TP2_R                = 0.90; // Final target (R)
 input double MinR_Points          = 200; // Min signal-candle body (points) to trade, 0=no filter (CONFIRMED, see header)
 input bool   LatestSignalOnly     = true; // New signal cancels older pending setups (CONFIRMED, see header)
@@ -64,7 +71,7 @@ input bool   EnableLiveOrders     = false; // Enable live orders
 input bool   AllowShort           = false; // Allow SELL entries (default BUY-only, see header)
 input int    SkipHourStartKST     = 20; // KST hour skip window start (see header, SkipEntryHourKST)
 input int    SkipHourEndKST       = 22; // KST hour skip window end, exclusive (see header, SkipEntryHourKST)
-input bool   SkipEntryHourKST     = false; // Block entries in [SkipHourStartKST,SkipHourEndKST) KST (UNTESTED, see header)
+input bool   SkipEntryHourKST     = true; // Block entries in [SkipHourStartKST,SkipHourEndKST) KST (CONFIRMED, see header)
 
 int hBB20=INVALID_HANDLE,hBB4=INVALID_HANDLE;
 datetime last_m2_bar=0;
