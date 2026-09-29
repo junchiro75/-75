@@ -56,14 +56,16 @@
 //| hours. Opposite bucket from the same Asia weakness found on M2        |
 //| (there it's STOCH_TREND_BEAR), so it needs its own filter here.       |
 //| Default false reproduces existing behavior exactly.                   |
-//| SkipHourEntryKST (default false, UNTESTED): a KST 2h-bucket           |
-//| breakdown of the confirmed-default backtest (2025.01-2026.09, 2168    |
-//| trades, WR 93.73%, NET $20,871.16) found 14-16 KST is the only        |
-//| clearly negative bucket with a real sample (172 trades, NET           |
-//| -$2,506.40) -- 06-08 (-$318.82, 65 trades) and 10-12 (-$590.16, 253    |
-//| trades) are smaller dips. Blocks new entries while the KST hour is    |
-//| in [SkipHourStartKST,SkipHourEndKST). Needs a real backtest with      |
-//| the flag on before trusting it.                                       |
+//| SkipHourEntryKST (CONFIRMED default=true): a KST 2h-bucket breakdown  |
+//| of the confirmed-default backtest (2025.01-2026.09, 2168 trades, WR   |
+//| 93.73%, NET $20,871.16) found 14-16 KST is the only clearly negative  |
+//| bucket with a real sample (172 trades, NET -$2,506.40) -- 06-08       |
+//| (-$318.82, 65 trades) and 10-12 (-$590.16, 253 trades) are smaller    |
+//| dips. Blocks new entries while the KST hour is in                     |
+//| [SkipHourStartKST,SkipHourEndKST). Ground-truth backtest confirmed:   |
+//| 2168->2008 trades (-7.4%), NET $20,771.59->$22,906.29 (+10.3%), PF    |
+//| 1.403->1.509, Recovery Factor 8.171->9.488, WR 93.73%->93.92%, DD     |
+//| 1.92%/2.17%->1.71%/1.98% -- a clean improvement on every metric.      |
 //+------------------------------------------------------------------+
 #property strict
 #include <Trade/Trade.mqh>
@@ -88,7 +90,7 @@ input bool   SkipFadeBearOSAsiaSession = false; // Skip FADE_BEAR_OS during Asia
 input bool   SkipFadeBearOSWickTouch = true; // Skip FADE_BEAR_OS wick-only touches (CONFIRMED, see header)
 input int    SkipHourStartKST   = 14; // Hour-dip window start, KST (see header, SkipHourEntryKST)
 input int    SkipHourEndKST     = 16; // Hour-dip window end, KST, exclusive (see header, SkipHourEntryKST)
-input bool   SkipHourEntryKST   = false; // Block entries in [SkipHourStartKST,SkipHourEndKST) KST (UNTESTED, see header)
+input bool   SkipHourEntryKST   = true; // Block entries in [SkipHourStartKST,SkipHourEndKST) KST (CONFIRMED, see header)
 
 int hBB20=INVALID_HANDLE,hBB4=INVALID_HANDLE,hStoch=INVALID_HANDLE;
 datetime last_m1_bar=0;
