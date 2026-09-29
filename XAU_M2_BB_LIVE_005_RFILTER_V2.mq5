@@ -4,6 +4,15 @@
 //| candle discards ANY still-pending earlier setup(s) instead of     |
 //| letting them keep waiting alongside it. Default false reproduces  |
 //| V1 exactly (multiple concurrent pending setups allowed).          |
+//| CONFIRMED defaults (ground-truth MT5 tick backtest, 2025.01-      |
+//| 2026.09, M2, Lots=0.1): InitialSL_R=3.5 (was stale 2.0),          |
+//| MinR_Points=200 (was stale 0), LatestSignalOnly=true -- NET       |
+//| $28,172.55, PF 1.61, Recovery Factor 9.80, WR 90.46% (2664W/      |
+//| 281L, 2945 trades, BUY-only), MaxDD 1.07%/2.72%. Avg win +$27.92  |
+//| vs avg loss -$148.70 (wide-SL/narrow-lock asymmetry, offset by    |
+//| the high win rate). Supersedes the earlier InitialSL_R=2.0/       |
+//| MinR_Points=0 result (NET $16,281, ported into 007/001_STOCH_v2's |
+//| own LatestSignalOnly finding) which is now stale.                 |
 //| ---- inherited from 005_RFILTER_V1.mq5 ----                       |
 //| R-filter variant of 005_BUYONLY, built for symbols (e.g. NAS100+) |
 //| where the unfiltered signal has a losing edge (gross PF<1) but a  |
@@ -27,28 +36,22 @@
 #include <Trade/Trade.mqh>
 CTrade trade;
 
-input double Lots                 = 0.01;
-input double ExtensionR           = 0.95;
-input double PullbackR            = 0.10;
-input double InitialSL_R          = 2.00;
-input double TP1_R                = 0.50;
-input double Lock_R               = 0.25;
-input double TP2_R                = 0.90;
-input double MinR_Points          = 0;    // skip signal if R (=|close-open| of the M2 signal candle, in
-                                           // points) is below this. 0 = no filter (identical to BUYONLY).
-input bool   LatestSignalOnly     = false; // true = a new BB-breakout signal candle discards any earlier
-                                            // still-pending setup(s); only the most recent signal is ever
-                                            // watched. false = old behavior (multiple pending setups allowed).
-input int    MaxExtensionHours    = 72;
-input int    MaxPullbackHours     = 72;
-input int    MaxVirtualExitHours  = 168;
-input ulong  MagicNumber          = 95012101; // distinct from original 005 (95012001) so both can run side by side
-input int    MaxDeviationPts      = 50;
-input bool   EnableLiveOrders     = false; // SAFETY: set true only after checks
-input bool   AllowShort           = false; // Ground-truth MT5 tick backtest (2025.01-2026.09) showed
-                                            // SELL entries net -$540.86 vs BUY entries net +$1,697.03 --
-                                            // in a secular gold uptrend, fading rallies (SELL) loses to
-                                            // fading dips (BUY). Default false: BUY-only.
+input double Lots                 = 0.1; // Lot size
+input double ExtensionR           = 0.95; // Extension (R) before pullback watch starts
+input double PullbackR            = 0.10; // Pullback (R) from extension extreme to trigger entry
+input double InitialSL_R          = 3.5; // Initial stop loss (R) (CONFIRMED, see header)
+input double TP1_R                = 0.50; // Partial/lock trigger (R)
+input double Lock_R               = 0.25; // Lock SL level (R)
+input double TP2_R                = 0.90; // Final target (R)
+input double MinR_Points          = 200; // Min signal-candle body (points) to trade, 0=no filter (CONFIRMED, see header)
+input bool   LatestSignalOnly     = true; // New signal cancels older pending setups (CONFIRMED, see header)
+input int    MaxExtensionHours    = 72; // Max hours waiting for extension
+input int    MaxPullbackHours     = 72; // Max hours waiting for pullback
+input int    MaxVirtualExitHours  = 168; // Max hours holding a position
+input ulong  MagicNumber          = 95012101; // Magic number
+input int    MaxDeviationPts      = 50; // Max price deviation (points)
+input bool   EnableLiveOrders     = false; // Enable live orders
+input bool   AllowShort           = false; // Allow SELL entries (default BUY-only, see header)
 
 int hBB20=INVALID_HANDLE,hBB4=INVALID_HANDLE;
 datetime last_m2_bar=0;
