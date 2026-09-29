@@ -148,17 +148,18 @@ bool InAsiaSessionKST(datetime server_now)
    return (h>=6 && h<16);
 }
 
-bool HasOurPosition()
+int CountOurPositions()
 {
+   int n=0;
    for(int i=PositionsTotal()-1;i>=0;i--)
    {
       ulong tk=PositionGetTicket(i);
       if(tk==0 || !PositionSelectByTicket(tk)) continue;
       if(PositionGetString(POSITION_SYMBOL)!=_Symbol) continue;
       if((ulong)PositionGetInteger(POSITION_MAGIC)!=MagicNumber) continue;
-      return true;
+      n++;
    }
-   return false;
+   return n;
 }
 
 string TFPrefix()
@@ -176,7 +177,7 @@ string TFPrefix()
 
 void OpenTrade(int dir,double R,string tag)
 {
-   if(HasOurPosition()){ Log("ENTRY_SKIPPED","own-Magic position already exists"); return; }
+   if(CountOurPositions()>0){ Log("ENTRY_SKIPPED","own-Magic position already exists"); return; }
    int kstHour=KST_Hour(TimeCurrent());
    bool inSkipHour=(kstHour>=SkipHourStartKST && kstHour<SkipHourEndKST);
    Log("SKIP_HOUR_CHECK","kstHour="+IntegerToString(kstHour)+" inSkipHour="+(inSkipHour?"true":"false"));
