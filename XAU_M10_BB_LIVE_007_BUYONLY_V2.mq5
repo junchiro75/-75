@@ -116,6 +116,12 @@
 //| 82.84%, not 87.59% -- the NET total matches exactly either way        |
 //| ($12,479.87), only the trade-count/WR denominator differs. Treat any  |
 //| WR% in this file from before this note as the inflated MT5 figure.    |
+//| MinR_Points (default 0, UNTESTED): unlike every 001_STOCH/005_       |
+//| RFILTER sibling in this project (each tuned its own MinR_Points per   |
+//| timeframe -- M1=350-400, M2=200-350, M3=900), 007 never had a signal- |
+//| candle-body floor at all -- only R>0 was required. Added here so a    |
+//| sweep can be run the same way; no ground truth yet on whether a       |
+//| floor helps M10.                                                       |
 //+------------------------------------------------------------------+
 #property strict
 #include <Trade/Trade.mqh>
@@ -131,6 +137,7 @@ input double ProtectTriggerR=0.50; // Break-even/protect trigger (R)
 input double PartialTriggerR=1.0; // Partial close trigger (R)
 input double ProtectR=0.25; // Protect SL level (R)
 input double SignalOppositeTP_R=0.90; // Final target beyond signal close (R)
+input int  MinR_Points=0; // Min signal-candle body (points) to trade, 0=no filter (UNTESTED, see header)
 input int MaxExtensionHours=72; // Max hours waiting for extension
 input int MaxPullbackHours=72; // Max hours waiting for pullback
 input int MaxPositionHours=168; // Max hours holding a position
@@ -297,6 +304,8 @@ void NewBar(){
  bool bull=c>o&&h>=u20[0]&&h>=u4[0], bear=c<o&&l<=d20[0]&&l<=d4[0];
  if(!bull&&!bear)return;
  double R=MathAbs(c-o);if(R<=0)return;
+ double minR=MathMax(_Point,MinR_Points*_Point);
+ if(R<=minR){ Log("SIGNAL_SKIPPED","R too small ("+DoubleToString(R,_Digits)+" <= "+DoubleToString(minR,_Digits)+") by MinR_Points="+IntegerToString(MinR_Points)); return; }
  bool bodyTouch=bull?(c>=u20[0]):(c<=d20[0]);
  int sd=bull?1:-1;
 
