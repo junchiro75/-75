@@ -36,6 +36,14 @@
 //| in that same test (see Lock_R), so this isn't a fully isolated     |
 //| A/B, but the direction is corroborated by the original hour        |
 //| breakdown.                                                          |
+//| BODY/WICK touch tag (diagnostic, UNTESTED, no trading effect): the    |
+//| signal condition only requires the candle's high/low to reach the    |
+//| bands (h>=up20/up4 or l<=lo20/lo4) -- this additionally tags whether  |
+//| the CLOSE also broke the band ("BODY") or only wicked through and    |
+//| closed back inside ("WICK"), appended to every live order's tag.     |
+//| Mirrors the same distinction already confirmed as a real edge in the |
+//| 001_STOCH family (SkipFadeBearOSWickTouch) -- never checked here     |
+//| before. Needs its own backtest to see if the same pattern holds.     |
 //| ---- inherited from 005_RFILTER_V1.mq5 ----                       |
 //| R-filter variant of 005_BUYONLY, built for symbols (e.g. NAS100+) |
 //| where the unfiltered signal has a losing edge (gross PF<1) but a  |
@@ -89,6 +97,7 @@ struct Setup {
    int sigdir;              // +1 bull signal, -1 bear signal
    double R,close_price,target,extreme;
    bool extension_hit;
+   bool bodyTouch;          // diagnostic: did the signal candle's CLOSE also break the band, or only the high/low (see header)
 };
 Setup setups[];
 
@@ -250,7 +259,7 @@ bool SafeModifyPosition(ulong ticket,int dir,double desired_sl,double desired_tp
    return false;
 }
 
-void AddSignal(datetime sig,datetime close_time,int dir,double R,double c)
+void AddSignal(datetime sig,datetime close_time,int dir,double R,double c,bool bodyTouch)
 {
    if(LatestSignalOnly && ArraySize(setups)>0)
    {
@@ -267,8 +276,9 @@ void AddSignal(datetime sig,datetime close_time,int dir,double R,double c)
    setups[n].target=c+dir*ExtensionR*R;
    setups[n].extreme=c;
    setups[n].extension_hit=false;
+   setups[n].bodyTouch=bodyTouch;
    Log("SIGNAL",(dir==1?"BULL":"BEAR")+" R="+DoubleToString(R,_Digits)+
-       " ext="+DoubleToString(setups[n].target,_Digits));
+       " ext="+DoubleToString(setups[n].target,_Digits)+" touch="+(bodyTouch?"BODY":"WICK"));
 }
 
 void CheckNewM2Bar()
@@ -294,7 +304,8 @@ void CheckNewM2Bar()
    double R=MathAbs(c-o);
    double minR=MathMax(_Point,MinR_Points*_Point);
    if(R<=minR) return;
-   AddSignal(sig,t,dir,R,c);
+   bool bodyTouch=(dir==+1)?(c>=up20[0]):(c<=lo20[0]);
+   AddSignal(sig,t,dir,R,c,bodyTouch);
 }
 
 bool OpenCountertrend(Setup &s,MqlTick &tick)
@@ -361,7 +372,7 @@ bool OpenCountertrend(Setup &s,MqlTick &tick)
    }
    sl=NormalizeDouble(sl,_Digits); tp=NormalizeDouble(tp,_Digits);
 
-   string tag="LIVE005_"+TFPrefix();
+   string tag="LIVE005_"+TFPrefix()+(s.bodyTouch?"BODY":"WICK");
    bool ok=(dir==+1 ? trade.Buy(Lots,_Symbol,0.0,sl,tp,tag)
                     : trade.Sell(Lots,_Symbol,0.0,sl,tp,tag));
    if(!ok)
