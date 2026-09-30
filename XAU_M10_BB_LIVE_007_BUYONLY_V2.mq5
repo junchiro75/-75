@@ -133,6 +133,17 @@
 //| the true per-entry WR (007 has partial closes, see WIN RATE           |
 //| ACCOUNTING note above): 483 entries (was 650), 433W/50L, WR 89.65%    |
 //| (was 84.31%), NET matches the sweep exactly ($16,005.75).             |
+//| InitialSL_R (TESTED, kept at 2.25): unlike every 001_STOCH/005_       |
+//| RFILTER sibling (each got a clear win widening its stop to 3.5R),     |
+//| a 1.50-4.50 step-0.25 Optimizer sweep on top of the confirmed         |
+//| baseline (MinR_Points=300, Tuesday/HourA/HourB filters all true)      |
+//| found no real signal: 2.00-4.25 all sit in a noisy RF 8.0-8.9 band    |
+//| with no monotonic trend (RF dips at 3.50 then recovers at 3.75,       |
+//| inconsistent with a genuine effect), 1.50-1.75 are clearly worse      |
+//| (RF 4.9-7.3), the nominal best (4.00: NET $16,087.00, RF 8.877) beats |
+//| the current default (2.25: NET $16,005.75, RF 8.832) by only +0.5%    |
+//| NET while trading less (644 vs 657) -- inside noise, not a plateau.   |
+//| Kept unchanged at 2.25 (opposite of every 001/005 sibling's finding). |
 //+------------------------------------------------------------------+
 #property strict
 #include <Trade/Trade.mqh>
@@ -143,7 +154,7 @@ input bool EnableLiveOrders=false; // Enable live orders
 input long MagicNumber=95011207; // Magic number
 input double ExtensionR=0.95; // Extension (R) before pullback watch starts
 input double PullbackR=0.10; // Pullback (R) from extension extreme to trigger entry
-input double InitialSL_R=2.25; // Initial stop loss (R)
+input double InitialSL_R=2.25; // Initial stop loss (R) (TESTED, kept unchanged, see header)
 input double ProtectTriggerR=0.50; // Break-even/protect trigger (R)
 input double PartialTriggerR=1.0; // Partial close trigger (R)
 input double ProtectR=0.25; // Protect SL level (R)
