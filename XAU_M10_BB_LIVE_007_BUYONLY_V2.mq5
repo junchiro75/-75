@@ -165,7 +165,13 @@
 //| 483->476 entries, 433W/50L->413W/63L, WR 89.65%->86.76% (down), NET   |
 //| $16,005.75->$16,348.15 (+2.1%), RF 8.832->9.021, DD 1.7342%->1.7234%. |
 //| Briefly set as the new default, then REVERTED to 0.50 by user choice: |
-//| the +2.1% NET wasn't worth trading ~2.9pp of win rate for.            |
+//| the +2.1% NET wasn't worth trading ~2.9pp of win rate for. RE-SWEPT   |
+//| after PartialTriggerR moved 1.0->1.5 (in case the two interact) and   |
+//| the exact same shape reproduced: 0.70+ still causes the MaxDD cliff,  |
+//| and 0.60 is again an isolated spike above both its neighbors (0.50    |
+//| baseline RF 9.511/NET $17,235.17 vs 0.60 RF 9.749/NET $17,666.42, but |
+//| 0.55 RF 9.296 and 0.65 RF 9.389 both worse than baseline). Kept at    |
+//| 0.50 again, same reasoning as before.                                 |
 //| PartialTriggerR (CONFIRMED=1.5): a 0.60-2.00 step-0.10 sweep on the    |
 //| confirmed baseline (ProtectTriggerR=0.50, ProtectR=0.25 both swept    |
 //| under the OLD PartialTriggerR=1.0 and not yet re-verified under this  |
