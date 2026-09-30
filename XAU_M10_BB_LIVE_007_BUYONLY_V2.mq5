@@ -153,19 +153,19 @@
 //| 601); every other tested value (0.10-0.30) is worse on both NET and   |
 //| RF than the default. User chose to keep 0.25 (max NET) over trading   |
 //| some return for a smoother equity curve.                              |
-//| ProtectTriggerR (CONFIRMED=0.60): a 0.20-0.95 step-0.05 sweep on the   |
-//| confirmed baseline found two things. (1) IMPORTANT SAFETY FINDING:    |
-//| values >=0.70 (approaching PartialTriggerR=1.0) cause MaxDD to jump   |
-//| from ~1.7% to 3.6%-4.7% -- protect-trigger and partial-close logic    |
-//| interact badly once they're close together. DO NOT set               |
+//| ProtectTriggerR (TESTED, kept at 0.50): a 0.20-0.95 step-0.05 sweep    |
+//| on the confirmed baseline found two things. (1) IMPORTANT SAFETY      |
+//| FINDING: values >=0.70 (approaching PartialTriggerR=1.0) cause MaxDD  |
+//| to jump from ~1.7% to 3.6%-4.7% -- protect-trigger and partial-close  |
+//| logic interact badly once they're close together. DO NOT set         |
 //| ProtectTriggerR >= 0.70. (2) 0.60 topped the sweep despite both       |
-//| neighbors (0.55, 0.65) being worse than the 0.50 baseline -- looked   |
-//| like an isolated noise spike, but a single (non-optimizer)            |
-//| confirmation run reproduced the sweep's NET exactly ($16,348.15),     |
-//| ruling out a fluke. True per-entry accounting: 483->476 entries,      |
-//| 433W/50L->413W/63L, WR 89.65%->86.76% (down, but average win size     |
-//| grew enough that NET/RF/DD all still improved): NET $16,005.75->      |
-//| $16,348.15, RF 8.832->9.021, DD 1.7342%->1.7234%.                     |
+//| neighbors (0.55, 0.65) being worse than the 0.50 baseline; a single   |
+//| (non-optimizer) confirmation run reproduced its NET exactly           |
+//| ($16,348.15), ruling out a fluke -- true per-entry accounting:        |
+//| 483->476 entries, 433W/50L->413W/63L, WR 89.65%->86.76% (down), NET   |
+//| $16,005.75->$16,348.15 (+2.1%), RF 8.832->9.021, DD 1.7342%->1.7234%. |
+//| Briefly set as the new default, then REVERTED to 0.50 by user choice: |
+//| the +2.1% NET wasn't worth trading ~2.9pp of win rate for.            |
 //+------------------------------------------------------------------+
 #property strict
 #include <Trade/Trade.mqh>
@@ -177,7 +177,7 @@ input long MagicNumber=95011207; // Magic number
 input double ExtensionR=0.95; // Extension (R) before pullback watch starts
 input double PullbackR=0.10; // Pullback (R) from extension extreme to trigger entry
 input double InitialSL_R=2.25; // Initial stop loss (R) (TESTED, kept unchanged, see header)
-input double ProtectTriggerR=0.60; // Break-even/protect trigger (R) (CONFIRMED, see header)
+input double ProtectTriggerR=0.50; // Break-even/protect trigger (R) (TESTED, kept unchanged, see header)
 input double PartialTriggerR=1.0; // Partial close trigger (R)
 input double ProtectR=0.25; // Protect SL level (R) (TESTED, kept unchanged, see header)
 input double SignalOppositeTP_R=0.90; // Final target beyond signal close (R)
