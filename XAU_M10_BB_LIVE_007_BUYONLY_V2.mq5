@@ -144,6 +144,15 @@
 //| the current default (2.25: NET $16,005.75, RF 8.832) by only +0.5%    |
 //| NET while trading less (644 vs 657) -- inside noise, not a plateau.   |
 //| Kept unchanged at 2.25 (opposite of every 001/005 sibling's finding). |
+//| ProtectR (TESTED, kept at 0.25): the closest 007 analog to 005's      |
+//| Lock_R (profit-protect SL level after trigger). A 0.10-0.45 step-0.05 |
+//| sweep on the confirmed baseline is a genuine trade-off, not a free    |
+//| win: 0.35/0.40 cut MaxDD sharply (1.734%->1.520%/1.513%, -12-13%,     |
+//| driving RF up to 9.78) but at the cost of NET (-3.1% to -3.6%:        |
+//| $16,005.75 -> $15,514.43 / $15,431.42) and fewer trades (657->624/    |
+//| 601); every other tested value (0.10-0.30) is worse on both NET and   |
+//| RF than the default. User chose to keep 0.25 (max NET) over trading   |
+//| some return for a smoother equity curve.                              |
 //+------------------------------------------------------------------+
 #property strict
 #include <Trade/Trade.mqh>
@@ -157,7 +166,7 @@ input double PullbackR=0.10; // Pullback (R) from extension extreme to trigger e
 input double InitialSL_R=2.25; // Initial stop loss (R) (TESTED, kept unchanged, see header)
 input double ProtectTriggerR=0.50; // Break-even/protect trigger (R)
 input double PartialTriggerR=1.0; // Partial close trigger (R)
-input double ProtectR=0.25; // Protect SL level (R)
+input double ProtectR=0.25; // Protect SL level (R) (TESTED, kept unchanged, see header)
 input double SignalOppositeTP_R=0.90; // Final target beyond signal close (R)
 input int  MinR_Points=300; // Min signal-candle body (points) to trade, 0=no filter (CONFIRMED, see header)
 input int MaxExtensionHours=72; // Max hours waiting for extension
