@@ -152,7 +152,11 @@
 //| $16,005.75 -> $15,514.43 / $15,431.42) and fewer trades (657->624/    |
 //| 601); every other tested value (0.10-0.30) is worse on both NET and   |
 //| RF than the default. User chose to keep 0.25 (max NET) over trading   |
-//| some return for a smoother equity curve.                              |
+//| some return for a smoother equity curve. RE-SWEPT after                |
+//| PartialTriggerR moved 1.0->1.5: same shape reproduced (0.35/0.40 cut  |
+//| MaxDD to ~1.51-1.52% and push RF to ~10.1-10.3, but NET drops 5.4-     |
+//| 7.5% from the new baseline's $17,235.17). Kept at 0.25 again, same    |
+//| reasoning.                                                             |
 //| ProtectTriggerR (TESTED, kept at 0.50): a 0.20-0.95 step-0.05 sweep    |
 //| on the confirmed baseline found two things. (1) IMPORTANT SAFETY      |
 //| FINDING: values >=0.70 (approaching PartialTriggerR=1.0) cause MaxDD  |
