@@ -166,6 +166,28 @@
 //| $16,005.75->$16,348.15 (+2.1%), RF 8.832->9.021, DD 1.7342%->1.7234%. |
 //| Briefly set as the new default, then REVERTED to 0.50 by user choice: |
 //| the +2.1% NET wasn't worth trading ~2.9pp of win rate for.            |
+//| PartialTriggerR (CONFIRMED=1.5): a 0.60-2.00 step-0.10 sweep on the    |
+//| confirmed baseline (ProtectTriggerR=0.50, ProtectR=0.25 both swept    |
+//| under the OLD PartialTriggerR=1.0 and not yet re-verified under this  |
+//| new value -- worth a re-sweep) found a clean, monotonic improvement   |
+//| all the way to the swept ceiling (2.0): NET $16,005.75->$17,896.92    |
+//| (+11.8%), RF 8.832->9.876, with DD roughly flat (~1.73%). STRUCTURAL  |
+//| CAUSE (why this trend exists and why it plateaus near 2.0): the R     |
+//| used here is the fixed signal-candle body, and the broker's hard      |
+//| take-profit (finaltp = signal_close + SignalOppositeTP_R*R) sits      |
+//| roughly ExtensionR-PullbackR+SignalOppositeTP_R = 0.95-0.10+0.90 =    |
+//| ~1.75R beyond entry at minimum (often more) -- so raising             |
+//| PartialTriggerR toward/past ~1.75R means most winners hit the full    |
+//| TP before ever reaching the partial-close trigger, i.e. it            |
+//| progressively DISABLES the partial-close feature rather than just     |
+//| delaying it. Verified directly with two single-run confirmations:     |
+//| both 1.5 and 2.0 give the IDENTICAL 483 entries/433W/50L/WR 89.65%    |
+//| (losers all hit SL before any partial check, so WR has zero trade-off |
+//| here) -- the only difference is how many winners still get a real     |
+//| partial close: 120/483 (24.8%) at 1.5 vs only 26/483 (5.4%) at 2.0.   |
+//| Chose 1.5 (NET $17,235.17, +7.7%, RF 9.511) over 2.0 (+11.8%, RF      |
+//| 9.876) specifically to keep the partial-close risk-management         |
+//| behavior meaningfully alive rather than let 2.0 all but remove it.    |
 //+------------------------------------------------------------------+
 #property strict
 #include <Trade/Trade.mqh>
@@ -178,7 +200,7 @@ input double ExtensionR=0.95; // Extension (R) before pullback watch starts
 input double PullbackR=0.10; // Pullback (R) from extension extreme to trigger entry
 input double InitialSL_R=2.25; // Initial stop loss (R) (TESTED, kept unchanged, see header)
 input double ProtectTriggerR=0.50; // Break-even/protect trigger (R) (TESTED, kept unchanged, see header)
-input double PartialTriggerR=1.0; // Partial close trigger (R)
+input double PartialTriggerR=1.5; // Partial close trigger (R) (CONFIRMED, see header)
 input double ProtectR=0.25; // Protect SL level (R) (TESTED, kept unchanged, see header)
 input double SignalOppositeTP_R=0.90; // Final target beyond signal close (R)
 input int  MinR_Points=300; // Min signal-candle body (points) to trade, 0=no filter (CONFIRMED, see header)
