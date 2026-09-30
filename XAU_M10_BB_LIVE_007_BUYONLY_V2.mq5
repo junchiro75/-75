@@ -198,6 +198,27 @@
 //| Chose 1.5 (NET $17,235.17, +7.7%, RF 9.511) over 2.0 (+11.8%, RF      |
 //| 9.876) specifically to keep the partial-close risk-management         |
 //| behavior meaningfully alive rather than let 2.0 all but remove it.    |
+//| FINAL VALIDATION: also re-swept ProtectTriggerR (0.20-0.95) and       |
+//| ProtectR (0.10-0.45) under PartialTriggerR=2.0 to check for           |
+//| interaction -- both landed back on the same 0.50/0.25 optimum found   |
+//| under 1.0 and 1.5, so ProtectTriggerR/ProtectR are robust to this     |
+//| choice. Also tested fully DISABLING partial close (PartialTriggerR=   |
+//| 999, single-run confirmed 0% partial rate): NET $18,129.47 (highest   |
+//| of all three) but WR drops to 89.23% (431W/52L, vs 89.65%/433W/50L    |
+//| at both 1.5 and 2.0) -- tracing the 2 flipped entries showed WHY:     |
+//| e.g. one trade spiked to +1.5R (3281.74->3289.06) then round-tripped  |
+//| back to near breakeven (3282.68). With partial, half locked in the    |
+//| +1.5R excursion (+$36.60) and only the runner half gave it back       |
+//| (net +$16.14, a win); without partial, the FULL position rode the     |
+//| entire round trip and only captured the tiny net move, losing to      |
+//| swap cost (net -$15.76, a loss). ProtectTriggerR only defends against |
+//| price falling below the lock level -- it does nothing to bank an     |
+//| excursion that later round-trips back down without breaching it.      |
+//| Partial-close is the only mechanism that captures that upside before  |
+//| it reverses. FINAL DECISION: keep PartialTriggerR=1.5 over both 2.0   |
+//| and full removal -- it preserves this round-trip protection at a     |
+//| meaningful 24.8% partial rate, trading some raw NET upside (2.0:      |
+//| +3.8%, 999: +5.2% more) for that structural insurance.                |
 //+------------------------------------------------------------------+
 #property strict
 #include <Trade/Trade.mqh>
