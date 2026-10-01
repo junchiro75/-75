@@ -230,6 +230,19 @@
 //| level based, already shown to hurt NET/WR at a shallow 0.25R trigger)  |
 //| -- this is a TIME cutoff conditional on being meaningfully against     |
 //| the position. Needs its own backtest before trusting it live.          |
+//| ProtectStopEuropeOnly (UNTESTED): the all-hours ProtectTriggerR=0.25/   |
+//| ProtectR=0.05 test was REJECTED (NET -33% at 0.1-lot-equivalent, WR    |
+//| 92.09%->84.19%, trade count 3,273->3,523 -- the early SL move freed    |
+//| MAX1 up faster, letting in more, worse re-entries). This restricts the |
+//| SL-move itself to only arm while the CURRENT time (when favR crosses  |
+//| ProtectTriggerR) falls in the Europe session (16-22 KST) -- outside   |
+//| that window the trigger is still logged (PROTECT_TRIGGER) but the SL  |
+//| is left alone, same as UseProtectStop=false. Hypothesis: if the       |
+//| faster-turnover harm is concentrated in non-Europe hours (consistent  |
+//| with this file's existing Asia-session-specific filters elsewhere),   |
+//| restricting the stage to Europe hours could recover the benefit       |
+//| without the broad harm. Needs its own ground-truth backtest -- not    |
+//| assumed from the all-hours result.                                    |
 //| SIGNAL's touch=BODY/WICK and MAE_OUTCOME's touch= (diagnostic always   |
 //| on; SkipFadeBearOSWickTouch ACTS): the entry condition only requires   |
 //| the signal candle's high/low (wick) to reach BB20; this additionally   |
@@ -303,6 +316,7 @@ input bool   UseBreakevenStop   = false; // Move SL to breakeven once armed (REJ
 input double ProtectTriggerR    = 0.25; // Favorable R to arm protect-lock stop (UNTESTED, see header)
 input double ProtectR           = 0.05; // SL level once armed, in R (UNTESTED, see header)
 input bool   UseProtectStop     = false; // Move SL to ProtectR once armed (UNTESTED, see header)
+input bool   ProtectStopEuropeOnly = false; // Restrict ProtectStop arming to Europe session (16-22 KST) only (UNTESTED, see header)
 
 input double MildZoneR          = 2.0; // Adverse-R boundary for dwell-time diagnostic (no trading effect)
 input double DangerTimeStopMin  = 20.0; // Minutes in danger zone before force-close (UNTESTED, see header)
@@ -612,7 +626,7 @@ void CheckMAEProgress()
       {
          g_protectTriggered[i]=true;
          Log("PROTECT_TRIGGER","favR="+DoubleToString(favR,3)+" | "+g_trackTag[i]);
-         if(UseProtectStop)
+         if(UseProtectStop && (!ProtectStopEuropeOnly || InEuropeSessionKST(TimeCurrent())))
          {
             double curTP=PositionGetDouble(POSITION_TP);
             double lock=NormalizeDouble(g_trackEntry[i]+g_trackDir[i]*ProtectR*g_trackR[i],_Digits);
@@ -712,6 +726,12 @@ bool InAsiaSessionKST(datetime server_now)
 {
    int h=KST_Hour(server_now);
    return (h>=AsiaSessionStartHour && h<AsiaSessionEndHour);
+}
+
+bool InEuropeSessionKST(datetime server_now)
+{
+   int h=KST_Hour(server_now);
+   return (h>=16 && h<22);
 }
 
 bool HasOurPosition()
@@ -1109,7 +1129,7 @@ int OnInit()
        " | BreakevenTriggerFrac="+DoubleToString(BreakevenTriggerFrac,2)+
        " UseBreakevenStop="+(UseBreakevenStop?"true":"false")+
        " | ProtectTriggerR="+DoubleToString(ProtectTriggerR,2)+" ProtectR="+DoubleToString(ProtectR,2)+
-       " UseProtectStop="+(UseProtectStop?"true":"false")+
+       " UseProtectStop="+(UseProtectStop?"true":"false")+" ProtectStopEuropeOnly="+(ProtectStopEuropeOnly?"true":"false")+
        " | MildZoneR="+DoubleToString(MildZoneR,2)+" DangerTimeStopMin="+DoubleToString(DangerTimeStopMin,1)+
        " UseDangerTimeStop="+(UseDangerTimeStop?"true":"false")+
        " | UseThreeBarExit="+(UseThreeBarExit?"true":"false")+
