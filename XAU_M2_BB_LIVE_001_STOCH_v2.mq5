@@ -58,6 +58,12 @@
 //| went below it) before closing -- tests whether an immediate,        |
 //| zero-pullback move against the position predicts a one-way run      |
 //| into the stop.                                                      |
+//| threeBarOneWay extends this over the entry candle + next 2 (3        |
+//| candles total): true when the running favorable extreme across all   |
+//| 3 (highest high for a BUY, lowest low for a SELL) never crossed      |
+//| entry -- i.e. the position was never in profit at any point during   |
+//| those 3 candles, not just that each one individually closed          |
+//| unfavorably.                                                          |
 //| UseTrendFilter (default false, UNTESTED): skips an entry when a      |
 //| strong opposing trend is already established on TrendFilterTimeframe |
 //| (default M15) -- ADX >= ADXThreshold and the dominant DI points      |
@@ -320,6 +326,18 @@ string g_trackTag[TRACK_SLOTS];
 bool   g_waitingFirstBar[TRACK_SLOTS];
 bool   g_firstBarKnown[TRACK_SLOTS], g_firstBarOneWay[TRACK_SLOTS];
 
+// -- first-3-bars-after-entry direction (diagnostic only) --------------------
+// Extends the above over the entry candle plus the next 2 (3 candles total):
+// tracks the running favorable extreme (highest high for a BUY, lowest low
+// for a SELL) across all 3 and checks whether it EVER closed above entry
+// (BUY) / below entry (SELL) at any point -- i.e. whether the position was
+// ever in profit during those 3 candles, not just whether each candle
+// individually closed favorably.
+bool   g_waitingBar3[TRACK_SLOTS];
+int    g_bar3Count[TRACK_SLOTS];
+double g_bar3Extreme[TRACK_SLOTS];
+bool   g_bar3Known[TRACK_SLOTS], g_bar3OneWay[TRACK_SLOTS];
+
 // -- band-reentry tracking (diagnostic only) ---------------------------------
 // The entry signal is a BB20 breakout; this checks whether price later
 // crosses back to the OTHER side of that same (frozen, as-of-entry) BB20
@@ -463,6 +481,7 @@ void StartMAETracking(ulong ticket,double entry,double R,int dir,string tag)
    g_trackTicket[i]=ticket; g_trackEntry[i]=entry; g_trackR[i]=R; g_trackDir[i]=dir;
    g_reached50[i]=false; g_reached75[i]=false; g_trackTag[i]=tag;
    g_waitingFirstBar[i]=true; g_firstBarKnown[i]=false; g_firstBarOneWay[i]=false;
+   g_waitingBar3[i]=true; g_bar3Count[i]=0; g_bar3Extreme[i]=0; g_bar3Known[i]=false; g_bar3OneWay[i]=false;
    g_trackBandLevel[i]=g_lastBandLevel; g_bandReentered[i]=false;
    g_trackOppSignalSeen[i]=false;
    g_reachedFav50[i]=false; g_reachedFav75[i]=false; g_reachedFav90[i]=false;
@@ -833,6 +852,20 @@ void CheckNewM2Bar()
       g_waitingFirstBar[i]=false;
    }
 
+   for(int i=0;i<TRACK_SLOTS;i++)
+   {
+      if(!g_waitingBar3[i]) continue;
+      if(g_bar3Count[i]==0) g_bar3Extreme[i]=(g_trackDir[i]==+1 ? h : l);
+      else g_bar3Extreme[i]=(g_trackDir[i]==+1 ? MathMax(g_bar3Extreme[i],h) : MathMin(g_bar3Extreme[i],l));
+      g_bar3Count[i]++;
+      if(g_bar3Count[i]>=3)
+      {
+         g_bar3OneWay[i]=(g_trackDir[i]==+1) ? (g_bar3Extreme[i]<=g_trackEntry[i]) : (g_bar3Extreme[i]>=g_trackEntry[i]);
+         g_bar3Known[i]=true;
+         g_waitingBar3[i]=false;
+      }
+   }
+
    double up20[1],lo20[1],up4[1],lo4[1];
    int r1=CopyBuffer(hBB20,1,1,1,up20), r2=CopyBuffer(hBB20,2,1,1,lo20);
    int r3=CopyBuffer(hBB4,1,1,1,up4),   r4=CopyBuffer(hBB4,2,1,1,lo4);
@@ -1062,10 +1095,11 @@ void OnTradeTransaction(const MqlTradeTransaction &trans,const MqlTradeRequest &
                  HistoryDealGetDouble(trans.deal,DEAL_COMMISSION);
    string outcome=(profit>0?"WIN":"LOSS");
    string firstBarStr=(!g_firstBarKnown[i] ? "unknown" : (g_firstBarOneWay[i]?"true":"false"));
+   string bar3Str=(!g_bar3Known[i] ? "unknown" : (g_bar3OneWay[i]?"true":"false"));
    string bandStr=(g_trackBandLevel[i]==0 ? "n/a(fade)" : (g_bandReentered[i]?"true":"false"));
    Log("MAE_OUTCOME","outcome="+outcome+" profit="+DoubleToString(profit,2)+
        " reached50="+(g_reached50[i]?"true":"false")+" reached75="+(g_reached75[i]?"true":"false")+
-       " firstBarOneWay="+firstBarStr+" bandReentry="+bandStr+
+       " firstBarOneWay="+firstBarStr+" threeBarOneWay="+bar3Str+" bandReentry="+bandStr+
        " oppSignalSeen="+(g_trackOppSignalSeen[i]?"true":"false")+
        " reachedFav50="+(g_reachedFav50[i]?"true":"false")+
        " reachedFav75="+(g_reachedFav75[i]?"true":"false")+
@@ -1081,6 +1115,7 @@ void OnTradeTransaction(const MqlTradeTransaction &trans,const MqlTradeRequest &
        " | "+g_trackTag[i]);
    g_trackTicket[i]=0; // free slot
    g_waitingFirstBar[i]=false;
+   g_waitingBar3[i]=false;
 
    if(outcome=="LOSS")
    {
