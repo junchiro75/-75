@@ -175,6 +175,15 @@
 //| and arming earlier, could behave differently -- needs its own           |
 //| backtest (PROTECT_TRIGGER logs every arm regardless of UseProtectStop,  |
 //| PROTECT_MOVED/PROTECT_MOVE_FAIL log the live SL modify outcome).        |
+//| timeMildMin/timeDangerMin (diagnostic only, no trading effect):         |
+//| minutes a position spends with adverse excursion below MildZoneR        |
+//| (default 2.0, half of SL_R=4.0) vs at/above it. Motivated by a real     |
+//| hold-time-vs-loss pattern found in the confirmed baseline (3,273        |
+//| trades): losses hold far longer than wins (avg 212min vs 31min) and     |
+//| the loss rate jumps sharply past a ~30min threshold (3.5% under 30min   |
+//| -> 25-33% beyond it) rather than scaling smoothly with time (plain      |
+//| correlation only 0.18) -- this breaks total hold time down by how much  |
+//| of it was spent already deep against the position vs still mild.       |
 //| SIGNAL's touch=BODY/WICK and MAE_OUTCOME's touch= (diagnostic always   |
 //| on; SkipFadeBearOSWickTouch ACTS): the entry condition only requires   |
 //| the signal candle's high/low (wick) to reach BB20; this additionally   |
@@ -248,6 +257,8 @@ input bool   UseBreakevenStop   = false; // Move SL to breakeven once armed (REJ
 input double ProtectTriggerR    = 0.25; // Favorable R to arm protect-lock stop (UNTESTED, see header)
 input double ProtectR           = 0.05; // SL level once armed, in R (UNTESTED, see header)
 input bool   UseProtectStop     = false; // Move SL to ProtectR once armed (UNTESTED, see header)
+
+input double MildZoneR          = 2.0; // Adverse-R boundary for dwell-time diagnostic (no trading effect)
 
 input bool   SkipFadeBearOSWickTouch = true; // Skip FADE_BEAR_OS wick-only touches (CONFIRMED, see header)
 
@@ -360,6 +371,16 @@ bool   g_beMoved[TRACK_SLOTS];     // live SL was actually moved to breakeven (U
 bool   g_protectTriggered[TRACK_SLOTS]; // favR >= ProtectTriggerR reached at least once
 bool   g_protectMoved[TRACK_SLOTS];     // live SL was actually moved to the protect-lock level (UseProtectStop only)
 
+// -- dwell-time tracking (diagnostic only, no trading effect): how many
+//    minutes a position spends with adverse excursion BELOW MildZoneR
+//    (default 2.0, i.e. under half of SL_R=4.0 -- "not yet dangerous") vs
+//    AT/ABOVE it ("danger zone", closer to the stop). Answers: does time
+//    spent in the mild zone before eventually stopping out differ from
+//    winning trades, separate from total hold time? ---------------------
+datetime g_trackLastSample[TRACK_SLOTS];
+double   g_timeMildMin[TRACK_SLOTS];   // minutes spent with adverseR < MildZoneR
+double   g_timeDangerMin[TRACK_SLOTS]; // minutes spent with adverseR >= MildZoneR
+
 // -- MA-slope hypothesis simulation (diagnostic only, no trading effect,
 //    independent of TRACK_SLOTS/real positions -- see header comment) ------
 // One slot per signal candle (not per position), since this tests every
@@ -431,6 +452,7 @@ void StartMAETracking(ulong ticket,double entry,double R,int dir,string tag)
    g_reachedFav50[i]=false; g_reachedFav75[i]=false; g_reachedFav90[i]=false;
    g_beTriggered[i]=false; g_beRetraced[i]=false; g_beMoved[i]=false;
    g_protectTriggered[i]=false; g_protectMoved[i]=false;
+   g_trackLastSample[i]=TimeCurrent(); g_timeMildMin[i]=0; g_timeDangerMin[i]=0;
    g_trackBodyTouch[i]=g_lastBodyTouch;
 }
 
@@ -487,6 +509,15 @@ void CheckMAEProgress()
       double frac=adverseR/SL_R;
       if(frac>=0.5  && !g_reached50[i]){ g_reached50[i]=true; Log("MAE_MILESTONE","50% of SL reached | "+g_trackTag[i]); }
       if(frac>=0.75 && !g_reached75[i]){ g_reached75[i]=true; Log("MAE_MILESTONE","75% of SL reached | "+g_trackTag[i]); }
+
+      datetime now=TimeCurrent();
+      double elapsedMin=(double)(now-g_trackLastSample[i])/60.0;
+      if(elapsedMin>0)
+      {
+         if(adverseR<MildZoneR) g_timeMildMin[i]+=elapsedMin;
+         else                   g_timeDangerMin[i]+=elapsedMin;
+         g_trackLastSample[i]=now;
+      }
 
       double favR=(g_trackDir[i]==+1) ? (q.bid-g_trackEntry[i])/g_trackR[i] : (g_trackEntry[i]-q.ask)/g_trackR[i];
       double favFrac=favR/TP_R;
@@ -995,6 +1026,8 @@ void OnTradeTransaction(const MqlTradeTransaction &trans,const MqlTradeRequest &
        " beMoved="+(g_beMoved[i]?"true":"false")+
        " protectTriggered="+(g_protectTriggered[i]?"true":"false")+
        " protectMoved="+(g_protectMoved[i]?"true":"false")+
+       " timeMildMin="+DoubleToString(g_timeMildMin[i],1)+
+       " timeDangerMin="+DoubleToString(g_timeDangerMin[i],1)+
        " touch="+(g_trackBodyTouch[i]?"BODY":"WICK")+
        " | "+g_trackTag[i]);
    g_trackTicket[i]=0; // free slot
