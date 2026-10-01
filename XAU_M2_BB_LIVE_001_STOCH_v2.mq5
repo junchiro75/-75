@@ -162,6 +162,19 @@
 //| after triggering still recovered to a WIN, ~9x above the ~10.1%        |
 //| breakeven threshold; going live would have cost the +$5,253 this       |
 //| bucket actually made. Diagnostic-only, kept off (UseBreakevenStop=false)|
+//| ProtectTriggerR/ProtectR/UseProtectStop (diagnostic always on;          |
+//| UseProtectStop ACTS, UNTESTED): a different idea from the rejected      |
+//| breakeven stop above -- instead of moving SL to exactly breakeven at    |
+//| BreakevenTriggerFrac of TP_R, this locks in a SMALL PROFIT (ProtectR,   |
+//| default 0.05R, not 0) at an earlier, TP_R-independent trigger           |
+//| (ProtectTriggerR, default 0.25R -- for TP_R~0.45-0.5 this is roughly    |
+//| half of TP_R, same shape as 007/005's own protect-lock stage). The      |
+//| rejected breakeven test showed giving back the WHOLE favorable move     |
+//| at the 50%-of-TP point was too costly (90.6% of retraces still          |
+//| recovered to a win); locking a small profit instead of exactly $0,      |
+//| and arming earlier, could behave differently -- needs its own           |
+//| backtest (PROTECT_TRIGGER logs every arm regardless of UseProtectStop,  |
+//| PROTECT_MOVED/PROTECT_MOVE_FAIL log the live SL modify outcome).        |
 //| SIGNAL's touch=BODY/WICK and MAE_OUTCOME's touch= (diagnostic always   |
 //| on; SkipFadeBearOSWickTouch ACTS): the entry condition only requires   |
 //| the signal candle's high/low (wick) to reach BB20; this additionally   |
@@ -231,6 +244,10 @@ input bool   UseCircuitBreaker  = false; // Actually pause entries after a losin
 
 input double BreakevenTriggerFrac = 0.5; // Fraction of TP_R to arm breakeven stop
 input bool   UseBreakevenStop   = false; // Move SL to breakeven once armed (REJECTED, see header)
+
+input double ProtectTriggerR    = 0.25; // Favorable R to arm protect-lock stop (UNTESTED, see header)
+input double ProtectR           = 0.05; // SL level once armed, in R (UNTESTED, see header)
+input bool   UseProtectStop     = false; // Move SL to ProtectR once armed (UNTESTED, see header)
 
 input bool   SkipFadeBearOSWickTouch = true; // Skip FADE_BEAR_OS wick-only touches (CONFIRMED, see header)
 
@@ -334,6 +351,15 @@ bool   g_beTriggered[TRACK_SLOTS]; // favFrac >= BreakevenTriggerFrac reached at
 bool   g_beRetraced[TRACK_SLOTS];  // price came back to the entry level AFTER g_beTriggered
 bool   g_beMoved[TRACK_SLOTS];     // live SL was actually moved to breakeven (UseBreakevenStop only)
 
+// -- protect-lock stop simulation (diagnostic always on; ACTS only if
+//    UseProtectStop=true) -- see header for the ProtectTriggerR/ProtectR
+//    hypothesis. Distinct from the already-rejected breakeven-stop above:
+//    this locks a small PROFIT (ProtectR, not 0) at an earlier trigger
+//    (ProtectTriggerR, independent of TP_R) rather than moving to
+//    breakeven at a fraction of TP_R ----------------------------------
+bool   g_protectTriggered[TRACK_SLOTS]; // favR >= ProtectTriggerR reached at least once
+bool   g_protectMoved[TRACK_SLOTS];     // live SL was actually moved to the protect-lock level (UseProtectStop only)
+
 // -- MA-slope hypothesis simulation (diagnostic only, no trading effect,
 //    independent of TRACK_SLOTS/real positions -- see header comment) ------
 // One slot per signal candle (not per position), since this tests every
@@ -404,6 +430,7 @@ void StartMAETracking(ulong ticket,double entry,double R,int dir,string tag)
    g_trackOppSignalSeen[i]=false;
    g_reachedFav50[i]=false; g_reachedFav75[i]=false; g_reachedFav90[i]=false;
    g_beTriggered[i]=false; g_beRetraced[i]=false; g_beMoved[i]=false;
+   g_protectTriggered[i]=false; g_protectMoved[i]=false;
    g_trackBodyTouch[i]=g_lastBodyTouch;
 }
 
@@ -466,6 +493,26 @@ void CheckMAEProgress()
       if(favFrac>=0.5  && !g_reachedFav50[i]){ g_reachedFav50[i]=true; Log("MAE_MILESTONE","50% of TP reached (favorable) | "+g_trackTag[i]); }
       if(favFrac>=0.75 && !g_reachedFav75[i]){ g_reachedFav75[i]=true; Log("MAE_MILESTONE","75% of TP reached (favorable) | "+g_trackTag[i]); }
       if(favFrac>=0.9  && !g_reachedFav90[i]){ g_reachedFav90[i]=true; Log("MAE_MILESTONE","90% of TP reached (favorable) | "+g_trackTag[i]); }
+
+      if(!g_protectTriggered[i] && favR>=ProtectTriggerR)
+      {
+         g_protectTriggered[i]=true;
+         Log("PROTECT_TRIGGER","favR="+DoubleToString(favR,3)+" | "+g_trackTag[i]);
+         if(UseProtectStop)
+         {
+            double curTP=PositionGetDouble(POSITION_TP);
+            double lock=NormalizeDouble(g_trackEntry[i]+g_trackDir[i]*ProtectR*g_trackR[i],_Digits);
+            if(!EnableLiveOrders)
+               Log("PROTECT_MOVE_DRY","would move SL->"+DoubleToString(lock,_Digits)+" (EnableLiveOrders=false) | "+g_trackTag[i]);
+            else if(trade.PositionModify(g_trackTicket[i],lock,curTP))
+            {
+               g_protectMoved[i]=true;
+               Log("PROTECT_MOVED","SL->"+DoubleToString(lock,_Digits)+" | "+g_trackTag[i]);
+            }
+            else
+               Log("PROTECT_MOVE_FAIL",IntegerToString((int)trade.ResultRetcode())+" | "+trade.ResultRetcodeDescription());
+         }
+      }
 
       if(!g_bandReentered[i] && g_trackBandLevel[i]!=0)
       {
@@ -890,6 +937,8 @@ int OnInit()
        " UseCircuitBreaker="+(UseCircuitBreaker?"true":"false")+
        " | BreakevenTriggerFrac="+DoubleToString(BreakevenTriggerFrac,2)+
        " UseBreakevenStop="+(UseBreakevenStop?"true":"false")+
+       " | ProtectTriggerR="+DoubleToString(ProtectTriggerR,2)+" ProtectR="+DoubleToString(ProtectR,2)+
+       " UseProtectStop="+(UseProtectStop?"true":"false")+
        " | SkipFadeBearOSWickTouch="+(SkipFadeBearOSWickTouch?"true":"false")+
        " | Lots="+DoubleToString(Lots,2)+" | Magic="+IntegerToString((int)MagicNumber)+
        " | orders="+(EnableLiveOrders?"ENABLED":"DRY"));
@@ -944,6 +993,8 @@ void OnTradeTransaction(const MqlTradeTransaction &trans,const MqlTradeRequest &
        " beTriggered="+(g_beTriggered[i]?"true":"false")+
        " beRetraced="+(g_beRetraced[i]?"true":"false")+
        " beMoved="+(g_beMoved[i]?"true":"false")+
+       " protectTriggered="+(g_protectTriggered[i]?"true":"false")+
+       " protectMoved="+(g_protectMoved[i]?"true":"false")+
        " touch="+(g_trackBodyTouch[i]?"BODY":"WICK")+
        " | "+g_trackTag[i]);
    g_trackTicket[i]=0; // free slot
