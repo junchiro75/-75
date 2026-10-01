@@ -74,6 +74,17 @@
 //| doubles conditional loss risk. Needs its own backtest before trusting |
 //| it: cutting here forfeits the ~69% of threeBarOneWay=true trades that |
 //| still recover to a win.                                               |
+//| ComboExitDangerMin/UseComboExit (UNTESTED): an AND of the two ideas    |
+//| above instead of either alone -- only closes when a position is BOTH  |
+//| threeBarOneWay=true AND has spent ComboExitDangerMin (default 10min)  |
+//| in the danger zone. Ground truth on the confirmed baseline: of the    |
+//| 111 threeBarOneWay=true trades, the small subset (26) that ALSO       |
+//| spent >=5min in the danger zone lost 84.6% of the time (18 trades at  |
+//| >=10min: 83.3%) vs just 28.3% for threeBarOneWay=true trades that     |
+//| stayed under 30min in the danger zone -- a much sharper signal than   |
+//| either condition alone, though on a tiny slice (~0.5-0.8% of all      |
+//| trades) so the effect on overall NET/MaxDD is likely small either     |
+//| way. Needs its own backtest.                                          |
 //| UseTrendFilter (default false, UNTESTED): skips an entry when a      |
 //| strong opposing trend is already established on TrendFilterTimeframe |
 //| (default M15) -- ADX >= ADXThreshold and the dominant DI points      |
@@ -294,6 +305,9 @@ input bool   UseDangerTimeStop  = false; // Close position once DangerTimeStopMi
 
 input bool   UseThreeBarExit    = false; // Close position if never profitable in first 3 candles (UNTESTED, see header)
 
+input double ComboExitDangerMin = 10.0; // Danger-zone minutes required, combined with threeBarOneWay (UNTESTED, see header)
+input bool   UseComboExit       = false; // Close only when BOTH threeBarOneWay AND ComboExitDangerMin are met (UNTESTED, see header)
+
 input bool   SkipFadeBearOSWickTouch = true; // Skip FADE_BEAR_OS wick-only touches (CONFIRMED, see header)
 
 int hBB20=INVALID_HANDLE,hBB4=INVALID_HANDLE,hStoch=INVALID_HANDLE,hADX=INVALID_HANDLE;
@@ -349,6 +363,7 @@ bool   g_waitingBar3[TRACK_SLOTS];
 int    g_bar3Count[TRACK_SLOTS];
 double g_bar3Extreme[TRACK_SLOTS];
 bool   g_bar3Known[TRACK_SLOTS], g_bar3OneWay[TRACK_SLOTS];
+bool   g_comboExited[TRACK_SLOTS]; // UseComboExit already force-closed this slot (prevents a double-close attempt)
 
 // -- band-reentry tracking (diagnostic only) ---------------------------------
 // The entry signal is a BB20 breakout; this checks whether price later
@@ -494,6 +509,7 @@ void StartMAETracking(ulong ticket,double entry,double R,int dir,string tag)
    g_reached50[i]=false; g_reached75[i]=false; g_trackTag[i]=tag;
    g_waitingFirstBar[i]=true; g_firstBarKnown[i]=false; g_firstBarOneWay[i]=false;
    g_waitingBar3[i]=true; g_bar3Count[i]=0; g_bar3Extreme[i]=0; g_bar3Known[i]=false; g_bar3OneWay[i]=false;
+   g_comboExited[i]=false;
    g_trackBandLevel[i]=g_lastBandLevel; g_bandReentered[i]=false;
    g_trackOppSignalSeen[i]=false;
    g_reachedFav50[i]=false; g_reachedFav75[i]=false; g_reachedFav90[i]=false;
@@ -564,6 +580,21 @@ void CheckMAEProgress()
          if(adverseR<MildZoneR) g_timeMildMin[i]+=elapsedMin;
          else                   g_timeDangerMin[i]+=elapsedMin;
          g_trackLastSample[i]=now;
+      }
+
+      if(UseComboExit && !g_comboExited[i] && g_bar3Known[i] && g_bar3OneWay[i] && g_timeDangerMin[i]>=ComboExitDangerMin)
+      {
+         g_comboExited[i]=true;
+         double profit=PositionGetDouble(POSITION_PROFIT);
+         if(!EnableLiveOrders)
+            Log("COMBO_EXIT_DRY","ticket="+IntegerToString((int)g_trackTicket[i])+" timeDangerMin="+DoubleToString(g_timeDangerMin[i],1)+
+                " profit="+DoubleToString(profit,2)+" (would close, EnableLiveOrders=false) | "+g_trackTag[i]);
+         else if(trade.PositionClose(g_trackTicket[i]))
+            Log("COMBO_EXIT_CLOSE","ticket="+IntegerToString((int)g_trackTicket[i])+" timeDangerMin="+DoubleToString(g_timeDangerMin[i],1)+
+                " profit="+DoubleToString(profit,2)+" | "+g_trackTag[i]);
+         else
+            Log("COMBO_EXIT_FAIL",IntegerToString((int)trade.ResultRetcode())+" | "+trade.ResultRetcodeDescription());
+         continue;
       }
 
       double favR=(g_trackDir[i]==+1) ? (q.bid-g_trackEntry[i])/g_trackR[i] : (g_trackEntry[i]-q.ask)/g_trackR[i];
@@ -1077,6 +1108,7 @@ int OnInit()
        " | MildZoneR="+DoubleToString(MildZoneR,2)+" DangerTimeStopMin="+DoubleToString(DangerTimeStopMin,1)+
        " UseDangerTimeStop="+(UseDangerTimeStop?"true":"false")+
        " | UseThreeBarExit="+(UseThreeBarExit?"true":"false")+
+       " | ComboExitDangerMin="+DoubleToString(ComboExitDangerMin,1)+" UseComboExit="+(UseComboExit?"true":"false")+
        " | SkipFadeBearOSWickTouch="+(SkipFadeBearOSWickTouch?"true":"false")+
        " | Lots="+DoubleToString(Lots,2)+" | Magic="+IntegerToString((int)MagicNumber)+
        " | orders="+(EnableLiveOrders?"ENABLED":"DRY"));
