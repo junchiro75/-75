@@ -244,11 +244,16 @@
 //| as the all-hours test, just reduced in scope (866 vs all 3,176         |
 //| triggers) rather than eliminated. Restricting to EU hours only does    |
 //| NOT recover the benefit.                                               |
-//| ProtectStopAsiaOnly (UNTESTED): same mechanism, restricted instead to  |
+//| ProtectStopAsiaOnly (REJECTED): same mechanism, restricted instead to  |
 //| the Asia session (AsiaSessionStartHour-AsiaSessionEndHour KST, default |
-//| 6-16). Needs its own ground-truth backtest -- not assumed from the     |
-//| Europe-only result above, since the Asia session's own entry mix       |
-//| (TREND_BEAR skipped there by SkipTrendBearAsiaSession) differs.        |
+//| 6-16). Also tested against the ComboExit-confirmed baseline (NET       |
+//| $27,148.70, WR 92.01%, n=3,273) and REJECTED, though less severely     |
+//| than the Europe-only test: NET $25,287.65 (-6.9%), WR 88.74%           |
+//| (-3.27pp), n=3,348 (+75). Of the 1,020 trades where the SL actually    |
+//| moved, WR was again above average (95.5%) on their own -- same        |
+//| faster-MAX1-turnover mechanism, just scoped to the wider 10h Asia      |
+//| window (vs Europe's 6h) instead of eliminated. Both session-restricted |
+//| variants of the protect-lock idea are now REJECTED.                    |
 //| SIGNAL's touch=BODY/WICK and MAE_OUTCOME's touch= (diagnostic always   |
 //| on; SkipFadeBearOSWickTouch ACTS): the entry condition only requires   |
 //| the signal candle's high/low (wick) to reach BB20; this additionally   |
@@ -323,7 +328,7 @@ input double ProtectTriggerR    = 0.25; // Favorable R to arm protect-lock stop 
 input double ProtectR           = 0.05; // SL level once armed, in R (UNTESTED, see header)
 input bool   UseProtectStop     = false; // Move SL to ProtectR once armed (UNTESTED, see header)
 input bool   ProtectStopEuropeOnly = false; // Restrict ProtectStop arming to Europe session (16-22 KST) only (REJECTED, see header)
-input bool   ProtectStopAsiaOnly = false; // Restrict ProtectStop arming to Asia session (AsiaSessionStartHour-AsiaSessionEndHour KST) only (UNTESTED, see header)
+input bool   ProtectStopAsiaOnly = false; // Restrict ProtectStop arming to Asia session (AsiaSessionStartHour-AsiaSessionEndHour KST) only (REJECTED, see header)
 
 input double MildZoneR          = 2.0; // Adverse-R boundary for dwell-time diagnostic (no trading effect)
 input double DangerTimeStopMin  = 20.0; // Minutes in danger zone before force-close (UNTESTED, see header)
