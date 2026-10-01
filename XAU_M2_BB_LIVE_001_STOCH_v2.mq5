@@ -74,17 +74,22 @@
 //| doubles conditional loss risk. Needs its own backtest before trusting |
 //| it: cutting here forfeits the ~69% of threeBarOneWay=true trades that |
 //| still recover to a win.                                               |
-//| ComboExitDangerMin/UseComboExit (UNTESTED): an AND of the two ideas    |
-//| above instead of either alone -- only closes when a position is BOTH  |
-//| threeBarOneWay=true AND has spent ComboExitDangerMin (default 10min)  |
-//| in the danger zone. Ground truth on the confirmed baseline: of the    |
-//| 111 threeBarOneWay=true trades, the small subset (26) that ALSO       |
-//| spent >=5min in the danger zone lost 84.6% of the time (18 trades at  |
-//| >=10min: 83.3%) vs just 28.3% for threeBarOneWay=true trades that     |
-//| stayed under 30min in the danger zone -- a much sharper signal than   |
-//| either condition alone, though on a tiny slice (~0.5-0.8% of all      |
-//| trades) so the effect on overall NET/MaxDD is likely small either     |
-//| way. Needs its own backtest.                                          |
+//| ComboExitDangerMin/UseComboExit (CONFIRMED=10min/true): an AND of the  |
+//| two ideas above instead of either alone -- only closes when a         |
+//| position is BOTH threeBarOneWay=true AND has spent ComboExitDangerMin |
+//| in the danger zone. Diagnostic motivation: of the 111                 |
+//| threeBarOneWay=true trades in the confirmed baseline, the small       |
+//| subset (26) that ALSO spent >=5min in the danger zone lost 84.6% of   |
+//| the time (18 trades at >=10min: 83.3%) vs just 28.3% for              |
+//| threeBarOneWay=true trades that stayed under 30min in the danger      |
+//| zone. Ground-truth backtest confirmed this holds despite the tiny     |
+//| slice (only 7 trades affected, 0.2% of all 3,273): a CLEAN            |
+//| improvement on every metric -- NET $26,138.92 -> $27,148.70 (+3.9%),  |
+//| PF 1.363 -> 1.382, MaxDD $2,483.70 -> $2,254.80 (-9.2%), Recovery     |
+//| Factor 10.524 -> 12.040 (+14.4%), WR essentially unchanged (92.09%->  |
+//| 92.01%) -- unlike UseProtectStop/UseDangerTimeStop/UseThreeBarExit    |
+//| above (all individually REJECTED), this surgical AND-combination is   |
+//| the one idea from this whole early-exit investigation that works.     |
 //| UseTrendFilter (default false, UNTESTED): skips an entry when a      |
 //| strong opposing trend is already established on TrendFilterTimeframe |
 //| (default M15) -- ADX >= ADXThreshold and the dominant DI points      |
@@ -305,8 +310,8 @@ input bool   UseDangerTimeStop  = false; // Close position once DangerTimeStopMi
 
 input bool   UseThreeBarExit    = false; // Close position if never profitable in first 3 candles (UNTESTED, see header)
 
-input double ComboExitDangerMin = 10.0; // Danger-zone minutes required, combined with threeBarOneWay (UNTESTED, see header)
-input bool   UseComboExit       = false; // Close only when BOTH threeBarOneWay AND ComboExitDangerMin are met (UNTESTED, see header)
+input double ComboExitDangerMin = 10.0; // Danger-zone minutes required, combined with threeBarOneWay (CONFIRMED, see header)
+input bool   UseComboExit       = true; // Close only when BOTH threeBarOneWay AND ComboExitDangerMin are met (CONFIRMED, see header)
 
 input bool   SkipFadeBearOSWickTouch = true; // Skip FADE_BEAR_OS wick-only touches (CONFIRMED, see header)
 
