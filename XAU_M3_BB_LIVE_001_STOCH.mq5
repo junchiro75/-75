@@ -57,6 +57,15 @@
 //| trade the OPPOSITE direction (BUY) there instead. Takes priority      |
 //| over TrendBearEuropeOnly when both apply. Tagged                      |
 //| STOCH_TREND_BEAR_REV_NONEURO for tracking; needs its own backtest.    |
+//| threeBarOneWay/timeMildMin/timeDangerMin/ComboExitDangerMin/           |
+//| UseComboExit: ported from XAU_M2_BB_LIVE_001_STOCH_v2.mq5, where a    |
+//| CONFIRMED result found that force-closing a position once it's BOTH   |
+//| never been profitable in its first 3 candles AND spent >=10min with   |
+//| adverse excursion >=2R improved NET/PF/MaxDD/RF on a tiny slice of    |
+//| trades (see that file's header). UNTESTED here (UseComboExit=false)   |
+//| -- M3's own SL_R=4.0/TP_R=0.45/MinR_Points=900 differ from M2's, so   |
+//| this needs its own ground-truth backtest before confirming, not a    |
+//| blind port of M2's thresholds.                                        |
 //+------------------------------------------------------------------+
 #property strict
 #include <Trade/Trade.mqh>
@@ -80,9 +89,91 @@ input bool   TrendBearEuropeOnly = true;  // Restrict TREND_BEAR to Europe sessi
 input bool   ReverseTrendBearOutsideEurope = false; // Reverse TREND_BEAR outside Europe to BUY (UNTESTED, see header)
 input bool   SkipFadeBearOSWickTouch = true; // Skip FADE_BEAR_OS wick-only touches (CONFIRMED, see header)
 
+input double MildZoneR          = 2.0;  // Adverse-R boundary for dwell-time diagnostic (no trading effect)
+input double ComboExitDangerMin = 10.0; // Danger-zone minutes required, combined with threeBarOneWay (UNTESTED, see header)
+input bool   UseComboExit       = false; // Close only when BOTH threeBarOneWay AND ComboExitDangerMin are met (UNTESTED, see header)
+
 int hBB20=INVALID_HANDLE,hBB4=INVALID_HANDLE,hStoch=INVALID_HANDLE;
 datetime last_m3_bar=0;
 int f_log=INVALID_HANDLE;
+
+// -- ported from XAU_M2_BB_LIVE_001_STOCH_v2.mq5: threeBarOneWay + danger-
+//    zone dwell-time diagnostic, and the AND-combined early exit it
+//    motivated there (see that file's header for the full ground truth
+//    this is based on). UNTESTED here -- M3 has its own SL_R/TP_R/MinR_Points
+//    and needs its own backtest before the combo exit can be CONFIRMED. -----
+#define TRACK_SLOTS 4
+ulong    g_trackTicket[TRACK_SLOTS];
+double   g_trackEntry[TRACK_SLOTS], g_trackR[TRACK_SLOTS];
+int      g_trackDir[TRACK_SLOTS];
+string   g_trackTag[TRACK_SLOTS];
+bool     g_waitingBar3[TRACK_SLOTS];
+int      g_bar3Count[TRACK_SLOTS];
+double   g_bar3Extreme[TRACK_SLOTS];
+bool     g_bar3Known[TRACK_SLOTS], g_bar3OneWay[TRACK_SLOTS];
+datetime g_trackLastSample[TRACK_SLOTS];
+double   g_timeMildMin[TRACK_SLOTS], g_timeDangerMin[TRACK_SLOTS];
+bool     g_comboExited[TRACK_SLOTS];
+
+int FindTrackSlot(ulong ticket)
+{
+   for(int i=0;i<TRACK_SLOTS;i++) if(g_trackTicket[i]==ticket) return i;
+   return -1;
+}
+
+int FindFreeTrackSlot()
+{
+   for(int i=0;i<TRACK_SLOTS;i++) if(g_trackTicket[i]==0) return i;
+   return -1;
+}
+
+void StartMAETracking(ulong ticket,double entry,double R,int dir,string tag)
+{
+   int i=FindFreeTrackSlot();
+   if(i<0){ Log("TRACK_SLOTS_FULL","dropping tracking for ticket="+IntegerToString((int)ticket)); return; }
+   g_trackTicket[i]=ticket; g_trackEntry[i]=entry; g_trackR[i]=R; g_trackDir[i]=dir; g_trackTag[i]=tag;
+   g_waitingBar3[i]=true; g_bar3Count[i]=0; g_bar3Extreme[i]=0; g_bar3Known[i]=false; g_bar3OneWay[i]=false;
+   g_trackLastSample[i]=TimeCurrent(); g_timeMildMin[i]=0; g_timeDangerMin[i]=0;
+   g_comboExited[i]=false;
+}
+
+void CheckMAEProgress()
+{
+   bool anyActive=false;
+   for(int i=0;i<TRACK_SLOTS;i++) if(g_trackTicket[i]!=0){ anyActive=true; break; }
+   if(!anyActive) return;
+   MqlTick q; if(!SymbolInfoTick(_Symbol,q)) return;
+
+   for(int i=0;i<TRACK_SLOTS;i++)
+   {
+      if(g_trackTicket[i]==0) continue;
+      if(!PositionSelectByTicket(g_trackTicket[i])) continue; // closed; OnTradeTransaction logs the outcome
+      double adverseR=(g_trackDir[i]==+1) ? (g_trackEntry[i]-q.bid)/g_trackR[i] : (q.ask-g_trackEntry[i])/g_trackR[i];
+
+      datetime now=TimeCurrent();
+      double elapsedMin=(double)(now-g_trackLastSample[i])/60.0;
+      if(elapsedMin>0)
+      {
+         if(adverseR<MildZoneR) g_timeMildMin[i]+=elapsedMin;
+         else                   g_timeDangerMin[i]+=elapsedMin;
+         g_trackLastSample[i]=now;
+      }
+
+      if(UseComboExit && !g_comboExited[i] && g_bar3Known[i] && g_bar3OneWay[i] && g_timeDangerMin[i]>=ComboExitDangerMin)
+      {
+         g_comboExited[i]=true;
+         double profit=PositionGetDouble(POSITION_PROFIT);
+         if(!EnableLiveOrders)
+            Log("COMBO_EXIT_DRY","ticket="+IntegerToString((int)g_trackTicket[i])+" timeDangerMin="+DoubleToString(g_timeDangerMin[i],1)+
+                " profit="+DoubleToString(profit,2)+" (would close, EnableLiveOrders=false) | "+g_trackTag[i]);
+         else if(trade.PositionClose(g_trackTicket[i]))
+            Log("COMBO_EXIT_CLOSE","ticket="+IntegerToString((int)g_trackTicket[i])+" timeDangerMin="+DoubleToString(g_timeDangerMin[i],1)+
+                " profit="+DoubleToString(profit,2)+" | "+g_trackTag[i]);
+         else
+            Log("COMBO_EXIT_FAIL",IntegerToString((int)trade.ResultRetcode())+" | "+trade.ResultRetcodeDescription());
+      }
+   }
+}
 
 string TS(datetime t){ return TimeToString(t,TIME_DATE|TIME_MINUTES|TIME_SECONDS); }
 
@@ -201,8 +292,19 @@ void OpenTrade(int dir,double R,string tag)
    if(!ok)
       Log("ORDER_FAIL",IntegerToString((int)trade.ResultRetcode())+" | "+trade.ResultRetcodeDescription());
    else
+   {
       Log("ENTRY_OK",(dir==1?"BUY":"SELL")+" R="+DoubleToString(R,_Digits)+
           " SL="+DoubleToString(sl,_Digits)+" TP="+DoubleToString(tp,_Digits)+" | "+tag);
+      for(int i=PositionsTotal()-1;i>=0;i--)
+      {
+         ulong tk=PositionGetTicket(i);
+         if(tk==0 || !PositionSelectByTicket(tk)) continue;
+         if(PositionGetString(POSITION_SYMBOL)!=_Symbol) continue;
+         if((ulong)PositionGetInteger(POSITION_MAGIC)!=MagicNumber) continue;
+         StartMAETracking(tk,ref,R,dir,tag);
+         break;
+      }
+   }
 }
 
 void CheckNewM3Bar()
@@ -215,6 +317,20 @@ void CheckNewM3Bar()
    double l=iLow(_Symbol,Timeframe,1),c=iClose(_Symbol,Timeframe,1);
    datetime sig=iTime(_Symbol,Timeframe,1);
    if(sig==0){ Log("BAR_DATA_FAIL","iTime(1) returned 0"); return; }
+
+   for(int i=0;i<TRACK_SLOTS;i++)
+   {
+      if(!g_waitingBar3[i]) continue;
+      if(g_bar3Count[i]==0) g_bar3Extreme[i]=(g_trackDir[i]==+1 ? h : l);
+      else g_bar3Extreme[i]=(g_trackDir[i]==+1 ? MathMax(g_bar3Extreme[i],h) : MathMin(g_bar3Extreme[i],l));
+      g_bar3Count[i]++;
+      if(g_bar3Count[i]>=3)
+      {
+         g_bar3OneWay[i]=(g_trackDir[i]==+1) ? (g_bar3Extreme[i]<=g_trackEntry[i]) : (g_bar3Extreme[i]>=g_trackEntry[i]);
+         g_bar3Known[i]=true;
+         g_waitingBar3[i]=false;
+      }
+   }
 
    double up20[1],lo20[1],up4[1],lo4[1];
    int r1=CopyBuffer(hBB20,1,1,1,up20), r2=CopyBuffer(hBB20,2,1,1,lo20);
@@ -314,6 +430,8 @@ int OnInit()
        " | TrendBearEuropeOnly="+(TrendBearEuropeOnly?"true":"false")+
        " | ReverseTrendBearOutsideEurope="+(ReverseTrendBearOutsideEurope?"true":"false")+
        " | SkipFadeBearOSWickTouch="+(SkipFadeBearOSWickTouch?"true":"false")+
+       " | MildZoneR="+DoubleToString(MildZoneR,2)+" ComboExitDangerMin="+DoubleToString(ComboExitDangerMin,1)+
+       " UseComboExit="+(UseComboExit?"true":"false")+
        " | Lots="+DoubleToString(Lots,2)+" | Magic="+IntegerToString((int)MagicNumber)+
        " | orders="+(EnableLiveOrders?"ENABLED":"DRY"));
    return INIT_SUCCEEDED;
@@ -327,9 +445,34 @@ void OnDeinit(const int reason)
    if(hStoch!=INVALID_HANDLE) IndicatorRelease(hStoch);
 }
 
+void OnTradeTransaction(const MqlTradeTransaction &trans,const MqlTradeRequest &request,const MqlTradeResult &result)
+{
+   if(trans.type!=TRADE_TRANSACTION_DEAL_ADD) return;
+   if(!HistoryDealSelect(trans.deal)) return;
+   if((ulong)HistoryDealGetInteger(trans.deal,DEAL_MAGIC)!=MagicNumber) return;
+   if(HistoryDealGetString(trans.deal,DEAL_SYMBOL)!=_Symbol) return;
+   if((long)HistoryDealGetInteger(trans.deal,DEAL_ENTRY)!=DEAL_ENTRY_OUT) return;
+
+   ulong posId=(ulong)HistoryDealGetInteger(trans.deal,DEAL_POSITION_ID);
+   int i=FindTrackSlot(posId);
+   if(i<0) return; // not a ticket we're tracking (or already logged)
+
+   double profit=HistoryDealGetDouble(trans.deal,DEAL_PROFIT)+HistoryDealGetDouble(trans.deal,DEAL_SWAP)+
+                 HistoryDealGetDouble(trans.deal,DEAL_COMMISSION);
+   string outcome=(profit>0?"WIN":"LOSS");
+   string bar3Str=(!g_bar3Known[i] ? "unknown" : (g_bar3OneWay[i]?"true":"false"));
+   Log("MAE_OUTCOME","outcome="+outcome+" profit="+DoubleToString(profit,2)+
+       " threeBarOneWay="+bar3Str+
+       " timeMildMin="+DoubleToString(g_timeMildMin[i],1)+" timeDangerMin="+DoubleToString(g_timeDangerMin[i],1)+
+       " | "+g_trackTag[i]);
+   g_trackTicket[i]=0; // free slot
+   g_waitingBar3[i]=false;
+}
+
 void OnTick()
 {
    MqlTick tick; if(!SymbolInfoTick(_Symbol,tick)) return;
+   CheckMAEProgress();
    CheckNewM3Bar();
 }
 //+------------------------------------------------------------------+
