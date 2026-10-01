@@ -74,6 +74,19 @@
 //| doubles conditional loss risk. Needs its own backtest before trusting |
 //| it: cutting here forfeits the ~69% of threeBarOneWay=true trades that |
 //| still recover to a win.                                               |
+//| UseFirstBarExit (UNTESTED): a broader, weaker variant of               |
+//| UseThreeBarExit -- acts on firstBarOneWay (just the entry candle's     |
+//| own high/low vs entry, not the running 3-candle extreme) instead of    |
+//| threeBarOneWay, and only for TREND_BULL/FADE_BEAR_OS tags (TREND_BEAR  |
+//| showed ~zero lift on this diagnostic: 11.5% vs 11.8%). Ground truth on |
+//| the same pre-combo baseline: TREND_BULL firstBarOneWay=true (87        |
+//| trades) loses 18.4% vs 13.0% for the rest (687) -- only a 1.4x lift,   |
+//| net -$2,772.06 on those 87. FADE_BEAR_OS shows a stronger lift: 22.1%  |
+//| (95 trades) vs 10.9% (896) -- 2.0x, net -$3,180.84 on those 95. Both   |
+//| weaker signals than threeBarOneWay's 30.63%/17.11% split, and this     |
+//| touches far more trades (182 vs 111) at a lower bar (1 candle instead  |
+//| of 3) -- needs its own backtest; cutting here forfeits whatever        |
+//| fraction of these 182 trades still recover to a win.                   |
 //| ComboExitDangerMin/UseComboExit (CONFIRMED=10min/true): an AND of the  |
 //| two ideas above instead of either alone -- only closes when a         |
 //| position is BOTH threeBarOneWay=true AND has spent ComboExitDangerMin |
@@ -335,6 +348,8 @@ input double DangerTimeStopMin  = 20.0; // Minutes in danger zone before force-c
 input bool   UseDangerTimeStop  = false; // Close position once DangerTimeStopMin reached (UNTESTED, see header)
 
 input bool   UseThreeBarExit    = false; // Close position if never profitable in first 3 candles (UNTESTED, see header)
+
+input bool   UseFirstBarExit    = false; // Close TREND_BULL/FADE_BEAR_OS position if firstBarOneWay=true (UNTESTED, see header)
 
 input double ComboExitDangerMin = 10.0; // Danger-zone minutes required, combined with threeBarOneWay (CONFIRMED, see header)
 input bool   UseComboExit       = true; // Close only when BOTH threeBarOneWay AND ComboExitDangerMin are met (CONFIRMED, see header)
@@ -931,6 +946,21 @@ void CheckNewM2Bar()
       g_firstBarOneWay[i]=(g_trackDir[i]==+1) ? (h<=g_trackEntry[i]) : (l>=g_trackEntry[i]);
       g_firstBarKnown[i]=true;
       g_waitingFirstBar[i]=false;
+
+      if(UseFirstBarExit && g_firstBarOneWay[i] &&
+         (StringFind(g_trackTag[i],"TREND_BULL")>=0 || StringFind(g_trackTag[i],"FADE_BEAR_OS")>=0) &&
+         PositionSelectByTicket(g_trackTicket[i]))
+      {
+         double profit=PositionGetDouble(POSITION_PROFIT);
+         if(!EnableLiveOrders)
+            Log("FIRST_BAR_EXIT_DRY","ticket="+IntegerToString((int)g_trackTicket[i])+
+                " profit="+DoubleToString(profit,2)+" (would close, EnableLiveOrders=false) | "+g_trackTag[i]);
+         else if(trade.PositionClose(g_trackTicket[i]))
+            Log("FIRST_BAR_EXIT_CLOSE","ticket="+IntegerToString((int)g_trackTicket[i])+
+                " profit="+DoubleToString(profit,2)+" | "+g_trackTag[i]);
+         else
+            Log("FIRST_BAR_EXIT_FAIL",IntegerToString((int)trade.ResultRetcode())+" | "+trade.ResultRetcodeDescription());
+      }
    }
 
    for(int i=0;i<TRACK_SLOTS;i++)
@@ -1147,6 +1177,7 @@ int OnInit()
        " | MildZoneR="+DoubleToString(MildZoneR,2)+" DangerTimeStopMin="+DoubleToString(DangerTimeStopMin,1)+
        " UseDangerTimeStop="+(UseDangerTimeStop?"true":"false")+
        " | UseThreeBarExit="+(UseThreeBarExit?"true":"false")+
+       " | UseFirstBarExit="+(UseFirstBarExit?"true":"false")+
        " | ComboExitDangerMin="+DoubleToString(ComboExitDangerMin,1)+" UseComboExit="+(UseComboExit?"true":"false")+
        " | SkipFadeBearOSWickTouch="+(SkipFadeBearOSWickTouch?"true":"false")+
        " | Lots="+DoubleToString(Lots,2)+" | Magic="+IntegerToString((int)MagicNumber)+
