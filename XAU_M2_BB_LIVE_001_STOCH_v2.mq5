@@ -64,6 +64,16 @@
 //| entry -- i.e. the position was never in profit at any point during   |
 //| those 3 candles, not just that each one individually closed          |
 //| unfavorably.                                                          |
+//| UseThreeBarExit (UNTESTED): acts on threeBarOneWay -- force-closes a  |
+//| position right when the 3rd candle closes if it was never profitable  |
+//| during those 3. Ground truth on the confirmed baseline (3,273         |
+//| trades): 1,946 already resolved before 3 candles (TP typically hits   |
+//| in ~1-2 candles); of the 1,327 that survived, threeBarOneWay=true     |
+//| (111 trades) loses 30.63% of the time vs 17.11% for the rest (1,216)  |
+//| -- both already far above the 7.88% overall rate, but the gap nearly  |
+//| doubles conditional loss risk. Needs its own backtest before trusting |
+//| it: cutting here forfeits the ~69% of threeBarOneWay=true trades that |
+//| still recover to a win.                                               |
 //| UseTrendFilter (default false, UNTESTED): skips an entry when a      |
 //| strong opposing trend is already established on TrendFilterTimeframe |
 //| (default M15) -- ADX >= ADXThreshold and the dominant DI points      |
@@ -281,6 +291,8 @@ input bool   UseProtectStop     = false; // Move SL to ProtectR once armed (UNTE
 input double MildZoneR          = 2.0; // Adverse-R boundary for dwell-time diagnostic (no trading effect)
 input double DangerTimeStopMin  = 20.0; // Minutes in danger zone before force-close (UNTESTED, see header)
 input bool   UseDangerTimeStop  = false; // Close position once DangerTimeStopMin reached (UNTESTED, see header)
+
+input bool   UseThreeBarExit    = false; // Close position if never profitable in first 3 candles (UNTESTED, see header)
 
 input bool   SkipFadeBearOSWickTouch = true; // Skip FADE_BEAR_OS wick-only touches (CONFIRMED, see header)
 
@@ -863,6 +875,19 @@ void CheckNewM2Bar()
          g_bar3OneWay[i]=(g_trackDir[i]==+1) ? (g_bar3Extreme[i]<=g_trackEntry[i]) : (g_bar3Extreme[i]>=g_trackEntry[i]);
          g_bar3Known[i]=true;
          g_waitingBar3[i]=false;
+
+         if(UseThreeBarExit && g_bar3OneWay[i] && PositionSelectByTicket(g_trackTicket[i]))
+         {
+            double profit=PositionGetDouble(POSITION_PROFIT);
+            if(!EnableLiveOrders)
+               Log("THREE_BAR_EXIT_DRY","ticket="+IntegerToString((int)g_trackTicket[i])+
+                   " profit="+DoubleToString(profit,2)+" (would close, EnableLiveOrders=false) | "+g_trackTag[i]);
+            else if(trade.PositionClose(g_trackTicket[i]))
+               Log("THREE_BAR_EXIT_CLOSE","ticket="+IntegerToString((int)g_trackTicket[i])+
+                   " profit="+DoubleToString(profit,2)+" | "+g_trackTag[i]);
+            else
+               Log("THREE_BAR_EXIT_FAIL",IntegerToString((int)trade.ResultRetcode())+" | "+trade.ResultRetcodeDescription());
+         }
       }
    }
 
@@ -1051,6 +1076,7 @@ int OnInit()
        " UseProtectStop="+(UseProtectStop?"true":"false")+
        " | MildZoneR="+DoubleToString(MildZoneR,2)+" DangerTimeStopMin="+DoubleToString(DangerTimeStopMin,1)+
        " UseDangerTimeStop="+(UseDangerTimeStop?"true":"false")+
+       " | UseThreeBarExit="+(UseThreeBarExit?"true":"false")+
        " | SkipFadeBearOSWickTouch="+(SkipFadeBearOSWickTouch?"true":"false")+
        " | Lots="+DoubleToString(Lots,2)+" | Magic="+IntegerToString((int)MagicNumber)+
        " | orders="+(EnableLiveOrders?"ENABLED":"DRY"));
