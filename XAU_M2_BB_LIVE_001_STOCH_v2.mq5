@@ -184,6 +184,20 @@
 //| -> 25-33% beyond it) rather than scaling smoothly with time (plain      |
 //| correlation only 0.18) -- this breaks total hold time down by how much  |
 //| of it was spent already deep against the position vs still mild.       |
+//| DangerTimeStopMin/UseDangerTimeStop (UNTESTED): acts on the above --   |
+//| force-closes a position once its cumulative timeDangerMin reaches      |
+//| DangerTimeStopMin (default 20min). Ground truth on the confirmed       |
+//| baseline (3,273 trades) motivating this: NO trade stays under          |
+//| MildZoneR(2R) and still loses (0/2,732); of the 541 that ever cross    |
+//| into the danger zone, loss rate climbs with time spent there --        |
+//| 28.5% under 5min, 53.5% at 5-15min, 61.4% at 15-30min, 70.6% at        |
+//| 30-60min -- far stronger than total hold time alone (corr 0.23 vs      |
+//| 0.18) or mild-zone time alone (corr 0.05). Distinct from               |
+//| MaxMinutesWithoutProgress (fires on total hold time regardless of      |
+//| favorable/adverse) and from ProtectTriggerR/ProtectR above (price-     |
+//| level based, already shown to hurt NET/WR at a shallow 0.25R trigger)  |
+//| -- this is a TIME cutoff conditional on being meaningfully against     |
+//| the position. Needs its own backtest before trusting it live.          |
 //| SIGNAL's touch=BODY/WICK and MAE_OUTCOME's touch= (diagnostic always   |
 //| on; SkipFadeBearOSWickTouch ACTS): the entry condition only requires   |
 //| the signal candle's high/low (wick) to reach BB20; this additionally   |
@@ -259,6 +273,8 @@ input double ProtectR           = 0.05; // SL level once armed, in R (UNTESTED, 
 input bool   UseProtectStop     = false; // Move SL to ProtectR once armed (UNTESTED, see header)
 
 input double MildZoneR          = 2.0; // Adverse-R boundary for dwell-time diagnostic (no trading effect)
+input double DangerTimeStopMin  = 20.0; // Minutes in danger zone before force-close (UNTESTED, see header)
+input bool   UseDangerTimeStop  = false; // Close position once DangerTimeStopMin reached (UNTESTED, see header)
 
 input bool   SkipFadeBearOSWickTouch = true; // Skip FADE_BEAR_OS wick-only touches (CONFIRMED, see header)
 
@@ -689,6 +705,36 @@ void CheckTimeStop()
    }
 }
 
+// Force-closes a position once it has spent DangerTimeStopMin cumulative
+// minutes with adverse excursion >= MildZoneR (see timeDangerMin header
+// note) -- distinct from CheckTimeStop/MaxMinutesWithoutProgress, which
+// fires on TOTAL hold time regardless of how favorable/adverse price was.
+void CheckDangerTimeStop()
+{
+   if(!UseDangerTimeStop) return;
+   for(int i=0;i<TRACK_SLOTS;i++)
+   {
+      if(g_trackTicket[i]==0) continue;
+      if(g_timeDangerMin[i]<DangerTimeStopMin) continue;
+      if(!PositionSelectByTicket(g_trackTicket[i])) continue; // already closed
+
+      double profit=PositionGetDouble(POSITION_PROFIT);
+      if(!EnableLiveOrders)
+      {
+         Log("DANGER_TIME_STOP_DRY","ticket="+IntegerToString((int)g_trackTicket[i])+
+             " timeDangerMin="+DoubleToString(g_timeDangerMin[i],1)+" profit="+DoubleToString(profit,2)+
+             " (would close, EnableLiveOrders=false) | "+g_trackTag[i]);
+         continue;
+      }
+      if(trade.PositionClose(g_trackTicket[i]))
+         Log("DANGER_TIME_STOP_CLOSE","ticket="+IntegerToString((int)g_trackTicket[i])+
+             " timeDangerMin="+DoubleToString(g_timeDangerMin[i],1)+" profit="+DoubleToString(profit,2)+
+             " | "+g_trackTag[i]);
+      else
+         Log("DANGER_TIME_STOP_FAIL",IntegerToString((int)trade.ResultRetcode())+" | "+trade.ResultRetcodeDescription());
+   }
+}
+
 string TFPrefix()
 {
    switch(Timeframe)
@@ -970,6 +1016,8 @@ int OnInit()
        " UseBreakevenStop="+(UseBreakevenStop?"true":"false")+
        " | ProtectTriggerR="+DoubleToString(ProtectTriggerR,2)+" ProtectR="+DoubleToString(ProtectR,2)+
        " UseProtectStop="+(UseProtectStop?"true":"false")+
+       " | MildZoneR="+DoubleToString(MildZoneR,2)+" DangerTimeStopMin="+DoubleToString(DangerTimeStopMin,1)+
+       " UseDangerTimeStop="+(UseDangerTimeStop?"true":"false")+
        " | SkipFadeBearOSWickTouch="+(SkipFadeBearOSWickTouch?"true":"false")+
        " | Lots="+DoubleToString(Lots,2)+" | Magic="+IntegerToString((int)MagicNumber)+
        " | orders="+(EnableLiveOrders?"ENABLED":"DRY"));
@@ -989,6 +1037,7 @@ void OnTick()
 {
    MqlTick tick; if(!SymbolInfoTick(_Symbol,tick)) return;
    CheckMAEProgress();
+   CheckDangerTimeStop();
    CheckSlopeSims();
    CheckTimeStop();
    CheckNewM2Bar();
