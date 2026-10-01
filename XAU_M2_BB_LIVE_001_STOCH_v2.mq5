@@ -74,19 +74,24 @@
 //| doubles conditional loss risk. Needs its own backtest before trusting |
 //| it: cutting here forfeits the ~69% of threeBarOneWay=true trades that |
 //| still recover to a win.                                               |
-//| UseFirstBarExit (UNTESTED): a broader, weaker variant of               |
-//| UseThreeBarExit -- acts on firstBarOneWay (just the entry candle's     |
-//| own high/low vs entry, not the running 3-candle extreme) instead of    |
-//| threeBarOneWay, and only for TREND_BULL/FADE_BEAR_OS tags (TREND_BEAR  |
-//| showed ~zero lift on this diagnostic: 11.5% vs 11.8%). Ground truth on |
-//| the same pre-combo baseline: TREND_BULL firstBarOneWay=true (87        |
-//| trades) loses 18.4% vs 13.0% for the rest (687) -- only a 1.4x lift,   |
-//| net -$2,772.06 on those 87. FADE_BEAR_OS shows a stronger lift: 22.1%  |
-//| (95 trades) vs 10.9% (896) -- 2.0x, net -$3,180.84 on those 95. Both   |
-//| weaker signals than threeBarOneWay's 30.63%/17.11% split, and this     |
-//| touches far more trades (182 vs 111) at a lower bar (1 candle instead  |
-//| of 3) -- needs its own backtest; cutting here forfeits whatever        |
-//| fraction of these 182 trades still recover to a win.                   |
+//| UseFirstBarExit (REJECTED): a broader, weaker variant of UseThreeBarExit|
+//| -- acts on firstBarOneWay (just the entry candle's own high/low vs     |
+//| entry, not the running 3-candle extreme) instead of threeBarOneWay,    |
+//| and only for TREND_BULL/FADE_BEAR_OS tags (TREND_BEAR showed ~zero     |
+//| lift on this diagnostic: 11.5% vs 11.8%). Diagnostic motivation: on    |
+//| the pre-combo baseline, TREND_BULL firstBarOneWay=true (87 trades)     |
+//| loses 18.4% vs 13.0% for the rest (687) -- only a 1.4x lift, net       |
+//| -$2,772.06 on those 87. FADE_BEAR_OS shows a stronger lift: 22.1% (95  |
+//| trades) vs 10.9% (896) -- 2.0x, net -$3,180.84 on those 95. Ground-    |
+//| truth backtest against the ComboExit-confirmed baseline (NET           |
+//| $27,148.70, WR 92.01%, n=3,273) REJECTED it: NET $25,062.64 (-7.7%),   |
+//| WR 87.61% (-4.40pp), n=3,350 (+77). Of the 188 forced exits, 186 were  |
+//| losses (net -$7,923.70) -- forcing the exit after just 1 candle cut   |
+//| off recovery for most of the 78-82% of this group that would have     |
+//| eventually won if left alone, converting them into realized losses,   |
+//| plus the same faster-MAX1-turnover harm seen in every other rejected   |
+//| early-exit idea here. A 1-candle bar is too early a checkpoint for     |
+//| this signal; only the surgical threeBarOneWay+danger combo survives.   |
 //| ComboExitDangerMin/UseComboExit (CONFIRMED=10min/true): an AND of the  |
 //| two ideas above instead of either alone -- only closes when a         |
 //| position is BOTH threeBarOneWay=true AND has spent ComboExitDangerMin |
@@ -349,7 +354,7 @@ input bool   UseDangerTimeStop  = false; // Close position once DangerTimeStopMi
 
 input bool   UseThreeBarExit    = false; // Close position if never profitable in first 3 candles (UNTESTED, see header)
 
-input bool   UseFirstBarExit    = false; // Close TREND_BULL/FADE_BEAR_OS position if firstBarOneWay=true (UNTESTED, see header)
+input bool   UseFirstBarExit    = false; // Close TREND_BULL/FADE_BEAR_OS position if firstBarOneWay=true (REJECTED, see header)
 
 input double ComboExitDangerMin = 10.0; // Danger-zone minutes required, combined with threeBarOneWay (CONFIRMED, see header)
 input bool   UseComboExit       = true; // Close only when BOTH threeBarOneWay AND ComboExitDangerMin are met (CONFIRMED, see header)
