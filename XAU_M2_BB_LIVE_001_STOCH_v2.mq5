@@ -297,6 +297,14 @@
 //| those hours active. Hourly samples are much smaller (20-45 trades/hour  |
 //| vs 200+ for the 8h blocks), so treat this as a follow-up experiment,    |
 //| not a confirmed result yet.                                            |
+//| MAE_OUTCOME's prior5Same= (diagnostic only, no trading effect): checks  |
+//| the 5 candles immediately BEFORE the signal candle (shifts 2-6) -- true |
+//| when all 5 ran in the same direction as the signal candle's own         |
+//| breakout (all bearish into a bear/down signal candle, all bullish into  |
+//| a bull/up one). Motivated by the question of whether a longer one-way   |
+//| run right before a countertrend fade entry (FADE_BEAR_OS buying after a |
+//| bear signal candle, or FADE_BULL_OB selling after a bull one) predicts  |
+//| the fade's outcome. No backtest yet -- needs one to read the crosstab.  |
 //+------------------------------------------------------------------+
 #property strict
 #include <Trade/Trade.mqh>
@@ -438,6 +446,16 @@ bool   g_bandReentered[TRACK_SLOTS];
 bool   g_lastBodyTouch=true; // transient handoff value, set right before OpenTrade()
 bool   g_trackBodyTouch[TRACK_SLOTS];
 
+// -- prior-5-candle-same-direction tracking (diagnostic only, no trading
+//    effect): checks the 5 candles immediately BEFORE the signal candle
+//    (shifts 2-6) -- for a FADE_BEAR_OS (buy after a bear/down signal
+//    candle) or FADE_BULL_OB (sell after a bull/up signal candle), this
+//    tests whether entering a countertrend trade is better/worse when the
+//    run leading into the signal candle was unanimously in the breakout's
+//    own direction (i.e. a longer one-way move right before the fade).
+bool   g_lastPrior5Same=false; // transient handoff value, set right before OpenTrade()
+bool   g_trackPrior5Same[TRACK_SLOTS];
+
 // -- opposite-signal tracking (diagnostic, always on; ACTS only if
 //    UseOppositeSignalExit=true AND reached75=true for that slot) ----------
 // Tracks whether a NEW opposite-direction M2 signal candle (same BB20/BB4
@@ -568,6 +586,7 @@ void StartMAETracking(ulong ticket,double entry,double R,int dir,string tag)
    g_protectTriggered[i]=false; g_protectMoved[i]=false;
    g_trackLastSample[i]=TimeCurrent(); g_timeMildMin[i]=0; g_timeDangerMin[i]=0;
    g_trackBodyTouch[i]=g_lastBodyTouch;
+   g_trackPrior5Same[i]=g_lastPrior5Same;
 }
 
 // Called from CheckNewM2Bar with the new bar's raw breakout direction
@@ -1017,6 +1036,17 @@ void CheckNewM2Bar()
    // wick that poked through and closed back inside.
    bool bodyTouch=(sigdir==+1) ? (c>=up20[0]) : (c<=lo20[0]);
 
+   // Prior-5-candle-same-direction (diagnostic): were the 5 candles right
+   // before the signal candle (shifts 2-6) ALL in the breakout's own
+   // direction (all bullish for sigdir=+1, all bearish for sigdir=-1)?
+   bool prior5Same=true;
+   for(int k=2;k<=6;k++)
+   {
+      double po=iOpen(_Symbol,Timeframe,k), pc=iClose(_Symbol,Timeframe,k);
+      bool thisBarMatches=(sigdir==+1) ? (pc>po) : (pc<po);
+      if(!thisBarMatches){ prior5Same=false; break; }
+   }
+
    double R=MathAbs(c-o);
    double minR=MathMax(_Point,MinR_Points*_Point);
    if(R<=minR){ Log("SIGNAL_SKIPPED","R too small"); return; }
@@ -1127,6 +1157,7 @@ void CheckNewM2Bar()
    // a failure signal, so disable the check there (0 = disabled).
    g_lastBandLevel=(dir==sigdir) ? (sigdir==+1 ? up20[0] : lo20[0]) : 0;
    g_lastBodyTouch=bodyTouch;
+   g_lastPrior5Same=prior5Same;
 
    if(!IgnoreStochastic) tag=tag+"K"+IntegerToString((int)MathRound(stochK)); // comment length: keep short, MT5 caps at 31 chars
 
@@ -1245,6 +1276,7 @@ void OnTradeTransaction(const MqlTradeTransaction &trans,const MqlTradeRequest &
        " timeMildMin="+DoubleToString(g_timeMildMin[i],1)+
        " timeDangerMin="+DoubleToString(g_timeDangerMin[i],1)+
        " touch="+(g_trackBodyTouch[i]?"BODY":"WICK")+
+       " prior5Same="+(g_trackPrior5Same[i]?"true":"false")+
        " | "+g_trackTag[i]);
    g_trackTicket[i]=0; // free slot
    g_waitingFirstBar[i]=false;

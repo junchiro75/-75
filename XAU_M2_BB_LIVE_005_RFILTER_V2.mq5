@@ -44,6 +44,15 @@
 //| Mirrors the same distinction already confirmed as a real edge in the |
 //| 001_STOCH family (SkipFadeBearOSWickTouch) -- never checked here     |
 //| before. Needs its own backtest to see if the same pattern holds.     |
+//| _P5S/_P5D tag suffix (diagnostic, UNTESTED, no trading effect):      |
+//| checks the 5 candles immediately BEFORE the signal candle (shifts    |
+//| 2-6) -- _P5S ("prior 5 same") when all 5 ran in the same direction   |
+//| as the signal candle's own breakout; _P5D otherwise. Since 005       |
+//| always fades the signal (AllowShort=false means every live trade is  |
+//| a BUY after a bear/down signal candle), this directly tests whether  |
+//| a longer one-way run into the signal candle (5 straight down         |
+//| candles before the fade) predicts the BUY's outcome. No backtest     |
+//| yet -- needs one to read the tag crosstab.                           |
 //| ---- inherited from 005_RFILTER_V1.mq5 ----                       |
 //| R-filter variant of 005_BUYONLY, built for symbols (e.g. NAS100+) |
 //| where the unfiltered signal has a losing edge (gross PF<1) but a  |
@@ -98,6 +107,7 @@ struct Setup {
    double R,close_price,target,extreme;
    bool extension_hit;
    bool bodyTouch;          // diagnostic: did the signal candle's CLOSE also break the band, or only the high/low (see header)
+   bool prior5Same;         // diagnostic: were the 5 candles before the signal candle all in the signal's own direction (see header)
 };
 Setup setups[];
 
@@ -259,7 +269,7 @@ bool SafeModifyPosition(ulong ticket,int dir,double desired_sl,double desired_tp
    return false;
 }
 
-void AddSignal(datetime sig,datetime close_time,int dir,double R,double c,bool bodyTouch)
+void AddSignal(datetime sig,datetime close_time,int dir,double R,double c,bool bodyTouch,bool prior5Same)
 {
    if(LatestSignalOnly && ArraySize(setups)>0)
    {
@@ -277,8 +287,10 @@ void AddSignal(datetime sig,datetime close_time,int dir,double R,double c,bool b
    setups[n].extreme=c;
    setups[n].extension_hit=false;
    setups[n].bodyTouch=bodyTouch;
+   setups[n].prior5Same=prior5Same;
    Log("SIGNAL",(dir==1?"BULL":"BEAR")+" R="+DoubleToString(R,_Digits)+
-       " ext="+DoubleToString(setups[n].target,_Digits)+" touch="+(bodyTouch?"BODY":"WICK"));
+       " ext="+DoubleToString(setups[n].target,_Digits)+" touch="+(bodyTouch?"BODY":"WICK")+
+       " prior5Same="+(prior5Same?"true":"false"));
 }
 
 void CheckNewM2Bar()
@@ -305,7 +317,21 @@ void CheckNewM2Bar()
    double minR=MathMax(_Point,MinR_Points*_Point);
    if(R<=minR) return;
    bool bodyTouch=(dir==+1)?(c>=up20[0]):(c<=lo20[0]);
-   AddSignal(sig,t,dir,R,c,bodyTouch);
+
+   // Prior-5-candle-same-direction (diagnostic): were the 5 candles right
+   // before the signal candle (shifts 2-6) ALL in the signal's own
+   // direction (all bullish for dir=+1, all bearish for dir=-1)? Since 005
+   // always fades the signal (dir=-1 signal -> BUY), this directly answers
+   // the question for every one of 005's buy entries, not just a subset.
+   bool prior5Same=true;
+   for(int k=2;k<=6;k++)
+   {
+      double po=iOpen(_Symbol,Timeframe,k), pc=iClose(_Symbol,Timeframe,k);
+      bool thisBarMatches=(dir==+1) ? (pc>po) : (pc<po);
+      if(!thisBarMatches){ prior5Same=false; break; }
+   }
+
+   AddSignal(sig,t,dir,R,c,bodyTouch,prior5Same);
 }
 
 bool OpenCountertrend(Setup &s,MqlTick &tick)
@@ -372,7 +398,7 @@ bool OpenCountertrend(Setup &s,MqlTick &tick)
    }
    sl=NormalizeDouble(sl,_Digits); tp=NormalizeDouble(tp,_Digits);
 
-   string tag="LIVE005_"+TFPrefix()+(s.bodyTouch?"BODY":"WICK");
+   string tag="LIVE005_"+TFPrefix()+(s.bodyTouch?"BODY":"WICK")+(s.prior5Same?"_P5S":"_P5D");
    bool ok=(dir==+1 ? trade.Buy(Lots,_Symbol,0.0,sl,tp,tag)
                     : trade.Sell(Lots,_Symbol,0.0,sl,tp,tag));
    if(!ok)
