@@ -108,12 +108,20 @@
 //| 92.01%) -- unlike UseProtectStop/UseDangerTimeStop/UseThreeBarExit    |
 //| above (all individually REJECTED), this surgical AND-combination is   |
 //| the one idea from this whole early-exit investigation that works.     |
-//| UseTrendFilter (default false, UNTESTED): skips an entry when a      |
+//| UseTrendFilter (default false, REJECTED): skips an entry when a      |
 //| strong opposing trend is already established on TrendFilterTimeframe |
 //| (default M15) -- ADX >= ADXThreshold and the dominant DI points      |
 //| against the intended direction. Theory: one-way losses happen when   |
 //| the opposing trend was already in place before entry, not created    |
-//| by the trade itself. Backtest before trusting it.                    |
+//| by the trade itself. Ground-truth backtest against the ComboExit-     |
+//| confirmed baseline (NET $27,148.70, WR 92.01%, PF 1.382, n=3,273):    |
+//| REJECTED -- NET $12,727.79 (-53.1%), WR 91.35% (-0.66pp), PF 1.238,   |
+//| n=2,324 (-949, -29.0%). The 949 entries the ADX filter blocked were   |
+//| worth more per trade ($15.19 avg) than the overall average ($8.30),   |
+//| i.e. it disproportionately blocked GOOD trades, not the specific      |
+//| one-way-persistence losers it was meant to catch -- this strategy's   |
+//| core edge is fading BB breakouts, and a strong ADX reading often      |
+//| just means a clean, tradeable breakout rather than a danger sign.     |
 //| oppSignalSeen (diagnostic, always logged regardless of                |
 //| UseOppositeSignalExit): true if a NEW opposite-direction M2 signal   |
 //| candle (same BB20/BB4 breakout + R filter as entries) appeared at    |
@@ -336,7 +344,7 @@ input int    AsiaSessionStartHour = 6;   // Asia-session skip window start hour,
 input int    AsiaSessionEndHour   = 16;  // Asia-session skip window end hour, Korea time
 input bool   ReverseTrendBearAsiaSession = false; // Reverse TREND_BEAR in Asia session to BUY (UNTESTED, see header)
 input int    MaxMinutesWithoutProgress = 0; // Close position after N min regardless of P&L, 0=disabled (UNTESTED, see header)
-input bool   UseTrendFilter     = false; // Skip entry if opposing trend on higher TF (UNTESTED, see header)
+input bool   UseTrendFilter     = false; // Skip entry if opposing trend on higher TF (REJECTED, see header)
 input ENUM_TIMEFRAMES TrendFilterTimeframe = PERIOD_M15; // Higher timeframe for UseTrendFilter
 input int    ADXPeriod          = 14;    // ADX period for UseTrendFilter
 input double ADXThreshold       = 25.0;  // ADX trending threshold for UseTrendFilter
