@@ -234,7 +234,7 @@
 //| -> 25-33% beyond it) rather than scaling smoothly with time (plain      |
 //| correlation only 0.18) -- this breaks total hold time down by how much  |
 //| of it was spent already deep against the position vs still mild.       |
-//| DangerTimeStopMin/UseDangerTimeStop (UNTESTED): acts on the above --   |
+//| DangerTimeStopMin/UseDangerTimeStop (REJECTED): acts on the above --   |
 //| force-closes a position once its cumulative timeDangerMin reaches      |
 //| DangerTimeStopMin (default 20min). Ground truth on the confirmed       |
 //| baseline (3,273 trades) motivating this: NO trade stays under          |
@@ -247,7 +247,14 @@
 //| favorable/adverse) and from ProtectTriggerR/ProtectR above (price-     |
 //| level based, already shown to hurt NET/WR at a shallow 0.25R trigger)  |
 //| -- this is a TIME cutoff conditional on being meaningfully against     |
-//| the position. Needs its own backtest before trusting it live.          |
+//| the position. Re-tested at 20min against the ComboExit-confirmed       |
+//| baseline (NET $27,148.70, WR 92.01%, n=3,273): REJECTED -- NET         |
+//| $22,268.81 (-18.0%), WR 90.07% (-1.94pp), n=3,413 (+140). Of the 160   |
+//| forced exits, ALL 160 were losses (net -$30,757.10) -- the diagnostic's|
+//| own 61-71% loss rate at this dwell time means roughly a third would    |
+//| have recovered if left alone, and cutting every one of them at 20min   |
+//| forfeits that fraction entirely, on top of the same faster-MAX1-       |
+//| turnover harm seen in every other standalone early-exit idea here.     |
 //| ProtectStopEuropeOnly (REJECTED): the all-hours ProtectTriggerR=0.25/   |
 //| ProtectR=0.05 test was REJECTED (NET -33% at 0.1-lot-equivalent, WR    |
 //| 92.09%->84.19%, trade count 3,273->3,523 -- the early SL move freed    |
@@ -357,8 +364,8 @@ input bool   ProtectStopEuropeOnly = false; // Restrict ProtectStop arming to Eu
 input bool   ProtectStopAsiaOnly = false; // Restrict ProtectStop arming to Asia session (AsiaSessionStartHour-AsiaSessionEndHour KST) only (REJECTED, see header)
 
 input double MildZoneR          = 2.0; // Adverse-R boundary for dwell-time diagnostic (no trading effect)
-input double DangerTimeStopMin  = 20.0; // Minutes in danger zone before force-close (UNTESTED, see header)
-input bool   UseDangerTimeStop  = false; // Close position once DangerTimeStopMin reached (UNTESTED, see header)
+input double DangerTimeStopMin  = 20.0; // Minutes in danger zone before force-close (REJECTED, see header)
+input bool   UseDangerTimeStop  = false; // Close position once DangerTimeStopMin reached (REJECTED, see header)
 
 input bool   UseThreeBarExit    = false; // Close position if never profitable in first 3 candles (UNTESTED, see header)
 
