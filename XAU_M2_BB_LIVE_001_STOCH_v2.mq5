@@ -339,7 +339,17 @@
 //| a bull/up one). Motivated by the question of whether a longer one-way   |
 //| run right before a countertrend fade entry (FADE_BEAR_OS buying after a |
 //| bear signal candle, or FADE_BULL_OB selling after a bull one) predicts  |
-//| the fade's outcome. No backtest yet -- needs one to read the crosstab.  |
+//| the fade's outcome. Ground truth on the confirmed baseline: FADE_BEAR_OS|
+//| shows essentially no effect (true: 135 trades, 8.1% loss vs false: 1,513|
+//| trades, 7.4% loss -- within noise). Not pursued further for 001.       |
+//| MAE_OUTCOME's adxRiseDiff= (diagnostic only, no trading effect, BEAR    |
+//| signal candles only): on the M2-timeframe ADX (its own hADXM2 handle,  |
+//| distinct from UseTrendFilter's M15 hADX), compares candle "1" (furthest|
+//| of the 5 pre-signal candles, shift 6) against candle "5" (closest,     |
+//| shift 2) -- adxRiseDiff = ADX[shift2]-ADX[shift6]. Tests whether a      |
+//| rising ADX (trend strengthening) into a FADE_BEAR_OS buy predicts a     |
+//| worse outcome than a flat/falling one. No backtest yet -- needs a fresh |
+//| one since this is a new field (not in any already-logged run).         |
 //+------------------------------------------------------------------+
 #property strict
 #include <Trade/Trade.mqh>
@@ -407,7 +417,7 @@ input bool   UseComboExit       = true; // Close only when BOTH threeBarOneWay A
 
 input bool   SkipFadeBearOSWickTouch = true; // Skip FADE_BEAR_OS wick-only touches (CONFIRMED, see header)
 
-int hBB20=INVALID_HANDLE,hBB4=INVALID_HANDLE,hStoch=INVALID_HANDLE,hADX=INVALID_HANDLE;
+int hBB20=INVALID_HANDLE,hBB4=INVALID_HANDLE,hStoch=INVALID_HANDLE,hADX=INVALID_HANDLE,hADXM2=INVALID_HANDLE;
 datetime last_m2_bar=0;
 int f_log=INVALID_HANDLE;
 
@@ -493,6 +503,16 @@ bool   g_trackBodyTouch[TRACK_SLOTS];
 //    own direction (i.e. a longer one-way move right before the fade).
 bool   g_lastPrior5Same=false; // transient handoff value, set right before OpenTrade()
 bool   g_trackPrior5Same[TRACK_SLOTS];
+
+// -- pre-signal ADX rise tracking (diagnostic only, no trading effect):
+//    for a BEAR signal candle, compares the M2-timeframe ADX at the
+//    candle furthest from the signal among the prior 5 (shift 6, "candle
+//    1") against the candle closest to it (shift 2, "candle 5") -- tests
+//    whether a rising ADX (trend strengthening) into a FADE_BEAR_OS buy
+//    predicts the fade's outcome. Uses its own M2-timeframe ADX handle
+//    (hADXM2), distinct from UseTrendFilter's M15 one (hADX).
+double g_lastAdxRiseDiff=0; bool g_lastAdxRiseKnown=false; // transient handoff, set right before OpenTrade()
+double g_trackAdxRiseDiff[TRACK_SLOTS]; bool g_trackAdxRiseKnown[TRACK_SLOTS];
 
 // -- opposite-signal tracking (diagnostic, always on; ACTS only if
 //    UseOppositeSignalExit=true AND reached75=true for that slot) ----------
@@ -625,6 +645,7 @@ void StartMAETracking(ulong ticket,double entry,double R,int dir,string tag)
    g_trackLastSample[i]=TimeCurrent(); g_timeMildMin[i]=0; g_timeDangerMin[i]=0;
    g_trackBodyTouch[i]=g_lastBodyTouch;
    g_trackPrior5Same[i]=g_lastPrior5Same;
+   g_trackAdxRiseDiff[i]=g_lastAdxRiseDiff; g_trackAdxRiseKnown[i]=g_lastAdxRiseKnown;
 }
 
 // Called from CheckNewM2Bar with the new bar's raw breakout direction
@@ -1085,6 +1106,20 @@ void CheckNewM2Bar()
       if(!thisBarMatches){ prior5Same=false; break; }
    }
 
+   // Pre-signal ADX rise (diagnostic, BEAR signal candles only): candle "1"
+   // (furthest of the prior 5, shift 6) vs candle "5" (closest, shift 2) --
+   // adxRiseDiff = ADX[shift2] - ADX[shift6], on the M2-timeframe ADX.
+   double adxRiseDiff=0; bool adxRiseKnown=false;
+   if(sigdir==-1)
+   {
+      double adxFar[1],adxNear[1];
+      if(CopyBuffer(hADXM2,0,6,1,adxFar)==1 && CopyBuffer(hADXM2,0,2,1,adxNear)==1)
+      {
+         adxRiseDiff=adxNear[0]-adxFar[0];
+         adxRiseKnown=true;
+      }
+   }
+
    double R=MathAbs(c-o);
    double minR=MathMax(_Point,MinR_Points*_Point);
    if(R<=minR){ Log("SIGNAL_SKIPPED","R too small"); return; }
@@ -1203,6 +1238,7 @@ void CheckNewM2Bar()
    g_lastBandLevel=(dir==sigdir) ? (sigdir==+1 ? up20[0] : lo20[0]) : 0;
    g_lastBodyTouch=bodyTouch;
    g_lastPrior5Same=prior5Same;
+   g_lastAdxRiseDiff=adxRiseDiff; g_lastAdxRiseKnown=adxRiseKnown;
 
    if(!IgnoreStochastic) tag=tag+"K"+IntegerToString((int)MathRound(stochK)); // comment length: keep short, MT5 caps at 31 chars
 
@@ -1218,7 +1254,8 @@ int OnInit()
    hBB4 =iBands(_Symbol,Timeframe,4,0,4.0,PRICE_OPEN);
    hStoch=iStochastic(_Symbol,Timeframe,StochK_Period,StochD_Period,StochSlowing,MODE_LWMA,STO_LOWHIGH);
    hADX=iADX(_Symbol,TrendFilterTimeframe,ADXPeriod);
-   if(hBB20==INVALID_HANDLE || hBB4==INVALID_HANDLE || hStoch==INVALID_HANDLE || hADX==INVALID_HANDLE) return INIT_FAILED;
+   hADXM2=iADX(_Symbol,Timeframe,ADXPeriod);
+   if(hBB20==INVALID_HANDLE || hBB4==INVALID_HANDLE || hStoch==INVALID_HANDLE || hADX==INVALID_HANDLE || hADXM2==INVALID_HANDLE) return INIT_FAILED;
 
    f_log=FileOpen("XAU_M2_BB_LIVE_001_STOCH_v2_LOG.csv",FILE_READ|FILE_WRITE|FILE_CSV|FILE_ANSI|FILE_SHARE_READ,',');
    if(f_log!=INVALID_HANDLE)
@@ -1274,6 +1311,7 @@ void OnDeinit(const int reason)
    if(hBB4!=INVALID_HANDLE)  IndicatorRelease(hBB4);
    if(hStoch!=INVALID_HANDLE) IndicatorRelease(hStoch);
    if(hADX!=INVALID_HANDLE) IndicatorRelease(hADX);
+   if(hADXM2!=INVALID_HANDLE) IndicatorRelease(hADXM2);
 }
 
 void OnTick()
@@ -1323,6 +1361,7 @@ void OnTradeTransaction(const MqlTradeTransaction &trans,const MqlTradeRequest &
        " timeDangerMin="+DoubleToString(g_timeDangerMin[i],1)+
        " touch="+(g_trackBodyTouch[i]?"BODY":"WICK")+
        " prior5Same="+(g_trackPrior5Same[i]?"true":"false")+
+       " adxRiseDiff="+(g_trackAdxRiseKnown[i]?DoubleToString(g_trackAdxRiseDiff[i],2):"n/a")+
        " | "+g_trackTag[i]);
    g_trackTicket[i]=0; // free slot
    g_waitingFirstBar[i]=false;
