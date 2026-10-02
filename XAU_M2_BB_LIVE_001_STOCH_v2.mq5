@@ -182,6 +182,26 @@
 //| STEEP win rates were statistically indistinguishable (~91% both), and  |
 //| skipping TREND+FLAT entirely would forfeit 763 wins to avoid only 74    |
 //| losses (net +47R cost) -- rejected as a Stochastic substitute/filter.  |
+//| UseSlopeFilterTrendBull/SlopeFilterTrendBullDeg (UNTESTED): a narrower, |
+//| later finding than the broad SlopeThresholdDeg=20 rejection above --    |
+//| that test used a threshold so high (20deg) it almost never fired (only |
+//| 3/3,282 signals classified STEEP; median |slopeDeg| is just 2.84, p95   |
+//| 9.51). Re-examining at realistic thresholds, specifically for TREND_BULL|
+//| (buying a bull signal candle while the 5-bar BB20 slope, deg5/the       |
+//| SlopeLookbackBars-based slopeDeg, is still pointed DOWN -- i.e. buying  |
+//| into what's still a short-term decline) shows a real, monotonic         |
+//| pattern the broad test missed: fighting a >2deg opposing slope (n=87)   |
+//| loses 16.09% vs 8.63% for the rest, net -$950.69 vs +$8,147.84; at      |
+//| >3deg (n=41) 19.51% vs 8.81%, net -$572.20 (avg -$13.96/trade) vs       |
+//| +$6.71/trade; at >5deg (n=14) 28.57% loss rate, avg -$38.34/trade.      |
+//| FADE_BEAR_OS shows the same direction but much weaker (already trades   |
+//| into declines by design), and TREND_BEAR shows the OPPOSITE pattern     |
+//| (fighting an opposing slope did BETTER there, n=27, 0% losses) -- so    |
+//| this filter is scoped to TREND_BULL only, not applied symmetrically.    |
+//| Default SlopeFilterTrendBullDeg=3.0 matches the diagnostic's clearest   |
+//| break point. Needs its own ground-truth backtest -- this is a           |
+//| retrospective crosstab on the confirmed baseline's own log, not yet     |
+//| confirmed as an entry-time filter.                                      |
 //| CIRCUIT_BREAKER_TRIGGERED / CIRCUIT_BREAKER_(WOULD_)SKIP (diagnostic   |
 //| always on; UseCircuitBreaker ACTS): after CircuitBreakerLossCount      |
 //| consecutive LOSS outcomes (any tag), pauses new entries for            |
@@ -355,6 +375,9 @@ input int    SlopeLookbackBars  = 5;     // MA slope diagnostic: lookback bars (
 input double SlopeThresholdDeg  = 20.0;  // MA slope diagnostic: FLAT/STEEP threshold (degrees)
 input double SlopeSimTargetR    = 0.5;   // MA slope diagnostic: simulated target (R)
 input double SlopeSimExpiryHours = 6.0;  // MA slope diagnostic: simulation expiry (hours)
+
+input double SlopeFilterTrendBullDeg = 3.0; // Opposing BB20 slope (deg, SlopeLookbackBars) that blocks a TREND_BULL entry (UNTESTED, see header)
+input bool   UseSlopeFilterTrendBull = false; // Skip TREND_BULL entry if opposing slope exceeds SlopeFilterTrendBullDeg (UNTESTED, see header)
 
 input bool   IgnoreStochastic   = false; // Bypass Stochastic decision entirely (UNTESTED, see header)
 
@@ -1076,6 +1099,7 @@ void CheckNewM2Bar()
    // the user's own chart-watching suggests a short lookback (2-3 bars right
    // at the signal candle) may match what they see as "flat" better than a
    // longer one.
+   double slopeDeg=0; bool slopeKnown=false; // hoisted so the TREND_BULL slope filter below can read it
    double maNow[1];
    int rNow=CopyBuffer(hBB20,0,1,1,maNow);
    if(rNow==1)
@@ -1092,7 +1116,8 @@ void CheckNewM2Bar()
       if(rCfg==1)
       {
          double slopeNorm=(maNow[0]-maPrevCfg[0])/(SlopeLookbackBars*R);
-         double slopeDeg=MathArctan(slopeNorm)*180.0/M_PI;
+         slopeDeg=MathArctan(slopeNorm)*180.0/M_PI;
+         slopeKnown=true;
          bool   flat=(MathAbs(slopeDeg)<=SlopeThresholdDeg);
          int    slopeDir=flat ? -sigdir : sigdir; // FLAT=fade the breakout, STEEP=follow it
          string slopeClass=flat?"FLAT":"STEEP";
@@ -1143,7 +1168,12 @@ void CheckNewM2Bar()
          if(!AllowSellFade){ Log("SIGNAL_SKIPPED","SELL-fade disabled by AllowSellFade=false"); return; }
          dir=-1; tag="STOCH_FADE_BULL_OB";
       }
-      else                       { dir=+1; tag="STOCH_TREND_BULL"; }
+      else
+      {
+         if(UseSlopeFilterTrendBull && slopeKnown && slopeDeg<-SlopeFilterTrendBullDeg)
+         { Log("SIGNAL_SKIPPED","TREND_BULL blocked by opposing MA slope (UseSlopeFilterTrendBull) slopeDeg="+DoubleToString(slopeDeg,2)); return; }
+         dir=+1; tag="STOCH_TREND_BULL";
+      }
    }
    else // bear signal candle
    {
@@ -1216,6 +1246,7 @@ int OnInit()
        " | UseOppositeSignalExit="+(UseOppositeSignalExit?"true":"false")+
        " | SlopeLookbackBars="+IntegerToString(SlopeLookbackBars)+" SlopeThresholdDeg="+DoubleToString(SlopeThresholdDeg,1)+
        " SlopeSimTargetR="+DoubleToString(SlopeSimTargetR,2)+" SlopeSimExpiryHours="+DoubleToString(SlopeSimExpiryHours,1)+
+       " | SlopeFilterTrendBullDeg="+DoubleToString(SlopeFilterTrendBullDeg,1)+" UseSlopeFilterTrendBull="+(UseSlopeFilterTrendBull?"true":"false")+
        " | IgnoreStochastic="+(IgnoreStochastic?"true":"false")+
        " | CircuitBreakerLossCount="+IntegerToString(CircuitBreakerLossCount)+
        " CircuitBreakerCooldownHours="+DoubleToString(CircuitBreakerCooldownHours,1)+
