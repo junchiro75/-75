@@ -58,14 +58,26 @@
 //| over TrendBearEuropeOnly when both apply. Tagged                      |
 //| STOCH_TREND_BEAR_REV_NONEURO for tracking; needs its own backtest.    |
 //| threeBarOneWay/timeMildMin/timeDangerMin/ComboExitDangerMin/           |
-//| UseComboExit: ported from XAU_M2_BB_LIVE_001_STOCH_v2.mq5, where a    |
-//| CONFIRMED result found that force-closing a position once it's BOTH   |
-//| never been profitable in its first 3 candles AND spent >=10min with   |
-//| adverse excursion >=2R improved NET/PF/MaxDD/RF on a tiny slice of    |
-//| trades (see that file's header). UNTESTED here (UseComboExit=false)   |
-//| -- M3's own SL_R=4.0/TP_R=0.45/MinR_Points=900 differ from M2's, so   |
-//| this needs its own ground-truth backtest before confirming, not a    |
-//| blind port of M2's thresholds.                                        |
+//| UseComboExit (REJECTED): ported from XAU_M2_BB_LIVE_001_STOCH_v2.mq5,  |
+//| where a CONFIRMED result found that force-closing a position once     |
+//| it's BOTH never been profitable in its first 3 candles AND spent      |
+//| >=10min with adverse excursion >=2R improved NET/PF/MaxDD/RF on a     |
+//| tiny slice of trades. Ground-truth backtest here against this file's  |
+//| own baseline (NET $18,096.15, WR 94.29%, PF 1.996, MaxDD $1,751.49,   |
+//| n=508) REJECTED it: NET $16,497.94 (-8.8%), WR 93.76%, PF 1.829,      |
+//| MaxDD unchanged at $1,751.49, n=513. M3's much lower trade volume      |
+//| (MinR_Points=900 is far more selective than M2's 350) apparently       |
+//| leaves too few genuinely-doomed trades for ComboExit's 3-bar/danger-   |
+//| zone condition to isolate; it mostly just cuts into otherwise-fine     |
+//| ones instead. The identical MaxDD before/after also shows this         |
+//| file's single worst drawdown sequence never triggers the condition      |
+//| either way.                                                             |
+//|                                                                        |
+//| UseFridayNarrowWindow (REJECTED): also ported from M2_v2 (CONFIRMED    |
+//| there). Combined with UseComboExit (both true): NET $13,787.50         |
+//| (-23.8% vs this file's own baseline), WR 93.73%, PF 1.939, MaxDD        |
+//| unchanged at $1,751.49, n=415. Same conclusion -- neither M2_v2        |
+//| finding generalizes to the M3 signal.                                   |
 //+------------------------------------------------------------------+
 #property strict
 #include <Trade/Trade.mqh>
@@ -88,11 +100,11 @@ input bool   AllowSellFade      = false; // Allow bull+overbought SELL-fade case
 input bool   TrendBearEuropeOnly = true;  // Restrict TREND_BEAR to Europe session (CONFIRMED, see header)
 input bool   ReverseTrendBearOutsideEurope = false; // Reverse TREND_BEAR outside Europe to BUY (UNTESTED, see header)
 input bool   SkipFadeBearOSWickTouch = true; // Skip FADE_BEAR_OS wick-only touches (CONFIRMED, see header)
-input bool   UseFridayNarrowWindow = false; // On Friday, only allow entries 10:30-15:00 KST (ported from M2_v2 where CONFIRMED; UNTESTED here, see header)
+input bool   UseFridayNarrowWindow = false; // On Friday, only allow entries 10:30-15:00 KST (ported from M2_v2 where CONFIRMED; REJECTED here, see header)
 
 input double MildZoneR          = 2.0;  // Adverse-R boundary for dwell-time diagnostic (no trading effect)
 input double ComboExitDangerMin = 10.0; // Danger-zone minutes required, combined with threeBarOneWay (UNTESTED, see header)
-input bool   UseComboExit       = false; // Close only when BOTH threeBarOneWay AND ComboExitDangerMin are met (UNTESTED, see header)
+input bool   UseComboExit       = false; // Close only when BOTH threeBarOneWay AND ComboExitDangerMin are met (REJECTED, see header)
 
 int hBB20=INVALID_HANDLE,hBB4=INVALID_HANDLE,hStoch=INVALID_HANDLE;
 datetime last_m3_bar=0;

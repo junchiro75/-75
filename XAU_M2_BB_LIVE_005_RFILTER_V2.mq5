@@ -96,7 +96,7 @@ input bool   AllowShort           = false; // Allow SELL entries (default BUY-on
 input int    SkipHourStartKST     = 20; // KST hour skip window start (see header, SkipEntryHourKST)
 input int    SkipHourEndKST       = 22; // KST hour skip window end, exclusive (see header, SkipEntryHourKST)
 input bool   SkipEntryHourKST     = true; // Block entries in [SkipHourStartKST,SkipHourEndKST) KST (CONFIRMED, see header)
-input bool   UseFridayNarrowWindow = false; // On Friday, only allow entries 10:30-15:00 KST (ported from 001 M2_v2 where CONFIRMED; UNTESTED here, see header)
+input bool   UseFridayNarrowWindow = false; // On Friday, only allow entries 10:30-15:00 KST (ported from 001 M2_v2 where CONFIRMED; REJECTED here, see header)
 
 int hBB20=INVALID_HANDLE,hBB4=INVALID_HANDLE;
 datetime last_m2_bar=0;
@@ -175,9 +175,13 @@ bool InSkipHourKST(datetime server_now)
 // -- Friday narrow-window filter, ported from XAU_M2_BB_LIVE_001_STOCH_v2
 //    (CONFIRMED there: NET +10.6% vs baseline, +$202.40 vs an all-day
 //    Friday block, same WR/MaxDD, on the 001 M2 signal). Only allow entries
-//    in 10:30-15:00 KST on Friday; every other day is unaffected. UNTESTED
-//    on this extension/pullback signal -- needs its own ground-truth
-//    backtest here. ---------------------------------------------------
+//    in 10:30-15:00 KST on Friday; every other day is unaffected. REJECTED
+//    on this extension/pullback signal: ground-truth backtest against this
+//    file's own baseline (NET $27,814.55, WR 90.77%, PF 1.667, MaxDD
+//    $1,359.10, n=2,740) gave NET $23,543.79 (-15.4%), WR 90.59%, PF
+//    1.665, MaxDD $1,440.36 (+6.0%, WORSE), n=2,328 -- worse on every
+//    metric. Doesn't generalize from 001 M2's BB-breakout signal to this
+//    extension/pullback entry. ------------------------------------------
 bool IsFridayKST(datetime server_now)
 {
    int offsetHours=IsEUDST(server_now)?6:7;

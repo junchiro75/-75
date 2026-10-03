@@ -67,14 +67,23 @@
 //| 1.403->1.509, Recovery Factor 8.171->9.488, WR 93.73%->93.92%, DD     |
 //| 1.92%/2.17%->1.71%/1.98% -- a clean improvement on every metric.      |
 //| threeBarOneWay/timeMildMin/timeDangerMin/ComboExitDangerMin/           |
-//| UseComboExit: ported from XAU_M2_BB_LIVE_001_STOCH_v2.mq5, where a    |
-//| CONFIRMED result found that force-closing a position once it's BOTH   |
-//| never been profitable in its first 3 candles AND spent >=10min with   |
-//| adverse excursion >=2R improved NET/PF/MaxDD/RF on a tiny slice of    |
-//| trades (see that file's header). UNTESTED here (UseComboExit=false)   |
-//| -- M1's own SL_R=5.0/TP_R=0.45 differ from M2's, so this needs its    |
-//| own ground-truth backtest before confirming, not a blind port of     |
-//| M2's thresholds.                                                      |
+//| UseComboExit (REJECTED): ported from XAU_M2_BB_LIVE_001_STOCH_v2.mq5,  |
+//| where a CONFIRMED result found that force-closing a position once     |
+//| it's BOTH never been profitable in its first 3 candles AND spent      |
+//| >=10min with adverse excursion >=2R improved NET/PF/MaxDD/RF on a     |
+//| tiny slice of trades. Ground-truth backtest here against this file's  |
+//| own baseline (NET $25,758.98, WR 93.84%, PF 1.598, MaxDD $1,973.89,   |
+//| n=2,045) REJECTED it: NET $23,090.64 (-10.4%), WR 93.15%, PF 1.507,   |
+//| MaxDD $2,255.19 (+14.3%, WORSE), n=2,058. Doesn't transfer from M2 --  |
+//| M1's own SL_R=5.0 and much lower trade volume mean ComboExit's        |
+//| 3-bar/danger-zone condition doesn't isolate the same kind of doomed    |
+//| trade here; it mostly just cuts into otherwise-fine ones.              |
+//|                                                                        |
+//| UseFridayNarrowWindow (REJECTED): also ported from M2_v2 (CONFIRMED    |
+//| there). Combined with UseComboExit (both true): NET $16,512.97         |
+//| (-35.9% vs this file's own baseline), WR 92.84%, PF 1.424, MaxDD       |
+//| $2,247.47 (+13.9%, WORSE), n=1,704. Same conclusion -- neither M2_v2   |
+//| finding generalizes to the M1 signal.                                  |
 //+------------------------------------------------------------------+
 #property strict
 #include <Trade/Trade.mqh>
@@ -100,11 +109,11 @@ input bool   SkipFadeBearOSWickTouch = true; // Skip FADE_BEAR_OS wick-only touc
 input int    SkipHourStartKST   = 14; // Hour-dip window start, KST (see header, SkipHourEntryKST)
 input int    SkipHourEndKST     = 16; // Hour-dip window end, KST, exclusive (see header, SkipHourEntryKST)
 input bool   SkipHourEntryKST   = true; // Block entries in [SkipHourStartKST,SkipHourEndKST) KST (CONFIRMED, see header)
-input bool   UseFridayNarrowWindow = false; // On Friday, only allow entries 10:30-15:00 KST (ported from M2_v2 where CONFIRMED; UNTESTED here, see header)
+input bool   UseFridayNarrowWindow = false; // On Friday, only allow entries 10:30-15:00 KST (ported from M2_v2 where CONFIRMED; REJECTED here, see header)
 
 input double MildZoneR          = 2.0;  // Adverse-R boundary for dwell-time diagnostic (no trading effect)
 input double ComboExitDangerMin = 10.0; // Danger-zone minutes required, combined with threeBarOneWay (UNTESTED, see header)
-input bool   UseComboExit       = false; // Close only when BOTH threeBarOneWay AND ComboExitDangerMin are met (UNTESTED, see header)
+input bool   UseComboExit       = false; // Close only when BOTH threeBarOneWay AND ComboExitDangerMin are met (REJECTED, see header)
 
 int hBB20=INVALID_HANDLE,hBB4=INVALID_HANDLE,hStoch=INVALID_HANDLE;
 datetime last_m1_bar=0;

@@ -256,7 +256,7 @@ input bool SkipHourAEntry=true; // Block entries in [SkipHourAStartKST,SkipHourA
 input int  SkipHourBStartKST=16; // Hour-dip B window start, KST (see header, SkipHourBEntry)
 input int  SkipHourBEndKST=18; // Hour-dip B window end, KST, exclusive (see header, SkipHourBEntry)
 input bool SkipHourBEntry=true; // Block entries in [SkipHourBStartKST,SkipHourBEndKST) KST (CONFIRMED, see header)
-input bool UseFridayNarrowWindow=false; // On Friday, only allow entries 10:30-15:00 KST (ported from 001 M2_v2 where CONFIRMED; UNTESTED here, see header -- this model already has its own SkipFridayNightEntry/SkipTuesdayEntry findings)
+input bool UseFridayNarrowWindow=false; // On Friday, only allow entries 10:30-15:00 KST (ported from 001 M2_v2 where CONFIRMED; REJECTED here, see header)
 
 int h20=INVALID_HANDLE,h4=INVALID_HANDLE;
 datetime lastbar=0;
@@ -488,11 +488,18 @@ void KST_HourDow(datetime server_now,int &hour,int &dow)
 // -- Friday narrow-window filter, ported from XAU_M2_BB_LIVE_001_STOCH_v2
 //    (CONFIRMED there: NET +10.6% vs baseline, +$202.40 vs an all-day
 //    Friday block, same WR/MaxDD, on the 001 M2 signal). Only allow entries
-//    in 10:30-15:00 KST on Friday; every other day is unaffected. UNTESTED
+//    in 10:30-15:00 KST on Friday; every other day is unaffected. REJECTED
 //    on this M10 extension/pullback signal, which already has its own
 //    confirmed SkipFridayNightEntry (weekend-gap) and SkipTuesdayEntry
-//    (worst day here is Tuesday, not Friday) findings -- needs its own
-//    ground-truth backtest and may simply not matter given those. ---------
+//    (worst day here is Tuesday, not Friday) findings: ground-truth
+//    backtest against this file's own baseline (NET $16,946.22, WR
+//    91.26%, PF 2.556, MaxDD $1,282.60, n=618) gave NET $14,245.31
+//    (-15.9%), WR 91.78%, PF 2.701, MaxDD unchanged at $1,282.60, n=499.
+//    Per-trade quality ticks up slightly (WR/PF) but total $ output drops
+//    substantially from the lost volume, and the identical MaxDD shows
+//    this file's worst drawdown sequence doesn't involve Friday either
+//    way -- redundant with/dominated by the existing Tuesday and
+//    Friday-night findings. --------------------------------------------
 bool InFridayNarrowAllowedWindowKST(datetime server_now)
 {
    int kstHour,kstDow; KST_HourDow(server_now,kstHour,kstDow);
