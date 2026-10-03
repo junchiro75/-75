@@ -211,6 +211,14 @@
 //|    CONFIRMED and promoted to the new live default in place of            |
 //|    UseFridayFilter (left in place, now off by default, for reference/    |
 //|    future comparison -- the two are meant as alternatives, not combined).|
+//| UseTradingWindowFilter's 3 windows were later parameterized              |
+//| (Window1/2/3 Start/EndHourKST, decimal hours, e.g. 10.5=10:30; a window  |
+//| wraps past midnight whenever its end<=start) so new window combinations  |
+//| can be tried via .set file alone -- the REJECTED verdict above is tied   |
+//| specifically to the original hardcoded defaults (10:30-15:00/           |
+//| 16:00-21:00/22:30-02:50), which remain the input defaults; a different   |
+//| set of bounds is a fresh, untested hypothesis and needs its own          |
+//| ground-truth run.                                                        |
 //| ComboExitDangerMin/UseComboExit (CONFIRMED=10min/true): an AND of the  |
 //| two ideas above instead of either alone -- only closes when a         |
 //| position is BOTH threeBarOneWay=true AND has spent ComboExitDangerMin |
@@ -519,7 +527,13 @@ input int    AsiaSessionEndHour   = 16;  // Asia-session skip window end hour, K
 input bool   ReverseTrendBearAsiaSession = false; // Reverse TREND_BEAR in Asia session to BUY (UNTESTED, see header)
 input int    MaxMinutesWithoutProgress = 0; // Close position after N min regardless of P&L, 0=disabled (UNTESTED, see header)
 
-input bool   UseTradingWindowFilter = false; // Only allow new entries during 10:30-15:00/16:00-21:00/22:30-02:50 KST (REJECTED, see header)
+input bool   UseTradingWindowFilter = false; // Only allow new entries inside Window1/2/3 (REJECTED with defaults below, see header)
+input double Window1StartHourKST = 10.5; // Window 1 start, KST, decimal hour (10.5=10:30)
+input double Window1EndHourKST   = 15.0; // Window 1 end, KST, decimal hour
+input double Window2StartHourKST = 16.0; // Window 2 start, KST, decimal hour
+input double Window2EndHourKST   = 21.0; // Window 2 end, KST, decimal hour
+input double Window3StartHourKST = 22.5; // Window 3 start, KST, decimal hour (wraps past midnight if end<start)
+input double Window3EndHourKST   = 2.8333; // Window 3 end, KST, decimal hour (2.8333=02:50)
 input bool   UseDangerWindowFilter = false; // Block new entries (all tags) during 5 KST session-transition windows (REJECTED, see header)
 input bool   UseFridayFilter    = false; // Block new entries (all tags) on Friday from FridayFilterFromHourKST onward (SUPERSEDED by UseFridayNarrowWindow, see header)
 input int    FridayFilterFromHourKST = 0; // Hour (KST) from which Friday entries are blocked when UseFridayFilter=true (0 = all day Friday)
@@ -1094,17 +1108,27 @@ bool InFridayNarrowAllowedWindowKST(datetime server_now)
 
 // -- Allowed-trading-window filter (user-specified, positive allow-list --
 //    the inverse framing of UseDangerWindowFilter above): only new entries
-//    (all four tags) falling inside one of 3 KST windows are allowed;
-//    everything else is blocked. Default windows (UNTESTED): 10:30-15:00,
-//    16:00-21:00, 22:30-02:50 -- the third wraps past midnight. -----------
+//    (all four tags) falling inside one of 3 configurable KST windows are
+//    allowed; everything else is blocked. Each window takes a start/end
+//    decimal-hour pair (e.g. 10.5=10:30); a window wraps past midnight
+//    whenever its end <= its start. Default bounds (REJECTED, see header):
+//    10:30-15:00, 16:00-21:00, 22:30-02:50. -------------------------------
+bool InWindowKST(int minOfDay,double startHour,double endHour)
+{
+   int start=(int)MathRound(startHour*60);
+   int end=(int)MathRound(endHour*60);
+   if(start<=end) return (minOfDay>=start && minOfDay<end);
+   return (minOfDay>=start || minOfDay<end); // wraps past midnight
+}
+
 bool InAllowedTradingWindowKST(datetime server_now)
 {
    int offsetHours=IsEUDST(server_now)?6:7;
    MqlDateTime t; TimeToStruct(server_now+offsetHours*3600,t);
    int minOfDay=t.hour*60+t.min;
-   if(minOfDay>=630 && minOfDay<900) return true;   // 10:30-15:00
-   if(minOfDay>=960 && minOfDay<1260) return true;  // 16:00-21:00
-   if(minOfDay>=1350 || minOfDay<170) return true;  // 22:30-02:50 (wraps midnight)
+   if(InWindowKST(minOfDay,Window1StartHourKST,Window1EndHourKST)) return true;
+   if(InWindowKST(minOfDay,Window2StartHourKST,Window2EndHourKST)) return true;
+   if(InWindowKST(minOfDay,Window3StartHourKST,Window3EndHourKST)) return true;
    return false;
 }
 
@@ -1672,6 +1696,9 @@ int OnInit()
        " | ReverseTrendBearAsiaSession="+(ReverseTrendBearAsiaSession?"true":"false")+
        " | MaxMinutesWithoutProgress="+IntegerToString(MaxMinutesWithoutProgress)+
        " | UseTradingWindowFilter="+(UseTradingWindowFilter?"true":"false")+
+       " W1="+DoubleToString(Window1StartHourKST,2)+"-"+DoubleToString(Window1EndHourKST,2)+
+       " W2="+DoubleToString(Window2StartHourKST,2)+"-"+DoubleToString(Window2EndHourKST,2)+
+       " W3="+DoubleToString(Window3StartHourKST,2)+"-"+DoubleToString(Window3EndHourKST,2)+
        " | UseDangerWindowFilter="+(UseDangerWindowFilter?"true":"false")+
        " | UseFridayFilter="+(UseFridayFilter?"true":"false")+" FridayFilterFromHourKST="+IntegerToString(FridayFilterFromHourKST)+
        " | UseFridayNarrowWindow="+(UseFridayNarrowWindow?"true":"false")+
