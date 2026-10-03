@@ -21,6 +21,7 @@ UseTradingWindowFilter=false
 UseDangerWindowFilter=false
 UseFridayFilter=true
 FridayFilterFromHourKST=0
+UseFridayNarrowWindow=false
 UseTrendFilter=false
 TrendFilterTimeframe=15
 ADXPeriod=14

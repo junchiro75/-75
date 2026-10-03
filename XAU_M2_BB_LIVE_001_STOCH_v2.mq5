@@ -175,6 +175,12 @@
 //| (-32.0%) on n=1,444 -- combining them cuts worst-case drawdown          |
 //| substantially but at a steep NET cost, so it's a deliberate             |
 //| return-for-safety trade rather than a clear win; left off by default.   |
+//| UseFridayNarrowWindow (UNTESTED): an alternative to UseFridayFilter's   |
+//| full-day block -- instead of skipping Friday entirely, only allow       |
+//| entries in the 10:30-15:00 KST window on Friday (other days unaffected, |
+//| other Friday hours blocked). Meant to be compared directly against      |
+//| UseFridayFilter's all-day block to see whether Friday has SOME tradable |
+//| hours worth keeping rather than none.                                   |
 //| UseTradingWindowFilter (UNTESTED): the inverse framing of               |
 //| UseDangerWindowFilter -- instead of a block-list of named danger        |
 //| windows, this is a POSITIVE allow-list: only entries (all four tags)    |
@@ -501,6 +507,7 @@ input bool   UseTradingWindowFilter = false; // Only allow new entries during 10
 input bool   UseDangerWindowFilter = false; // Block new entries (all tags) during 5 KST session-transition windows (REJECTED, see header)
 input bool   UseFridayFilter    = true; // Block new entries (all tags) on Friday from FridayFilterFromHourKST onward (CONFIRMED, see header)
 input int    FridayFilterFromHourKST = 0; // Hour (KST) from which Friday entries are blocked when UseFridayFilter=true (0 = all day Friday) (CONFIRMED, see header)
+input bool   UseFridayNarrowWindow = false; // Alternative to UseFridayFilter: on Friday, only allow entries 10:30-15:00 KST, other days unaffected (UNTESTED, see header)
 input bool   UseTrendFilter     = false; // Skip entry if opposing trend on higher TF (REJECTED, see header)
 input ENUM_TIMEFRAMES TrendFilterTimeframe = PERIOD_M15; // Higher timeframe for UseTrendFilter
 input int    ADXPeriod          = 14;    // ADX period for UseTrendFilter
@@ -1057,6 +1064,18 @@ bool IsFridayKST(datetime server_now)
    return (t.day_of_week==5); // MQL5 day_of_week: 0=Sunday
 }
 
+// -- Friday narrow-window filter (alternative to UseFridayFilter's full-day
+//    block): on Friday only, require entries to fall in 10:30-15:00 KST;
+//    every other day of the week is unaffected (always returns true). -----
+bool InFridayNarrowAllowedWindowKST(datetime server_now)
+{
+   if(!IsFridayKST(server_now)) return true;
+   int offsetHours=IsEUDST(server_now)?6:7;
+   MqlDateTime t; TimeToStruct(server_now+offsetHours*3600,t);
+   int minOfDay=t.hour*60+t.min;
+   return (minOfDay>=630 && minOfDay<900); // 10:30-15:00
+}
+
 // -- Allowed-trading-window filter (user-specified, positive allow-list --
 //    the inverse framing of UseDangerWindowFilter above): only new entries
 //    (all four tags) falling inside one of 3 KST windows are allowed;
@@ -1388,6 +1407,8 @@ void CheckNewM2Bar()
    { Log("SIGNAL_SKIPPED","Entry blocked by UseDangerWindowFilter (session-transition danger window)"); return; }
    if(UseFridayFilter && IsFridayKST(sig) && KST_Hour(sig)>=FridayFilterFromHourKST)
    { Log("SIGNAL_SKIPPED","Entry blocked by UseFridayFilter (Friday, hour>="+IntegerToString(FridayFilterFromHourKST)+" KST)"); return; }
+   if(UseFridayNarrowWindow && !InFridayNarrowAllowedWindowKST(sig))
+   { Log("SIGNAL_SKIPPED","Entry blocked by UseFridayNarrowWindow (Friday, outside 10:30-15:00 KST)"); return; }
 
    // BODY vs WICK touch (diagnostic): the entry condition above only requires
    // the candle's high/low (wick) to reach BB20 -- this checks whether the
@@ -1637,6 +1658,7 @@ int OnInit()
        " | UseTradingWindowFilter="+(UseTradingWindowFilter?"true":"false")+
        " | UseDangerWindowFilter="+(UseDangerWindowFilter?"true":"false")+
        " | UseFridayFilter="+(UseFridayFilter?"true":"false")+" FridayFilterFromHourKST="+IntegerToString(FridayFilterFromHourKST)+
+       " | UseFridayNarrowWindow="+(UseFridayNarrowWindow?"true":"false")+
        " | UseTrendFilter="+(UseTrendFilter?"true":"false")+
        " | TrendFilterTF="+EnumToString(TrendFilterTimeframe)+" ADXPeriod="+IntegerToString(ADXPeriod)+
        " ADXThreshold="+DoubleToString(ADXThreshold,1)+
