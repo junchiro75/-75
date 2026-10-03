@@ -112,7 +112,7 @@
 //| every trade before TP_R=0.45 ever has a chance to be hit, exactly the   |
 //| same checking-too-early failure as UseFirstBarExit, just far more       |
 //| severe because the trigger condition fires far more often.              |
-//| trend10Oppose/UseEntryTrend10OpposeExit (UNTESTED): unlike every        |
+//| trend10Oppose/UseEntryTrend10OpposeExit (REJECTED): unlike every        |
 //| early-exit idea above (all checked within 1-3 candles of entry and all  |
 //| failed the same way -- cutting off recovery before it had time to       |
 //| happen), this requires a much longer confirmation window. Condition:    |
@@ -124,6 +124,22 @@
 //| spirit to the CONFIRMED ComboExit's danger-zone dwell-time approach     |
 //| than to the rejected 1-candle checks, since a sustained 10-candle       |
 //| adverse drift is a much lower-noise signal than one candle's color.     |
+//| Diagnostic ground truth (no forced exit) showed this combo DOES isolate |
+//| a genuinely bad cohort -- trades flagged nextBarOppose=true AND         |
+//| trend10Oppose=true (n=389) lost money even left alone naturally (32.4%  |
+//| loss rate vs ~8% baseline, avg -$61.08/trade, net -$23,759.56). But     |
+//| acting on it made things WORSE, not better: ground-truth backtest       |
+//| against the ComboExit-confirmed baseline (NET $27,148.70, WR 92.01%,    |
+//| n=3,273) gave NET $22,292.21 (-17.9%), WR 84.04% (-7.97pp), n=3,490.    |
+//| The 412 forced exits averaged -$79 to -$106/trade across all three      |
+//| tags (worse than the -$61.08 natural average of that same cohort),      |
+//| because forcing the close at the 11-bar checkpoint realizes a loss on   |
+//| the 67.6% of the cohort that would have eventually WON, while only      |
+//| modestly shortening the loss on the 32.4% that would have hit full SL   |
+//| anyway -- the former outweighs the latter. The diagnostic has real      |
+//| post-hoc explanatory power but, like every other pre/mid-trade signal   |
+//| tried this project, isn't strong enough to act on profitably; only      |
+//| ComboExit's surgical threeBarOneWay+danger-zone combo clears that bar.  |
 //| ComboExitDangerMin/UseComboExit (CONFIRMED=10min/true): an AND of the  |
 //| two ideas above instead of either alone -- only closes when a         |
 //| position is BOTH threeBarOneWay=true AND has spent ComboExitDangerMin |
@@ -478,7 +494,7 @@ input bool   UseFirstBarExit    = false; // Close TREND_BULL/FADE_BEAR_OS positi
 input bool   UseNextBarOpposeExit = false; // Close any position if the next bar's candle color opposes trade direction (REJECTED, see header)
 
 input int    Trend10LookbackBars = 10; // Bars after entry bar averaged for trend10Oppose (see header)
-input bool   UseEntryTrend10OpposeExit = false; // Close position if entry bar AND avg of next Trend10LookbackBars bars both oppose trade direction (UNTESTED, see header)
+input bool   UseEntryTrend10OpposeExit = false; // Close position if entry bar AND avg of next Trend10LookbackBars bars both oppose trade direction (REJECTED, see header)
 
 input double ComboExitDangerMin = 10.0; // Danger-zone minutes required, combined with threeBarOneWay (CONFIRMED, see header)
 input bool   UseComboExit       = true; // Close only when BOTH threeBarOneWay AND ComboExitDangerMin are met (CONFIRMED, see header)
