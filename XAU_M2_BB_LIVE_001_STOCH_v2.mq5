@@ -92,18 +92,26 @@
 //| plus the same faster-MAX1-turnover harm seen in every other rejected   |
 //| early-exit idea here. A 1-candle bar is too early a checkpoint for     |
 //| this signal; only the surgical threeBarOneWay+danger combo survives.   |
-//| nextBarOppose/UseNextBarOpposeExit (UNTESTED): a variant of             |
+//| nextBarOppose/UseNextBarOpposeExit (REJECTED): a variant of             |
 //| firstBarOneWay/UseFirstBarExit above, but using the next bar's own      |
 //| CANDLE COLOR (close vs open) instead of its high/low EXTREME vs entry   |
 //| price -- e.g. for a SELL, did the very next bar simply close green,     |
 //| regardless of whether price ever ticked favorably first. Applied to ALL |
 //| four tags (TREND_BULL, TREND_BEAR, FADE_BULL_OB, FADE_BEAR_OS), unlike  |
-//| UseFirstBarExit which only covered TREND_BULL/FADE_BEAR_OS. Given       |
-//| UseFirstBarExit's rejection mechanism (cutting off recovery for the     |
-//| 78-82% of flagged trades that would have eventually won) was about      |
-//| checking too early, not about which exact condition was used, this is   |
-//| likely to fail the same way -- but it covers two tags (TREND_BEAR,      |
-//| FADE_BULL_OB) never tested this way before, so it isn't assumed.        |
+//| UseFirstBarExit which only covered TREND_BULL/FADE_BEAR_OS (FADE_BULL_OB |
+//| had zero trades in the test run, since AllowSellFade=false). Ground-    |
+//| truth backtest against the ComboExit-confirmed baseline (NET            |
+//| $27,148.70, WR 92.01%, PF 1.382, n=3,273) REJECTED it hard: NET          |
+//| $3,935.10 (-85.5%), WR 56.91% (-35.1pp), PF 1.058, n=3,729 (+456). Of    |
+//| the 1,567 forced exits (42% of all trades), 99.1-99.7% were losses in   |
+//| every one of the three tags that fired (FADE_BEAR_OS: 753 flagged,      |
+//| 99.73% loss, avg -$38.96; TREND_BEAR: 228 flagged, 99.12% loss, avg     |
+//| -$29.52; TREND_BULL: 586 flagged, 99.15% loss, avg -$24.68) -- the      |
+//| opposite-color next bar is itself just normal noise around entry       |
+//| (near coin-flip), so forcing a close on it realizes a loss on almost    |
+//| every trade before TP_R=0.45 ever has a chance to be hit, exactly the   |
+//| same checking-too-early failure as UseFirstBarExit, just far more       |
+//| severe because the trigger condition fires far more often.              |
 //| ComboExitDangerMin/UseComboExit (CONFIRMED=10min/true): an AND of the  |
 //| two ideas above instead of either alone -- only closes when a         |
 //| position is BOTH threeBarOneWay=true AND has spent ComboExitDangerMin |
@@ -455,7 +463,7 @@ input bool   UseThreeBarExit    = false; // Close position if never profitable i
 
 input bool   UseFirstBarExit    = false; // Close TREND_BULL/FADE_BEAR_OS position if firstBarOneWay=true (REJECTED, see header)
 
-input bool   UseNextBarOpposeExit = false; // Close any position if the next bar's candle color opposes trade direction (UNTESTED, see header)
+input bool   UseNextBarOpposeExit = false; // Close any position if the next bar's candle color opposes trade direction (REJECTED, see header)
 
 input double ComboExitDangerMin = 10.0; // Danger-zone minutes required, combined with threeBarOneWay (CONFIRMED, see header)
 input bool   UseComboExit       = true; // Close only when BOTH threeBarOneWay AND ComboExitDangerMin are met (CONFIRMED, see header)
