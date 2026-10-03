@@ -112,6 +112,18 @@
 //| every trade before TP_R=0.45 ever has a chance to be hit, exactly the   |
 //| same checking-too-early failure as UseFirstBarExit, just far more       |
 //| severe because the trigger condition fires far more often.              |
+//| trend10Oppose/UseEntryTrend10OpposeExit (UNTESTED): unlike every        |
+//| early-exit idea above (all checked within 1-3 candles of entry and all  |
+//| failed the same way -- cutting off recovery before it had time to       |
+//| happen), this requires a much longer confirmation window. Condition:    |
+//| (1) the entry bar itself closed opposite trade direction (same as       |
+//| nextBarOppose above), AND (2) the AVERAGE candle body (mean of           |
+//| close-open) over the Trend10LookbackBars (default 10) bars AFTER the    |
+//| entry bar is ALSO net opposite. Only acts once both are known, i.e.     |
+//| only on positions that are still open ~20+ min after entry -- closer in |
+//| spirit to the CONFIRMED ComboExit's danger-zone dwell-time approach     |
+//| than to the rejected 1-candle checks, since a sustained 10-candle       |
+//| adverse drift is a much lower-noise signal than one candle's color.     |
 //| ComboExitDangerMin/UseComboExit (CONFIRMED=10min/true): an AND of the  |
 //| two ideas above instead of either alone -- only closes when a         |
 //| position is BOTH threeBarOneWay=true AND has spent ComboExitDangerMin |
@@ -465,6 +477,9 @@ input bool   UseFirstBarExit    = false; // Close TREND_BULL/FADE_BEAR_OS positi
 
 input bool   UseNextBarOpposeExit = false; // Close any position if the next bar's candle color opposes trade direction (REJECTED, see header)
 
+input int    Trend10LookbackBars = 10; // Bars after entry bar averaged for trend10Oppose (see header)
+input bool   UseEntryTrend10OpposeExit = false; // Close position if entry bar AND avg of next Trend10LookbackBars bars both oppose trade direction (UNTESTED, see header)
+
 input double ComboExitDangerMin = 10.0; // Danger-zone minutes required, combined with threeBarOneWay (CONFIRMED, see header)
 input bool   UseComboExit       = true; // Close only when BOTH threeBarOneWay AND ComboExitDangerMin are met (CONFIRMED, see header)
 
@@ -524,6 +539,17 @@ bool   g_firstBarKnown[TRACK_SLOTS], g_firstBarOneWay[TRACK_SLOTS];
 //    covers TREND_BULL/FADE_BEAR_OS. ------------------------------------
 bool   g_waitingNextBar[TRACK_SLOTS];
 bool   g_nextBarKnown[TRACK_SLOTS], g_nextBarOppose[TRACK_SLOTS];
+
+// -- entry-bar-plus-10-bar-average-opposite (diagnostic always on;
+//    UseEntryTrend10OpposeExit ACTS): extends nextBarOppose above with a
+//    much longer, lower-noise confirmation window -- see header. Starts
+//    accumulating from the bar AFTER the entry bar (g_trend10JustArmed
+//    skips that first call so the entry bar itself, already captured by
+//    nextBarOppose, isn't double-counted in the 10-bar average). ---------
+bool   g_waitingTrend10[TRACK_SLOTS], g_trend10JustArmed[TRACK_SLOTS];
+int    g_trend10Count[TRACK_SLOTS];
+double g_trend10Sum[TRACK_SLOTS];
+bool   g_trend10Known[TRACK_SLOTS], g_trend10Oppose[TRACK_SLOTS];
 
 // -- first-3-bars-after-entry direction (diagnostic only) --------------------
 // Extends the above over the entry candle plus the next 2 (3 candles total):
@@ -726,6 +752,8 @@ void StartMAETracking(ulong ticket,double entry,double R,int dir,string tag)
    g_reached50[i]=false; g_reached75[i]=false; g_trackTag[i]=tag;
    g_waitingFirstBar[i]=true; g_firstBarKnown[i]=false; g_firstBarOneWay[i]=false;
    g_waitingNextBar[i]=true; g_nextBarKnown[i]=false; g_nextBarOppose[i]=false;
+   g_waitingTrend10[i]=false; g_trend10JustArmed[i]=false; g_trend10Count[i]=0; g_trend10Sum[i]=0;
+   g_trend10Known[i]=false; g_trend10Oppose[i]=false;
    g_waitingBar3[i]=true; g_bar3Count[i]=0; g_bar3Extreme[i]=0; g_bar3Known[i]=false; g_bar3OneWay[i]=false;
    g_comboExited[i]=false;
    g_trackBandLevel[i]=g_lastBandLevel; g_bandReentered[i]=false;
@@ -1162,6 +1190,41 @@ void CheckNewM2Bar()
          else
             Log("NEXT_BAR_OPPOSE_EXIT_FAIL",IntegerToString((int)trade.ResultRetcode())+" | "+trade.ResultRetcodeDescription());
       }
+
+      // Arm the trend10 window now that the entry bar itself is resolved --
+      // accumulation starts on the NEXT call (g_trend10JustArmed skips this
+      // one), so the entry bar is never counted twice.
+      g_waitingTrend10[i]=true; g_trend10JustArmed[i]=true;
+      g_trend10Count[i]=0; g_trend10Sum[i]=0;
+   }
+
+   for(int i=0;i<TRACK_SLOTS;i++)
+   {
+      if(!g_waitingTrend10[i]) continue;
+      if(g_trend10JustArmed[i]){ g_trend10JustArmed[i]=false; continue; } // skip entry bar, already covered by nextBarOppose
+
+      g_trend10Sum[i]+=(c-o);
+      g_trend10Count[i]++;
+      if(g_trend10Count[i]>=Trend10LookbackBars)
+      {
+         double avgBody=g_trend10Sum[i]/Trend10LookbackBars;
+         g_trend10Oppose[i]=(g_trackDir[i]==+1) ? (avgBody<0) : (avgBody>0);
+         g_trend10Known[i]=true;
+         g_waitingTrend10[i]=false;
+
+         if(UseEntryTrend10OpposeExit && g_nextBarOppose[i] && g_trend10Oppose[i] && PositionSelectByTicket(g_trackTicket[i]))
+         {
+            double profit=PositionGetDouble(POSITION_PROFIT);
+            if(!EnableLiveOrders)
+               Log("ENTRY_TREND10_EXIT_DRY","ticket="+IntegerToString((int)g_trackTicket[i])+
+                   " profit="+DoubleToString(profit,2)+" (would close, EnableLiveOrders=false) | "+g_trackTag[i]);
+            else if(trade.PositionClose(g_trackTicket[i]))
+               Log("ENTRY_TREND10_EXIT_CLOSE","ticket="+IntegerToString((int)g_trackTicket[i])+
+                   " profit="+DoubleToString(profit,2)+" | "+g_trackTag[i]);
+            else
+               Log("ENTRY_TREND10_EXIT_FAIL",IntegerToString((int)trade.ResultRetcode())+" | "+trade.ResultRetcodeDescription());
+         }
+      }
    }
 
    for(int i=0;i<TRACK_SLOTS;i++)
@@ -1475,6 +1538,7 @@ int OnInit()
        " | UseThreeBarExit="+(UseThreeBarExit?"true":"false")+
        " | UseFirstBarExit="+(UseFirstBarExit?"true":"false")+
        " | UseNextBarOpposeExit="+(UseNextBarOpposeExit?"true":"false")+
+       " | Trend10LookbackBars="+IntegerToString(Trend10LookbackBars)+" UseEntryTrend10OpposeExit="+(UseEntryTrend10OpposeExit?"true":"false")+
        " | ComboExitDangerMin="+DoubleToString(ComboExitDangerMin,1)+" UseComboExit="+(UseComboExit?"true":"false")+
        " | SkipFadeBearOSWickTouch="+(SkipFadeBearOSWickTouch?"true":"false")+
        " | Lots="+DoubleToString(Lots,2)+" | Magic="+IntegerToString((int)MagicNumber)+
@@ -1525,11 +1589,12 @@ void OnTradeTransaction(const MqlTradeTransaction &trans,const MqlTradeRequest &
    string outcome=(profit>0?"WIN":"LOSS");
    string firstBarStr=(!g_firstBarKnown[i] ? "unknown" : (g_firstBarOneWay[i]?"true":"false"));
    string nextBarStr=(!g_nextBarKnown[i] ? "unknown" : (g_nextBarOppose[i]?"true":"false"));
+   string trend10Str=(!g_trend10Known[i] ? "unknown" : (g_trend10Oppose[i]?"true":"false"));
    string bar3Str=(!g_bar3Known[i] ? "unknown" : (g_bar3OneWay[i]?"true":"false"));
    string bandStr=(g_trackBandLevel[i]==0 ? "n/a(fade)" : (g_bandReentered[i]?"true":"false"));
    Log("MAE_OUTCOME","outcome="+outcome+" profit="+DoubleToString(profit,2)+
        " reached50="+(g_reached50[i]?"true":"false")+" reached75="+(g_reached75[i]?"true":"false")+
-       " firstBarOneWay="+firstBarStr+" nextBarOppose="+nextBarStr+" threeBarOneWay="+bar3Str+" bandReentry="+bandStr+
+       " firstBarOneWay="+firstBarStr+" nextBarOppose="+nextBarStr+" trend10Oppose="+trend10Str+" threeBarOneWay="+bar3Str+" bandReentry="+bandStr+
        " oppSignalSeen="+(g_trackOppSignalSeen[i]?"true":"false")+
        " reachedFav50="+(g_reachedFav50[i]?"true":"false")+
        " reachedFav75="+(g_reachedFav75[i]?"true":"false")+
@@ -1551,6 +1616,7 @@ void OnTradeTransaction(const MqlTradeTransaction &trans,const MqlTradeRequest &
    g_trackTicket[i]=0; // free slot
    g_waitingFirstBar[i]=false;
    g_waitingNextBar[i]=false;
+   g_waitingTrend10[i]=false;
    g_waitingBar3[i]=false;
 
    if(outcome=="LOSS")
