@@ -17,6 +17,7 @@ AsiaSessionStartHour=6
 AsiaSessionEndHour=16
 ReverseTrendBearAsiaSession=false
 MaxMinutesWithoutProgress=0
+UseTradingWindowFilter=false
 UseDangerWindowFilter=false
 UseFridayFilter=true
 FridayFilterFromHourKST=0

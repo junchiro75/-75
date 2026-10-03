@@ -175,6 +175,20 @@
 //| (-32.0%) on n=1,444 -- combining them cuts worst-case drawdown          |
 //| substantially but at a steep NET cost, so it's a deliberate             |
 //| return-for-safety trade rather than a clear win; left off by default.   |
+//| UseTradingWindowFilter (UNTESTED): the inverse framing of               |
+//| UseDangerWindowFilter -- instead of a block-list of named danger        |
+//| windows, this is a POSITIVE allow-list: only entries (all four tags)    |
+//| falling inside 10:30-15:00, 16:00-21:00, or 22:30-02:50 KST are let     |
+//| through; everything else (the gaps 02:50-10:30, 15:00-16:00,            |
+//| 21:00-22:30) is blocked. User-specified directly, not derived from the  |
+//| same outside reference as UseDangerWindowFilter -- notably it still     |
+//| blocks the 02:50-10:30 stretch (which swallows the already-REJECTED     |
+//| filter's 00:30-03:30 and 09:30-10:30 windows) but allows straight       |
+//| through the 14:00-18:00 and 20:00-22:30 windows that filter blocked.    |
+//| Needs its own ground-truth backtest; given UseDangerWindowFilter's      |
+//| block-list version didn't hold up at full-backtest scale despite a      |
+//| strong 2-week live correlation, no outcome should be assumed here       |
+//| either.                                                                  |
 //| ComboExitDangerMin/UseComboExit (CONFIRMED=10min/true): an AND of the  |
 //| two ideas above instead of either alone -- only closes when a         |
 //| position is BOTH threeBarOneWay=true AND has spent ComboExitDangerMin |
@@ -483,6 +497,7 @@ input int    AsiaSessionEndHour   = 16;  // Asia-session skip window end hour, K
 input bool   ReverseTrendBearAsiaSession = false; // Reverse TREND_BEAR in Asia session to BUY (UNTESTED, see header)
 input int    MaxMinutesWithoutProgress = 0; // Close position after N min regardless of P&L, 0=disabled (UNTESTED, see header)
 
+input bool   UseTradingWindowFilter = false; // Only allow new entries during 10:30-15:00/16:00-21:00/22:30-02:50 KST (UNTESTED, see header)
 input bool   UseDangerWindowFilter = false; // Block new entries (all tags) during 5 KST session-transition windows (REJECTED, see header)
 input bool   UseFridayFilter    = true; // Block new entries (all tags) on Friday from FridayFilterFromHourKST onward (CONFIRMED, see header)
 input int    FridayFilterFromHourKST = 0; // Hour (KST) from which Friday entries are blocked when UseFridayFilter=true (0 = all day Friday) (CONFIRMED, see header)
@@ -1042,6 +1057,22 @@ bool IsFridayKST(datetime server_now)
    return (t.day_of_week==5); // MQL5 day_of_week: 0=Sunday
 }
 
+// -- Allowed-trading-window filter (user-specified, positive allow-list --
+//    the inverse framing of UseDangerWindowFilter above): only new entries
+//    (all four tags) falling inside one of 3 KST windows are allowed;
+//    everything else is blocked. Default windows (UNTESTED): 10:30-15:00,
+//    16:00-21:00, 22:30-02:50 -- the third wraps past midnight. -----------
+bool InAllowedTradingWindowKST(datetime server_now)
+{
+   int offsetHours=IsEUDST(server_now)?6:7;
+   MqlDateTime t; TimeToStruct(server_now+offsetHours*3600,t);
+   int minOfDay=t.hour*60+t.min;
+   if(minOfDay>=630 && minOfDay<900) return true;   // 10:30-15:00
+   if(minOfDay>=960 && minOfDay<1260) return true;  // 16:00-21:00
+   if(minOfDay>=1350 || minOfDay<170) return true;  // 22:30-02:50 (wraps midnight)
+   return false;
+}
+
 bool InEuropeSessionKST(datetime server_now)
 {
    int h=KST_Hour(server_now);
@@ -1351,6 +1382,8 @@ void CheckNewM2Bar()
    else if(c<o && l<=lo20[0] && l<=lo4[0]) sigdir=-1; // bear (down) signal candle
    if(sigdir==0) return;
 
+   if(UseTradingWindowFilter && !InAllowedTradingWindowKST(sig))
+   { Log("SIGNAL_SKIPPED","Entry blocked by UseTradingWindowFilter (outside 10:30-15:00/16:00-21:00/22:30-02:50 KST)"); return; }
    if(UseDangerWindowFilter && InDangerWindowKST(sig))
    { Log("SIGNAL_SKIPPED","Entry blocked by UseDangerWindowFilter (session-transition danger window)"); return; }
    if(UseFridayFilter && IsFridayKST(sig) && KST_Hour(sig)>=FridayFilterFromHourKST)
@@ -1601,6 +1634,7 @@ int OnInit()
        " | AsiaWindow="+IntegerToString(AsiaSessionStartHour)+"-"+IntegerToString(AsiaSessionEndHour)+"KST"+
        " | ReverseTrendBearAsiaSession="+(ReverseTrendBearAsiaSession?"true":"false")+
        " | MaxMinutesWithoutProgress="+IntegerToString(MaxMinutesWithoutProgress)+
+       " | UseTradingWindowFilter="+(UseTradingWindowFilter?"true":"false")+
        " | UseDangerWindowFilter="+(UseDangerWindowFilter?"true":"false")+
        " | UseFridayFilter="+(UseFridayFilter?"true":"false")+" FridayFilterFromHourKST="+IntegerToString(FridayFilterFromHourKST)+
        " | UseTrendFilter="+(UseTrendFilter?"true":"false")+
