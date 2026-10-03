@@ -96,6 +96,7 @@ input bool   AllowShort           = false; // Allow SELL entries (default BUY-on
 input int    SkipHourStartKST     = 20; // KST hour skip window start (see header, SkipEntryHourKST)
 input int    SkipHourEndKST       = 22; // KST hour skip window end, exclusive (see header, SkipEntryHourKST)
 input bool   SkipEntryHourKST     = true; // Block entries in [SkipHourStartKST,SkipHourEndKST) KST (CONFIRMED, see header)
+input bool   UseFridayNarrowWindow = false; // On Friday, only allow entries 10:30-15:00 KST (ported from 001 M2_v2 where CONFIRMED; UNTESTED here, see header)
 
 int hBB20=INVALID_HANDLE,hBB4=INVALID_HANDLE;
 datetime last_m2_bar=0;
@@ -169,6 +170,28 @@ bool InSkipHourKST(datetime server_now)
 {
    int h=KST_Hour(server_now);
    return (h>=SkipHourStartKST && h<SkipHourEndKST);
+}
+
+// -- Friday narrow-window filter, ported from XAU_M2_BB_LIVE_001_STOCH_v2
+//    (CONFIRMED there: NET +10.6% vs baseline, +$202.40 vs an all-day
+//    Friday block, same WR/MaxDD, on the 001 M2 signal). Only allow entries
+//    in 10:30-15:00 KST on Friday; every other day is unaffected. UNTESTED
+//    on this extension/pullback signal -- needs its own ground-truth
+//    backtest here. ---------------------------------------------------
+bool IsFridayKST(datetime server_now)
+{
+   int offsetHours=IsEUDST(server_now)?6:7;
+   MqlDateTime t; TimeToStruct(server_now+offsetHours*3600,t);
+   return (t.day_of_week==5); // MQL5 day_of_week: 0=Sunday
+}
+
+bool InFridayNarrowAllowedWindowKST(datetime server_now)
+{
+   if(!IsFridayKST(server_now)) return true;
+   int offsetHours=IsEUDST(server_now)?6:7;
+   MqlDateTime t; TimeToStruct(server_now+offsetHours*3600,t);
+   int minOfDay=t.hour*60+t.min;
+   return (minOfDay>=630 && minOfDay<900); // 10:30-15:00
 }
 
 void Log(string event,string detail="")
@@ -358,6 +381,11 @@ bool OpenCountertrend(Setup &s,MqlTick &tick)
    if(skipHour && SkipEntryHourKST)
    {
       Log("ENTRY_SKIPPED","blocked by SkipEntryHourKST=true (KST hour in ["+IntegerToString(SkipHourStartKST)+","+IntegerToString(SkipHourEndKST)+"))");
+      return false;
+   }
+   if(UseFridayNarrowWindow && !InFridayNarrowAllowedWindowKST(entryNow))
+   {
+      Log("ENTRY_SKIPPED","blocked by UseFridayNarrowWindow (Friday, outside 10:30-15:00 KST)");
       return false;
    }
    if(!EnableLiveOrders)
@@ -564,6 +592,12 @@ int OnInit()
        IntegerToString((int)MagicNumber)+" | Lots="+DoubleToString(Lots,2)+
        " | LatestSignalOnly="+(LatestSignalOnly?"true":"false")+
        " | AllowShort="+(AllowShort?"true":"false")+" | MinR_Points="+DoubleToString(MinR_Points,1)+
+       " | ExtensionR="+DoubleToString(ExtensionR,2)+" PullbackR="+DoubleToString(PullbackR,2)+
+       " InitialSL_R="+DoubleToString(InitialSL_R,2)+" TP1_R="+DoubleToString(TP1_R,2)+
+       " Lock_R="+DoubleToString(Lock_R,2)+" TP2_R="+DoubleToString(TP2_R,2)+
+       " | SkipHourStartKST="+IntegerToString(SkipHourStartKST)+" SkipHourEndKST="+IntegerToString(SkipHourEndKST)+
+       " SkipEntryHourKST="+(SkipEntryHourKST?"true":"false")+
+       " | UseFridayNarrowWindow="+(UseFridayNarrowWindow?"true":"false")+
        " | orders="+(EnableLiveOrders?"ENABLED":"DRY"));
    Log("NOTE","RFILTER2 build: 005_BUYONLY + MinR_Points filter + LatestSignalOnly (newest BB-breakout candle supersedes any pending earlier setup)");
    return INIT_SUCCEEDED;
