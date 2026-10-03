@@ -15,3 +15,7 @@ AllowSellFade=false
 TrendBearEuropeOnly=true
 ReverseTrendBearOutsideEurope=false
 SkipFadeBearOSWickTouch=true
+UseFridayNarrowWindow=false
+MildZoneR=2.0
+ComboExitDangerMin=10.0
+UseComboExit=false

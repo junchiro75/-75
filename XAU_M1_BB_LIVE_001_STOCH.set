@@ -18,3 +18,7 @@ SkipFadeBearOSWickTouch=true
 SkipHourStartKST=14
 SkipHourEndKST=16
 SkipHourEntryKST=true
+UseFridayNarrowWindow=false
+MildZoneR=2.0
+ComboExitDangerMin=10.0
+UseComboExit=false

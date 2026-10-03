@@ -88,6 +88,7 @@ input bool   AllowSellFade      = false; // Allow bull+overbought SELL-fade case
 input bool   TrendBearEuropeOnly = true;  // Restrict TREND_BEAR to Europe session (CONFIRMED, see header)
 input bool   ReverseTrendBearOutsideEurope = false; // Reverse TREND_BEAR outside Europe to BUY (UNTESTED, see header)
 input bool   SkipFadeBearOSWickTouch = true; // Skip FADE_BEAR_OS wick-only touches (CONFIRMED, see header)
+input bool   UseFridayNarrowWindow = false; // On Friday, only allow entries 10:30-15:00 KST (ported from M2_v2 where CONFIRMED; UNTESTED here, see header)
 
 input double MildZoneR          = 2.0;  // Adverse-R boundary for dwell-time diagnostic (no trading effect)
 input double ComboExitDangerMin = 10.0; // Danger-zone minutes required, combined with threeBarOneWay (UNTESTED, see header)
@@ -227,6 +228,27 @@ bool InEuropeSessionKST(datetime server_now)
    return (h>=16 && h<22);
 }
 
+// -- Friday narrow-window filter, ported from XAU_M2_BB_LIVE_001_STOCH_v2
+//    (CONFIRMED there: NET +10.6% vs baseline, +$202.40 vs an all-day
+//    Friday block, same WR/MaxDD, on the M2 signal). Only allow entries in
+//    10:30-15:00 KST on Friday; every other day is unaffected. UNTESTED on
+//    this M3 signal -- needs its own ground-truth backtest here. ----------
+bool IsFridayKST(datetime server_now)
+{
+   int offsetHours=IsEUDST(server_now)?6:7;
+   MqlDateTime t; TimeToStruct(server_now+offsetHours*3600,t);
+   return (t.day_of_week==5); // MQL5 day_of_week: 0=Sunday
+}
+
+bool InFridayNarrowAllowedWindowKST(datetime server_now)
+{
+   if(!IsFridayKST(server_now)) return true;
+   int offsetHours=IsEUDST(server_now)?6:7;
+   MqlDateTime t; TimeToStruct(server_now+offsetHours*3600,t);
+   int minOfDay=t.hour*60+t.min;
+   return (minOfDay>=630 && minOfDay<900); // 10:30-15:00
+}
+
 bool HasOurPosition()
 {
    for(int i=PositionsTotal()-1;i>=0;i--)
@@ -348,6 +370,9 @@ void CheckNewM3Bar()
    else if(c<o && l<=lo20[0] && l<=lo4[0]) sigdir=-1; // bear (down) signal candle
    if(sigdir==0) return;
 
+   if(UseFridayNarrowWindow && !InFridayNarrowAllowedWindowKST(sig))
+   { Log("SIGNAL_SKIPPED","Entry blocked by UseFridayNarrowWindow (Friday, outside 10:30-15:00 KST)"); return; }
+
    // BODY vs WICK touch (diagnostic): the entry condition above only requires
    // the candle's high/low (wick) to reach BB20 -- this checks whether the
    // CLOSE (body) also closed beyond BB20. Appended to the trade tag so it
@@ -432,6 +457,7 @@ int OnInit()
        " | SkipFadeBearOSWickTouch="+(SkipFadeBearOSWickTouch?"true":"false")+
        " | MildZoneR="+DoubleToString(MildZoneR,2)+" ComboExitDangerMin="+DoubleToString(ComboExitDangerMin,1)+
        " UseComboExit="+(UseComboExit?"true":"false")+
+       " | UseFridayNarrowWindow="+(UseFridayNarrowWindow?"true":"false")+
        " | Lots="+DoubleToString(Lots,2)+" | Magic="+IntegerToString((int)MagicNumber)+
        " | orders="+(EnableLiveOrders?"ENABLED":"DRY"));
    return INIT_SUCCEEDED;
