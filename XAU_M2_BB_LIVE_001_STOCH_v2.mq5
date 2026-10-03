@@ -202,6 +202,31 @@
 //| break point. Needs its own ground-truth backtest -- this is a           |
 //| retrospective crosstab on the confirmed baseline's own log, not yet     |
 //| confirmed as an entry-time filter.                                      |
+//| effRatio= / htfAligned= / atrExpansion= (diagnostic only, no trading    |
+//| effect): three independent candidates for detecting a persistent        |
+//| one-way move at entry time, motivated by live trading on 2026.09.28 and |
+//| 2026.10.02 where multiple models (different timeframes, same fade       |
+//| design) entered within minutes of each other and lost together during   |
+//| a sustained directional move -- i.e. the "diversification" across       |
+//| timeframes breaks down exactly during these events. ADX size and MA-    |
+//| slope size (see SlopeFilterTrendBullDeg/adxRiseDiff above) did NOT      |
+//| predict this for FADE_BEAR_OS -- if anything strong momentum into the   |
+//| oversold/overbought extreme predicted a BETTER outcome there (comes off |
+//| as capitulation/exhaustion, not persistence) -- so these three measure  |
+//| different things than raw momentum size:                                |
+//|  - effRatio: Kaufman Efficiency Ratio over EfficiencyRatioPeriod (30)    |
+//|    bars on the main Timeframe -- |net move|/sum(|bar-to-bar moves|).     |
+//|    Near 1.0 = a clean one-way run with little back-and-forth; near 0 =   |
+//|    pure chop. Distinguishes HOW a move got there, not just how far/fast. |
+//|  - htfAligned: true when the most recently closed HigherTFForTrend       |
+//|    (default H1) candle is ITSELF a BB20/BB4 breakout candle in the same  |
+//|    direction as this M2 signal -- i.e. confirmed on a slower timeframe,  |
+//|    not just a local M2 wiggle.                                           |
+//|  - atrExpansion: current HigherTFForTrend ATR(ATRPeriod) divided by its  |
+//|    own ATRAvgPeriod-bar average -- >1 means today's volatility regime is |
+//|    expanding above its recent norm (candidate "trend day" flag).         |
+//| No backtest yet for any of the three -- all new log fields, nothing to   |
+//| cross-reference in an existing log.                                      |
 //| CIRCUIT_BREAKER_TRIGGERED / CIRCUIT_BREAKER_(WOULD_)SKIP (diagnostic   |
 //| always on; UseCircuitBreaker ACTS): after CircuitBreakerLossCount      |
 //| consecutive LOSS outcomes (any tag), pauses new entries for            |
@@ -389,6 +414,12 @@ input double SlopeSimExpiryHours = 6.0;  // MA slope diagnostic: simulation expi
 input double SlopeFilterTrendBullDeg = 3.0; // Opposing BB20 slope (deg, SlopeLookbackBars) that blocks a TREND_BULL entry (UNTESTED, see header)
 input bool   UseSlopeFilterTrendBull = false; // Skip TREND_BULL entry if opposing slope exceeds SlopeFilterTrendBullDeg (UNTESTED, see header)
 
+input int    EfficiencyRatioPeriod = 30; // Kaufman Efficiency Ratio lookback, Timeframe bars (diagnostic, no trading effect)
+
+input ENUM_TIMEFRAMES HigherTFForTrend = PERIOD_H1; // Higher timeframe for HTF BB alignment + ATR expansion (diagnostic, no trading effect)
+input int    ATRPeriod          = 14;    // ATR period on HigherTFForTrend (diagnostic, no trading effect)
+input int    ATRAvgPeriod       = 20;    // Bars to average ATR over, on HigherTFForTrend (diagnostic, no trading effect)
+
 input bool   IgnoreStochastic   = false; // Bypass Stochastic decision entirely (UNTESTED, see header)
 
 input int    CircuitBreakerLossCount    = 2;    // Consecutive losses that trigger a pause
@@ -418,6 +449,7 @@ input bool   UseComboExit       = true; // Close only when BOTH threeBarOneWay A
 input bool   SkipFadeBearOSWickTouch = true; // Skip FADE_BEAR_OS wick-only touches (CONFIRMED, see header)
 
 int hBB20=INVALID_HANDLE,hBB4=INVALID_HANDLE,hStoch=INVALID_HANDLE,hADX=INVALID_HANDLE,hADXM2=INVALID_HANDLE;
+int hBB20_HTF=INVALID_HANDLE,hBB4_HTF=INVALID_HANDLE,hATR_HTF=INVALID_HANDLE;
 datetime last_m2_bar=0;
 int f_log=INVALID_HANDLE;
 
@@ -513,6 +545,30 @@ bool   g_trackPrior5Same[TRACK_SLOTS];
 //    (hADXM2), distinct from UseTrendFilter's M15 one (hADX).
 double g_lastAdxRiseDiff=0; bool g_lastAdxRiseKnown=false; // transient handoff, set right before OpenTrade()
 double g_trackAdxRiseDiff[TRACK_SLOTS]; bool g_trackAdxRiseKnown[TRACK_SLOTS];
+
+// -- Kaufman Efficiency Ratio tracking (diagnostic only, no trading effect):
+//    ER = |net move over EfficiencyRatioPeriod bars| / sum(|bar-to-bar moves|)
+//    over the same bars, on the main Timeframe. ER near 1.0 = a clean,
+//    one-way directional run (little back-and-forth); ER near 0 = pure
+//    chop. Tests whether entering a fade when the market is already running
+//    efficiently in one direction predicts a worse outcome. ----------------
+double g_lastEffRatio=0; bool g_lastEffRatioKnown=false;
+double g_trackEffRatio[TRACK_SLOTS]; bool g_trackEffRatioKnown[TRACK_SLOTS];
+
+// -- higher-timeframe BB breakout alignment tracking (diagnostic only, no
+//    trading effect): true when the most recently closed HigherTFForTrend
+//    candle is ITSELF a BB20/BB4 breakout candle in the same direction as
+//    the M2 signal -- i.e. the move is confirmed on a slower timeframe too,
+//    not just a local M2 wiggle. -------------------------------------------
+bool g_lastHtfAligned=false; bool g_lastHtfKnown=false;
+bool g_trackHtfAligned[TRACK_SLOTS]; bool g_trackHtfKnown[TRACK_SLOTS];
+
+// -- ATR expansion ratio tracking (diagnostic only, no trading effect):
+//    current HigherTFForTrend ATR(ATRPeriod) divided by its own average
+//    over the last ATRAvgPeriod bars -- >1 means volatility is currently
+//    expanding above its recent norm (a possible "trend day" regime). -----
+double g_lastAtrExpansion=0; bool g_lastAtrKnown=false;
+double g_trackAtrExpansion[TRACK_SLOTS]; bool g_trackAtrKnown[TRACK_SLOTS];
 
 // -- opposite-signal tracking (diagnostic, always on; ACTS only if
 //    UseOppositeSignalExit=true AND reached75=true for that slot) ----------
@@ -646,6 +702,9 @@ void StartMAETracking(ulong ticket,double entry,double R,int dir,string tag)
    g_trackBodyTouch[i]=g_lastBodyTouch;
    g_trackPrior5Same[i]=g_lastPrior5Same;
    g_trackAdxRiseDiff[i]=g_lastAdxRiseDiff; g_trackAdxRiseKnown[i]=g_lastAdxRiseKnown;
+   g_trackEffRatio[i]=g_lastEffRatio; g_trackEffRatioKnown[i]=g_lastEffRatioKnown;
+   g_trackHtfAligned[i]=g_lastHtfAligned; g_trackHtfKnown[i]=g_lastHtfKnown;
+   g_trackAtrExpansion[i]=g_lastAtrExpansion; g_trackAtrKnown[i]=g_lastAtrKnown;
 }
 
 // Called from CheckNewM2Bar with the new bar's raw breakout direction
@@ -1120,6 +1179,56 @@ void CheckNewM2Bar()
       }
    }
 
+   // Kaufman Efficiency Ratio over the last EfficiencyRatioPeriod closed bars
+   // (shift 1 .. shift 1+EfficiencyRatioPeriod) on the main Timeframe.
+   double effRatio=0; bool effRatioKnown=false;
+   {
+      double closes[];
+      ArraySetAsSeries(closes,true);
+      int got=CopyClose(_Symbol,Timeframe,1,EfficiencyRatioPeriod+1,closes);
+      if(got==EfficiencyRatioPeriod+1)
+      {
+         double netMove=MathAbs(closes[0]-closes[EfficiencyRatioPeriod]);
+         double sumMove=0;
+         for(int k=0;k<EfficiencyRatioPeriod;k++) sumMove+=MathAbs(closes[k]-closes[k+1]);
+         if(sumMove>0){ effRatio=netMove/sumMove; effRatioKnown=true; }
+      }
+   }
+
+   // Higher-timeframe BB breakout alignment: is the most recently closed
+   // HigherTFForTrend candle ITSELF a BB20/BB4 breakout in the same
+   // direction as this M2 signal?
+   bool htfAligned=false; bool htfKnown=false;
+   {
+      double h_o=iOpen(_Symbol,HigherTFForTrend,1), h_h=iHigh(_Symbol,HigherTFForTrend,1);
+      double h_l=iLow(_Symbol,HigherTFForTrend,1),  h_c=iClose(_Symbol,HigherTFForTrend,1);
+      double hup20[1],hlo20[1],hup4[1],hlo4[1];
+      if(h_o!=0 && CopyBuffer(hBB20_HTF,1,1,1,hup20)==1 && CopyBuffer(hBB20_HTF,2,1,1,hlo20)==1 &&
+         CopyBuffer(hBB4_HTF,1,1,1,hup4)==1 && CopyBuffer(hBB4_HTF,2,1,1,hlo4)==1)
+      {
+         htfKnown=true;
+         if(sigdir==+1) htfAligned=(h_c>h_o && h_h>=hup20[0] && h_h>=hup4[0]);
+         else           htfAligned=(h_c<h_o && h_l<=hlo20[0] && h_l<=hlo4[0]);
+      }
+   }
+
+   // ATR expansion ratio: current HigherTFForTrend ATR vs its own average
+   // over the last ATRAvgPeriod bars.
+   double atrExpansion=0; bool atrKnown=false;
+   {
+      double atrBuf[];
+      ArraySetAsSeries(atrBuf,true);
+      int got=CopyBuffer(hATR_HTF,0,1,ATRAvgPeriod,atrBuf);
+      if(got==ATRAvgPeriod)
+      {
+         double curATR=atrBuf[0];
+         double sumATR=0;
+         for(int k=0;k<ATRAvgPeriod;k++) sumATR+=atrBuf[k];
+         double avgATR=sumATR/ATRAvgPeriod;
+         if(avgATR>0){ atrExpansion=curATR/avgATR; atrKnown=true; }
+      }
+   }
+
    double R=MathAbs(c-o);
    double minR=MathMax(_Point,MinR_Points*_Point);
    if(R<=minR){ Log("SIGNAL_SKIPPED","R too small"); return; }
@@ -1239,6 +1348,9 @@ void CheckNewM2Bar()
    g_lastBodyTouch=bodyTouch;
    g_lastPrior5Same=prior5Same;
    g_lastAdxRiseDiff=adxRiseDiff; g_lastAdxRiseKnown=adxRiseKnown;
+   g_lastEffRatio=effRatio; g_lastEffRatioKnown=effRatioKnown;
+   g_lastHtfAligned=htfAligned; g_lastHtfKnown=htfKnown;
+   g_lastAtrExpansion=atrExpansion; g_lastAtrKnown=atrKnown;
 
    if(!IgnoreStochastic) tag=tag+"K"+IntegerToString((int)MathRound(stochK)); // comment length: keep short, MT5 caps at 31 chars
 
@@ -1255,7 +1367,11 @@ int OnInit()
    hStoch=iStochastic(_Symbol,Timeframe,StochK_Period,StochD_Period,StochSlowing,MODE_LWMA,STO_LOWHIGH);
    hADX=iADX(_Symbol,TrendFilterTimeframe,ADXPeriod);
    hADXM2=iADX(_Symbol,Timeframe,ADXPeriod);
-   if(hBB20==INVALID_HANDLE || hBB4==INVALID_HANDLE || hStoch==INVALID_HANDLE || hADX==INVALID_HANDLE || hADXM2==INVALID_HANDLE) return INIT_FAILED;
+   hBB20_HTF=iBands(_Symbol,HigherTFForTrend,20,0,2.0,PRICE_CLOSE);
+   hBB4_HTF =iBands(_Symbol,HigherTFForTrend,4,0,4.0,PRICE_OPEN);
+   hATR_HTF =iATR(_Symbol,HigherTFForTrend,ATRPeriod);
+   if(hBB20==INVALID_HANDLE || hBB4==INVALID_HANDLE || hStoch==INVALID_HANDLE || hADX==INVALID_HANDLE || hADXM2==INVALID_HANDLE ||
+      hBB20_HTF==INVALID_HANDLE || hBB4_HTF==INVALID_HANDLE || hATR_HTF==INVALID_HANDLE) return INIT_FAILED;
 
    f_log=FileOpen("XAU_M2_BB_LIVE_001_STOCH_v2_LOG.csv",FILE_READ|FILE_WRITE|FILE_CSV|FILE_ANSI|FILE_SHARE_READ,',');
    if(f_log!=INVALID_HANDLE)
@@ -1284,6 +1400,8 @@ int OnInit()
        " | SlopeLookbackBars="+IntegerToString(SlopeLookbackBars)+" SlopeThresholdDeg="+DoubleToString(SlopeThresholdDeg,1)+
        " SlopeSimTargetR="+DoubleToString(SlopeSimTargetR,2)+" SlopeSimExpiryHours="+DoubleToString(SlopeSimExpiryHours,1)+
        " | SlopeFilterTrendBullDeg="+DoubleToString(SlopeFilterTrendBullDeg,1)+" UseSlopeFilterTrendBull="+(UseSlopeFilterTrendBull?"true":"false")+
+       " | EfficiencyRatioPeriod="+IntegerToString(EfficiencyRatioPeriod)+
+       " | HigherTFForTrend="+EnumToString(HigherTFForTrend)+" ATRPeriod="+IntegerToString(ATRPeriod)+" ATRAvgPeriod="+IntegerToString(ATRAvgPeriod)+
        " | IgnoreStochastic="+(IgnoreStochastic?"true":"false")+
        " | CircuitBreakerLossCount="+IntegerToString(CircuitBreakerLossCount)+
        " CircuitBreakerCooldownHours="+DoubleToString(CircuitBreakerCooldownHours,1)+
@@ -1312,6 +1430,9 @@ void OnDeinit(const int reason)
    if(hStoch!=INVALID_HANDLE) IndicatorRelease(hStoch);
    if(hADX!=INVALID_HANDLE) IndicatorRelease(hADX);
    if(hADXM2!=INVALID_HANDLE) IndicatorRelease(hADXM2);
+   if(hBB20_HTF!=INVALID_HANDLE) IndicatorRelease(hBB20_HTF);
+   if(hBB4_HTF!=INVALID_HANDLE) IndicatorRelease(hBB4_HTF);
+   if(hATR_HTF!=INVALID_HANDLE) IndicatorRelease(hATR_HTF);
 }
 
 void OnTick()
@@ -1362,6 +1483,9 @@ void OnTradeTransaction(const MqlTradeTransaction &trans,const MqlTradeRequest &
        " touch="+(g_trackBodyTouch[i]?"BODY":"WICK")+
        " prior5Same="+(g_trackPrior5Same[i]?"true":"false")+
        " adxRiseDiff="+(g_trackAdxRiseKnown[i]?DoubleToString(g_trackAdxRiseDiff[i],2):"n/a")+
+       " effRatio="+(g_trackEffRatioKnown[i]?DoubleToString(g_trackEffRatio[i],3):"n/a")+
+       " htfAligned="+(!g_trackHtfKnown[i]?"n/a":(g_trackHtfAligned[i]?"true":"false"))+
+       " atrExpansion="+(g_trackAtrKnown[i]?DoubleToString(g_trackAtrExpansion[i],3):"n/a")+
        " | "+g_trackTag[i]);
    g_trackTicket[i]=0; // free slot
    g_waitingFirstBar[i]=false;
