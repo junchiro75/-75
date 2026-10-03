@@ -30,3 +30,4 @@ SkipHourAEntry=true
 SkipHourBStartKST=16
 SkipHourBEndKST=18
 SkipHourBEntry=true
+UseFridayNarrowWindow=false

@@ -256,6 +256,7 @@ input bool SkipHourAEntry=true; // Block entries in [SkipHourAStartKST,SkipHourA
 input int  SkipHourBStartKST=16; // Hour-dip B window start, KST (see header, SkipHourBEntry)
 input int  SkipHourBEndKST=18; // Hour-dip B window end, KST, exclusive (see header, SkipHourBEntry)
 input bool SkipHourBEntry=true; // Block entries in [SkipHourBStartKST,SkipHourBEndKST) KST (CONFIRMED, see header)
+input bool UseFridayNarrowWindow=false; // On Friday, only allow entries 10:30-15:00 KST (ported from 001 M2_v2 where CONFIRMED; UNTESTED here, see header -- this model already has its own SkipFridayNightEntry/SkipTuesdayEntry findings)
 
 int h20=INVALID_HANDLE,h4=INVALID_HANDLE;
 datetime lastbar=0;
@@ -484,6 +485,24 @@ void KST_HourDow(datetime server_now,int &hour,int &dow)
    hour=t.hour; dow=t.day_of_week; // 0=Sunday...6=Saturday
 }
 
+// -- Friday narrow-window filter, ported from XAU_M2_BB_LIVE_001_STOCH_v2
+//    (CONFIRMED there: NET +10.6% vs baseline, +$202.40 vs an all-day
+//    Friday block, same WR/MaxDD, on the 001 M2 signal). Only allow entries
+//    in 10:30-15:00 KST on Friday; every other day is unaffected. UNTESTED
+//    on this M10 extension/pullback signal, which already has its own
+//    confirmed SkipFridayNightEntry (weekend-gap) and SkipTuesdayEntry
+//    (worst day here is Tuesday, not Friday) findings -- needs its own
+//    ground-truth backtest and may simply not matter given those. ---------
+bool InFridayNarrowAllowedWindowKST(datetime server_now)
+{
+   int kstHour,kstDow; KST_HourDow(server_now,kstHour,kstDow);
+   if(kstDow!=5) return true; // not Friday
+   int offsetHours=IsEUDST(server_now)?6:7;
+   MqlDateTime t; TimeToStruct(server_now+offsetHours*3600,t);
+   int minOfDay=t.hour*60+t.min;
+   return (minOfDay>=630 && minOfDay<900); // 10:30-15:00
+}
+
 bool SendEntry(int i,MqlTick &tk){
  ulong old; if(OwnPosition(old)){DS(i);return false;} // strict own-Magic MAX1; consume setup
  int dir=-S[i].sd; double R=S[i].R;
@@ -524,6 +543,10 @@ bool SendEntry(int i,MqlTick &tk){
  }
  if(inHourB && SkipHourBEntry){
   Log("SIGNAL_SKIPPED","KST hour in ["+IntegerToString(SkipHourBStartKST)+","+IntegerToString(SkipHourBEndKST)+") by SkipHourBEntry=true");
+  DS(i);return false;
+ }
+ if(UseFridayNarrowWindow && !InFridayNarrowAllowedWindowKST(nowT)){
+  Log("SIGNAL_SKIPPED","Entry blocked by UseFridayNarrowWindow (Friday, outside 10:30-15:00 KST)");
   DS(i);return false;
  }
 
@@ -778,7 +801,13 @@ int OnInit(){
      " | FridayNightCutoffHour="+IntegerToString(FridayNightCutoffHour)+
      " SkipFridayNightEntry="+(SkipFridayNightEntry?"true":"false")+
      " | EntryFromNthSignal="+IntegerToString(EntryFromNthSignal)+
-     " SkipEarlySignalsInStreak="+(SkipEarlySignalsInStreak?"true":"false")+" | Lots="+DoubleToString(Lots,2)+
+     " SkipEarlySignalsInStreak="+(SkipEarlySignalsInStreak?"true":"false")+
+     " | SkipTuesdayEntry="+(SkipTuesdayEntry?"true":"false")+
+     " | SkipHourAStartKST="+IntegerToString(SkipHourAStartKST)+" SkipHourAEndKST="+IntegerToString(SkipHourAEndKST)+
+     " SkipHourAEntry="+(SkipHourAEntry?"true":"false")+
+     " | SkipHourBStartKST="+IntegerToString(SkipHourBStartKST)+" SkipHourBEndKST="+IntegerToString(SkipHourBEndKST)+
+     " SkipHourBEntry="+(SkipHourBEntry?"true":"false")+
+     " | UseFridayNarrowWindow="+(UseFridayNarrowWindow?"true":"false")+" | Lots="+DoubleToString(Lots,2)+
      " | Magic="+IntegerToString((int)MagicNumber)+" | orders="+(EnableLiveOrders?"ENABLED":"DRY"));
  Log("NOTE","EXIT: +0.5R whole-position SL -> +0.25R; +1.0R close half; runner +0.25R; final signal-close opposite 0.90R");
  return INIT_SUCCEEDED;
