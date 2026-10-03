@@ -92,6 +92,18 @@
 //| plus the same faster-MAX1-turnover harm seen in every other rejected   |
 //| early-exit idea here. A 1-candle bar is too early a checkpoint for     |
 //| this signal; only the surgical threeBarOneWay+danger combo survives.   |
+//| nextBarOppose/UseNextBarOpposeExit (UNTESTED): a variant of             |
+//| firstBarOneWay/UseFirstBarExit above, but using the next bar's own      |
+//| CANDLE COLOR (close vs open) instead of its high/low EXTREME vs entry   |
+//| price -- e.g. for a SELL, did the very next bar simply close green,     |
+//| regardless of whether price ever ticked favorably first. Applied to ALL |
+//| four tags (TREND_BULL, TREND_BEAR, FADE_BULL_OB, FADE_BEAR_OS), unlike  |
+//| UseFirstBarExit which only covered TREND_BULL/FADE_BEAR_OS. Given       |
+//| UseFirstBarExit's rejection mechanism (cutting off recovery for the     |
+//| 78-82% of flagged trades that would have eventually won) was about      |
+//| checking too early, not about which exact condition was used, this is   |
+//| likely to fail the same way -- but it covers two tags (TREND_BEAR,      |
+//| FADE_BULL_OB) never tested this way before, so it isn't assumed.        |
 //| ComboExitDangerMin/UseComboExit (CONFIRMED=10min/true): an AND of the  |
 //| two ideas above instead of either alone -- only closes when a         |
 //| position is BOTH threeBarOneWay=true AND has spent ComboExitDangerMin |
@@ -443,6 +455,8 @@ input bool   UseThreeBarExit    = false; // Close position if never profitable i
 
 input bool   UseFirstBarExit    = false; // Close TREND_BULL/FADE_BEAR_OS position if firstBarOneWay=true (REJECTED, see header)
 
+input bool   UseNextBarOpposeExit = false; // Close any position if the next bar's candle color opposes trade direction (UNTESTED, see header)
+
 input double ComboExitDangerMin = 10.0; // Danger-zone minutes required, combined with threeBarOneWay (CONFIRMED, see header)
 input bool   UseComboExit       = true; // Close only when BOTH threeBarOneWay AND ComboExitDangerMin are met (CONFIRMED, see header)
 
@@ -490,6 +504,18 @@ string g_trackTag[TRACK_SLOTS];
 // opposite-direction bar predicts a one-way move into the stop.
 bool   g_waitingFirstBar[TRACK_SLOTS];
 bool   g_firstBarKnown[TRACK_SLOTS], g_firstBarOneWay[TRACK_SLOTS];
+
+// -- next-bar-closes-opposite (diagnostic always on; UseNextBarOpposeExit
+//    ACTS): different from firstBarOneWay above -- that one compares the
+//    bar's high/low EXTREME against the entry price (did price ever tick
+//    favorably). This instead looks at the bar's own CANDLE COLOR (close
+//    vs open), independent of where it sits relative to entry: for a BUY,
+//    did the very next bar close red (bearish candle)? For a SELL, did it
+//    close green? Applied to all four tags (TREND_BULL, TREND_BEAR,
+//    FADE_BULL_OB, FADE_BEAR_OS), unlike UseFirstBarExit above which only
+//    covers TREND_BULL/FADE_BEAR_OS. ------------------------------------
+bool   g_waitingNextBar[TRACK_SLOTS];
+bool   g_nextBarKnown[TRACK_SLOTS], g_nextBarOppose[TRACK_SLOTS];
 
 // -- first-3-bars-after-entry direction (diagnostic only) --------------------
 // Extends the above over the entry candle plus the next 2 (3 candles total):
@@ -691,6 +717,7 @@ void StartMAETracking(ulong ticket,double entry,double R,int dir,string tag)
    g_trackTicket[i]=ticket; g_trackEntry[i]=entry; g_trackR[i]=R; g_trackDir[i]=dir;
    g_reached50[i]=false; g_reached75[i]=false; g_trackTag[i]=tag;
    g_waitingFirstBar[i]=true; g_firstBarKnown[i]=false; g_firstBarOneWay[i]=false;
+   g_waitingNextBar[i]=true; g_nextBarKnown[i]=false; g_nextBarOppose[i]=false;
    g_waitingBar3[i]=true; g_bar3Count[i]=0; g_bar3Extreme[i]=0; g_bar3Known[i]=false; g_bar3OneWay[i]=false;
    g_comboExited[i]=false;
    g_trackBandLevel[i]=g_lastBandLevel; g_bandReentered[i]=false;
@@ -1107,6 +1134,30 @@ void CheckNewM2Bar()
 
    for(int i=0;i<TRACK_SLOTS;i++)
    {
+      if(!g_waitingNextBar[i]) continue;
+      // Candle color of this just-closed bar, independent of entry price:
+      // for a BUY, opposing = bearish candle (c<o); for a SELL, opposing =
+      // bullish candle (c>o).
+      g_nextBarOppose[i]=(g_trackDir[i]==+1) ? (c<o) : (c>o);
+      g_nextBarKnown[i]=true;
+      g_waitingNextBar[i]=false;
+
+      if(UseNextBarOpposeExit && g_nextBarOppose[i] && PositionSelectByTicket(g_trackTicket[i]))
+      {
+         double profit=PositionGetDouble(POSITION_PROFIT);
+         if(!EnableLiveOrders)
+            Log("NEXT_BAR_OPPOSE_EXIT_DRY","ticket="+IntegerToString((int)g_trackTicket[i])+
+                " profit="+DoubleToString(profit,2)+" (would close, EnableLiveOrders=false) | "+g_trackTag[i]);
+         else if(trade.PositionClose(g_trackTicket[i]))
+            Log("NEXT_BAR_OPPOSE_EXIT_CLOSE","ticket="+IntegerToString((int)g_trackTicket[i])+
+                " profit="+DoubleToString(profit,2)+" | "+g_trackTag[i]);
+         else
+            Log("NEXT_BAR_OPPOSE_EXIT_FAIL",IntegerToString((int)trade.ResultRetcode())+" | "+trade.ResultRetcodeDescription());
+      }
+   }
+
+   for(int i=0;i<TRACK_SLOTS;i++)
+   {
       if(!g_waitingBar3[i]) continue;
       if(g_bar3Count[i]==0) g_bar3Extreme[i]=(g_trackDir[i]==+1 ? h : l);
       else g_bar3Extreme[i]=(g_trackDir[i]==+1 ? MathMax(g_bar3Extreme[i],h) : MathMin(g_bar3Extreme[i],l));
@@ -1415,6 +1466,7 @@ int OnInit()
        " UseDangerTimeStop="+(UseDangerTimeStop?"true":"false")+
        " | UseThreeBarExit="+(UseThreeBarExit?"true":"false")+
        " | UseFirstBarExit="+(UseFirstBarExit?"true":"false")+
+       " | UseNextBarOpposeExit="+(UseNextBarOpposeExit?"true":"false")+
        " | ComboExitDangerMin="+DoubleToString(ComboExitDangerMin,1)+" UseComboExit="+(UseComboExit?"true":"false")+
        " | SkipFadeBearOSWickTouch="+(SkipFadeBearOSWickTouch?"true":"false")+
        " | Lots="+DoubleToString(Lots,2)+" | Magic="+IntegerToString((int)MagicNumber)+
@@ -1464,11 +1516,12 @@ void OnTradeTransaction(const MqlTradeTransaction &trans,const MqlTradeRequest &
                  HistoryDealGetDouble(trans.deal,DEAL_COMMISSION);
    string outcome=(profit>0?"WIN":"LOSS");
    string firstBarStr=(!g_firstBarKnown[i] ? "unknown" : (g_firstBarOneWay[i]?"true":"false"));
+   string nextBarStr=(!g_nextBarKnown[i] ? "unknown" : (g_nextBarOppose[i]?"true":"false"));
    string bar3Str=(!g_bar3Known[i] ? "unknown" : (g_bar3OneWay[i]?"true":"false"));
    string bandStr=(g_trackBandLevel[i]==0 ? "n/a(fade)" : (g_bandReentered[i]?"true":"false"));
    Log("MAE_OUTCOME","outcome="+outcome+" profit="+DoubleToString(profit,2)+
        " reached50="+(g_reached50[i]?"true":"false")+" reached75="+(g_reached75[i]?"true":"false")+
-       " firstBarOneWay="+firstBarStr+" threeBarOneWay="+bar3Str+" bandReentry="+bandStr+
+       " firstBarOneWay="+firstBarStr+" nextBarOppose="+nextBarStr+" threeBarOneWay="+bar3Str+" bandReentry="+bandStr+
        " oppSignalSeen="+(g_trackOppSignalSeen[i]?"true":"false")+
        " reachedFav50="+(g_reachedFav50[i]?"true":"false")+
        " reachedFav75="+(g_reachedFav75[i]?"true":"false")+
@@ -1489,6 +1542,7 @@ void OnTradeTransaction(const MqlTradeTransaction &trans,const MqlTradeRequest &
        " | "+g_trackTag[i]);
    g_trackTicket[i]=0; // free slot
    g_waitingFirstBar[i]=false;
+   g_waitingNextBar[i]=false;
    g_waitingBar3[i]=false;
 
    if(outcome=="LOSS")
