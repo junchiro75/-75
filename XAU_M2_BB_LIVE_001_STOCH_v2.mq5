@@ -140,7 +140,9 @@
 //| post-hoc explanatory power but, like every other pre/mid-trade signal   |
 //| tried this project, isn't strong enough to act on profitably; only      |
 //| ComboExit's surgical threeBarOneWay+danger-zone combo clears that bar.  |
-//| UseDangerWindowFilter (REJECTED) / UseFridayFilter (CONFIRMED=all day): |
+//| UseDangerWindowFilter (REJECTED) / UseFridayFilter (CONFIRMED=all day,  |
+//| but see UseFridayNarrowWindow below, which supersedes it as the live    |
+//| default):                                                                |
 //| unlike everything above (all post-entry diagnostics/exits on THIS EA's  |
 //| own signals), these are pre-entry time-of-day/day-of-week ENTRY BLOCKS  |
 //| sourced from an outside reference (a discretionary gold-trading         |
@@ -175,26 +177,40 @@
 //| (-32.0%) on n=1,444 -- combining them cuts worst-case drawdown          |
 //| substantially but at a steep NET cost, so it's a deliberate             |
 //| return-for-safety trade rather than a clear win; left off by default.   |
-//| UseFridayNarrowWindow (UNTESTED): an alternative to UseFridayFilter's   |
-//| full-day block -- instead of skipping Friday entirely, only allow       |
-//| entries in the 10:30-15:00 KST window on Friday (other days unaffected, |
-//| other Friday hours blocked). Meant to be compared directly against      |
-//| UseFridayFilter's all-day block to see whether Friday has SOME tradable |
-//| hours worth keeping rather than none.                                   |
-//| UseTradingWindowFilter (UNTESTED): the inverse framing of               |
-//| UseDangerWindowFilter -- instead of a block-list of named danger        |
-//| windows, this is a POSITIVE allow-list: only entries (all four tags)    |
-//| falling inside 10:30-15:00, 16:00-21:00, or 22:30-02:50 KST are let     |
-//| through; everything else (the gaps 02:50-10:30, 15:00-16:00,            |
-//| 21:00-22:30) is blocked. User-specified directly, not derived from the  |
-//| same outside reference as UseDangerWindowFilter -- notably it still     |
-//| blocks the 02:50-10:30 stretch (which swallows the already-REJECTED     |
-//| filter's 00:30-03:30 and 09:30-10:30 windows) but allows straight       |
-//| through the 14:00-18:00 and 20:00-22:30 windows that filter blocked.    |
-//| Needs its own ground-truth backtest; given UseDangerWindowFilter's      |
-//| block-list version didn't hold up at full-backtest scale despite a      |
-//| strong 2-week live correlation, no outcome should be assumed here       |
-//| either.                                                                  |
+//| UseFridayNarrowWindow (CONFIRMED, now the live default) vs              |
+//| UseTradingWindowFilter (REJECTED): two different "only trade some       |
+//| hours" ideas tested head-to-head against each other and against         |
+//| UseFridayFilter's all-day Friday block. UseFridayNarrowWindow allows     |
+//| Friday entries only in 10:30-15:00 KST (other days unaffected, other     |
+//| Friday hours blocked) instead of skipping Friday entirely.               |
+//| UseTradingWindowFilter is the inverse framing of UseDangerWindowFilter   |
+//| above -- a POSITIVE allow-list applied every day: only entries falling   |
+//| inside 10:30-15:00, 16:00-21:00, or 22:30-02:50 KST are let through,     |
+//| blocking the gaps 02:50-10:30, 15:00-16:00, 21:00-22:30 (notably still   |
+//| swallowing UseDangerWindowFilter's 00:30-03:30/09:30-10:30 windows but   |
+//| allowing straight through its 14:00-18:00/20:00-22:30 windows).          |
+//| Ground-truth backtest against the ComboExit-confirmed baseline (NET      |
+//| $27,148.70, WR 92.01%, PF 1.382, MaxDD $2,254.80, n=3,273) and against   |
+//| UseFridayFilter's own confirmed result (NET $29,833.29, WR 92.38%,       |
+//| PF 1.561, MaxDD $2,423.10, n=2,717):                                     |
+//|  - UseTradingWindowFilter alone: NET $16,173.30 (-40.4%), WR 91.42%,     |
+//|    PF 1.324 (WORSE than baseline), MaxDD $3,180.71 (+41.1%, WORSE on     |
+//|    every metric), n=2,157. REJECTED -- concentrating trades into fewer   |
+//|    daily windows apparently concentrates risk too (losses cluster in     |
+//|    the allowed windows rather than being diluted across the day).        |
+//|  - UseTradingWindowFilter + UseFridayFilter: NET $15,324.31 (-43.6%),    |
+//|    PF 1.422, MaxDD $2,807.20 (+24.5%), n=1,720. Also worse than either   |
+//|    filter alone -- REJECTED.                                             |
+//|  - UseFridayNarrowWindow alone: NET $30,035.69 (+10.6% vs baseline,      |
+//|    and +$202.40 better than UseFridayFilter's own all-day block), WR     |
+//|    92.30%, PF 1.541, MaxDD $2,423.10 (identical to UseFridayFilter's     |
+//|    own MaxDD -- the worst drawdown period apparently doesn't involve     |
+//|    Friday trading either way), n=2,807 (keeps 90 more trades than the    |
+//|    all-day block). A clean improvement over the already-confirmed        |
+//|    all-day block on every metric except a very slightly lower PF, so     |
+//|    CONFIRMED and promoted to the new live default in place of            |
+//|    UseFridayFilter (left in place, now off by default, for reference/    |
+//|    future comparison -- the two are meant as alternatives, not combined).|
 //| ComboExitDangerMin/UseComboExit (CONFIRMED=10min/true): an AND of the  |
 //| two ideas above instead of either alone -- only closes when a         |
 //| position is BOTH threeBarOneWay=true AND has spent ComboExitDangerMin |
@@ -503,11 +519,11 @@ input int    AsiaSessionEndHour   = 16;  // Asia-session skip window end hour, K
 input bool   ReverseTrendBearAsiaSession = false; // Reverse TREND_BEAR in Asia session to BUY (UNTESTED, see header)
 input int    MaxMinutesWithoutProgress = 0; // Close position after N min regardless of P&L, 0=disabled (UNTESTED, see header)
 
-input bool   UseTradingWindowFilter = false; // Only allow new entries during 10:30-15:00/16:00-21:00/22:30-02:50 KST (UNTESTED, see header)
+input bool   UseTradingWindowFilter = false; // Only allow new entries during 10:30-15:00/16:00-21:00/22:30-02:50 KST (REJECTED, see header)
 input bool   UseDangerWindowFilter = false; // Block new entries (all tags) during 5 KST session-transition windows (REJECTED, see header)
-input bool   UseFridayFilter    = true; // Block new entries (all tags) on Friday from FridayFilterFromHourKST onward (CONFIRMED, see header)
-input int    FridayFilterFromHourKST = 0; // Hour (KST) from which Friday entries are blocked when UseFridayFilter=true (0 = all day Friday) (CONFIRMED, see header)
-input bool   UseFridayNarrowWindow = false; // Alternative to UseFridayFilter: on Friday, only allow entries 10:30-15:00 KST, other days unaffected (UNTESTED, see header)
+input bool   UseFridayFilter    = false; // Block new entries (all tags) on Friday from FridayFilterFromHourKST onward (SUPERSEDED by UseFridayNarrowWindow, see header)
+input int    FridayFilterFromHourKST = 0; // Hour (KST) from which Friday entries are blocked when UseFridayFilter=true (0 = all day Friday)
+input bool   UseFridayNarrowWindow = true; // Alternative to UseFridayFilter: on Friday, only allow entries 10:30-15:00 KST, other days unaffected (CONFIRMED, see header)
 input bool   UseTrendFilter     = false; // Skip entry if opposing trend on higher TF (REJECTED, see header)
 input ENUM_TIMEFRAMES TrendFilterTimeframe = PERIOD_M15; // Higher timeframe for UseTrendFilter
 input int    ADXPeriod          = 14;    // ADX period for UseTrendFilter
