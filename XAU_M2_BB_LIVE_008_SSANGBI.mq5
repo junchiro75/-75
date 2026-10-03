@@ -1,66 +1,64 @@
 //+------------------------------------------------------------------+
 //| XAU_M2_BB_LIVE_008_SSANGBI.mq5                                    |
-//| First mechanical attempt at "쌍비" (double-bottom/double-top at a  |
-//| band level) from a discretionary gold-trading reference document   |
-//| reviewed this project (주노짜앙/지킬 공통분석). Unlike every other    |
-//| strategy in this project (001/005/007), this is a completely NEW,  |
-//| STANDALONE entry signal -- not a filter or exit bolted onto the     |
-//| existing BB20+BB4 trend/fade logic.                                 |
+//| Mechanical "쌍비" (double-bottom/double-top) entry strategy, first  |
+//| from a discretionary gold-trading reference document reviewed      |
+//| this project (주노짜앙/지킬 공통분석), now redesigned (v3) after a    |
+//| TradingView Pine Script reference ("W/M REVERSAL + MULTI BB + 1M   |
+//| SSANGBI PRESET") the user shared turned up two structural gaps in   |
+//| v1/v2. Standalone entry signal -- not a filter/exit bolted onto     |
+//| 001's existing BB20+BB4 trend/fade logic.                           |
 //|                                                                     |
-//| Concept (from the reference document): "쌍비 = 매물(원비·더블비)에서  |
-//| 바닥·꼭대기를 두 번 찍은 자리(W·M)를 짧게 먹는 매매" -- price touches a  |
-//| band level once, bounces away, comes back to RETEST roughly the     |
-//| same level a second time, and the entry is taken on that SECOND     |
-//| touch's reversal confirmation, not the first.                       |
+//| v1 (fixed points): n=6,773, WR 37.47%, NET -$12,477.64, PF 0.876,   |
+//| MaxDD $12,744.30. REJECTED -- root cause: gold moved ~$2,600 to     |
+//| ~$4,100 (+58%) over the backtest window, so fixed-point thresholds  |
+//| were badly miscalibrated; the SL floor also dominated almost every  |
+//| trade, so the intended "tight structural stop" never actually       |
+//| governed sizing.                                                    |
+//| v2 (ATR-relative sizing, same shape logic as v1): never backtested  |
+//| separately -- superseded by v3 below once the reference script      |
+//| revealed the shape logic itself (not just the sizing) was wrong.    |
+//|                                                                     |
+//| What the reference script does differently, now adopted here:       |
+//|  1. TOUCH 1/2 must be genuine PIVOT lows/highs (price strictly       |
+//|     below/above PivotLeft bars before AND PivotRight bars after),   |
+//|     not just "any bar whose low/high crossed a band" -- v1/v2       |
+//|     treated ordinary noise wiggles as touches.                      |
+//|  2. CONFIRMATION requires a NECKLINE BREAK: the high (for a W) or    |
+//|     low (for an M) BETWEEN the two pivots must be broken by a       |
+//|     later close, not just "the second-touch bar itself closed in    |
+//|     the reversal direction" -- v1/v2 entered on a guess, not a       |
+//|     confirmed break. This was almost certainly the main missing      |
+//|     ingredient behind v1's 37% WR.                                   |
+//| Kept from this project's own design (the reference script doesn't   |
+//| anchor to a band or use Stochastic at all): pivot 1 must still sit   |
+//| at/beyond the BB20 band (the "매물대" anchor the source document      |
+//| emphasizes), and Stochastic must be oversold/overbought AT pivot 2   |
+//| (combining the band/structure condition with the momentum           |
+//| condition, per this project's own earlier design choice).           |
 //|                                                                      |
-//| v1 RESULT (REJECTED, fixed-points version): ground-truth backtest   |
-//| (2025.01-2026.10) gave n=6,773, WR 37.47%, NET -$12,477.64, PF       |
-//| 0.876, MaxDD $12,744.30 -- a clear loser, and WR well under 50%      |
-//| suggests the raw entry condition has no edge at this granularity,    |
-//| not just a sizing problem. Root cause diagnosed: the stop was        |
-//| ALMOST ALWAYS exactly at the MinStopPoints floor (150pts=$1.50),     |
-//| meaning the intended "tight structural stop at touch 2's own         |
-//| extreme" never actually governed sizing -- and gold moved from       |
-//| ~$2,600 to ~$4,100 (+58%) over the backtest window, so any FIXED     |
-//| dollar/point threshold is badly miscalibrated across that range      |
-//| (reasonable near $2,600, noise-level near $4,100). All thresholds    |
-//| below were rewritten from fixed points to ATR(ATRPeriod) multiples   |
-//| so they scale with the instrument's actual volatility regardless of  |
-//| price level. This v2 is STILL UNTESTED -- the ATR multiples below    |
-//| are a fresh first guess, not yet backtest-validated, and the raw     |
-//| edge question (does the double-touch condition predict direction at  |
-//| all) remains open regardless of sizing.                              |
+//| Mechanical definition (v3):                                          |
+//|  1. PIVOT 1: a confirmed pivot low (PivotLeft/PivotRight bars) at or  |
+//|     beyond the BB20 lower band (buy) / pivot high at or beyond the    |
+//|     BB20 upper band (sell). Start tracking the "live neckline" = the  |
+//|     highest high (buy) / lowest low (sell) seen since pivot 1.        |
+//|  2. PIVOT 2: a second confirmed pivot low/high, occurring             |
+//|     MinPatternBars-MaxPatternBars after pivot 1, within               |
+//|     ToleranceATR*ATR of pivot 1's price, AND with Stochastic          |
+//|     oversold/overbought at that bar. The neckline freezes at          |
+//|     whatever the live neckline reached by then.                       |
+//|  3. CONFIRMATION: within MaxConfirmBars after pivot 2, price must      |
+//|     CLOSE back through the frozen neckline (above it for a buy,       |
+//|     below it for a sell) -- that close is the entry trigger.          |
+//|     Invalidated if price closes beyond pivot 1's own extreme first    |
+//|     (support/resistance failed) or the window times out.              |
+//|  4. ENTRY: at market, right after the confirming bar closes.          |
+//|  5. STOP: beyond the tighter of pivot 1/pivot 2's own extreme, minus   |
+//|     SLBufferATR*ATR further, floored at MinStopATR*ATR. TARGET:       |
+//|     TP_R multiple of that stop distance (R=|entry-SL|).               |
 //|                                                                      |
-//| Mechanical definition (v2, ATR-relative):                            |
-//|  1. TOUCH 1: price (bar low) pierces the BB20 LOWER band (bull/buy   |
-//|     setup) or (bar high) pierces the BB20 UPPER band (bear/sell      |
-//|     setup). Record that extreme as the setup's reference level.      |
-//|  2. BOUNCE: within SsangbiWindowBars, price must move away from      |
-//|     that extreme by >=SsangbiMinBounceATR * ATR, confirming two      |
-//|     distinct legs (the W/M shape), not one continuous move.          |
-//|  3. If price makes a NEW, more extreme low/high before bouncing,     |
-//|     the setup re-bases to that new extreme.                          |
-//|  4. TOUCH 2: after bouncing, price returns to within                 |
-//|     SsangbiToleranceATR * ATR of the original extreme AND, on that   |
-//|     same bar, Stochastic is oversold (buy) / overbought (sell) AND   |
-//|     the bar itself closes in the reversal direction -- both the      |
-//|     band-retouch condition AND the stochastic condition must hold    |
-//|     together.                                                        |
-//|  5. ENTRY: at market, right after that confirming bar closes.        |
-//|  6. STOP: touch 2's own extreme, minus SsangbiSLBufferATR * ATR       |
-//|     further, floored at MinStopATR * ATR (so the floor itself now    |
-//|     scales with volatility instead of being a fixed, stale number).  |
-//|     TARGET: TP_R multiple of that stop distance (R=|entry-SL|).      |
-//|                                                                      |
-//| Diagnostic fields added to MAE_OUTCOME this version (bounceATR,      |
-//| gapATR, rawR_ATR, flooredR_ATR) so a losing/breakeven run can still   |
-//| be bucketed afterward to look for any sub-range with a real edge,    |
-//| rather than only being able to re-guess blindly again.                |
-//|                                                                      |
-//| Deliberately NOT yet implemented: no 매물대 multi-timeframe check,    |
-//| no session/day filters, no 더블비(BB4) confirmation on top of BB20,   |
-//| no partial exits -- keeping this isolated to the core double-touch   |
-//| shape until it shows SOME edge before layering anything else on.     |
+//| Diagnostic fields in MAE_OUTCOME (gapATR, rawR_ATR, flooredR_ATR,    |
+//| barsPivot1ToPivot2, barsPivot2ToConfirm) for bucketed tuning if this  |
+//| version still shows no edge. Still UNTESTED.                         |
 //+------------------------------------------------------------------+
 #property strict
 #include <Trade/Trade.mqh>
@@ -73,13 +71,18 @@ input double BBDev                = 2.0; // Bollinger Bands deviation
 input int    StochK_Period        = 8; // Stoch %K period
 input int    StochD_Period        = 3; // Stoch %D period
 input int    StochSlowing         = 3; // Stoch slowing
-input double StochOverbought      = 70.0; // Stoch overbought level (sell setup's touch-2 condition)
-input double StochOversold        = 30.0; // Stoch oversold level (buy setup's touch-2 condition)
+input double StochOverbought      = 70.0; // Stoch overbought level (pivot-2 condition for sell)
+input double StochOversold        = 30.0; // Stoch oversold level (pivot-2 condition for buy)
 input int    ATRPeriod            = 14; // ATR period used to scale every distance threshold below
-input int    SsangbiWindowBars    = 15; // Max bars allowed between touch 1 and touch 2
-input double SsangbiMinBounceATR  = 1.0; // Min bounce away from touch 1 before a retest counts, as ATR multiple
-input double SsangbiToleranceATR  = 1.0; // Max distance between touch 1 and touch 2 extremes, as ATR multiple
-input double SsangbiSLBufferATR   = 0.3; // Extra buffer beyond touch 2's own extreme for the stop, as ATR multiple
+input int    PivotLeft            = 2; // Bars before the pivot that must be less extreme (ported from reference preset)
+input int    PivotRight           = 1; // Bars after the pivot that must be less extreme (ported from reference preset)
+input int    MinPatternBars       = 3; // Min bars between pivot 1 and pivot 2
+input int    MaxPatternBars       = 25; // Max bars between pivot 1 and pivot 2
+input double ToleranceATR         = 0.40; // Max distance between pivot 1 and pivot 2 extremes, as ATR multiple
+input double BandAnchorATR        = 0.50; // Max distance pivot 1 may sit short of the BB20 band, as ATR multiple (0=must touch/pierce exactly)
+input int    MaxConfirmBars       = 20; // Max bars after pivot 2 to wait for the neckline break
+input double NecklineBreakBufferATR = 0.0; // Extra buffer beyond the neckline required for a break, as ATR multiple
+input double SLBufferATR          = 0.3; // Extra buffer beyond pivot 1/2's tighter extreme for the stop, as ATR multiple
 input double TP_R                 = 1.5; // Take profit as a multiple of the stop distance (R)
 input double MinStopATR           = 1.0; // Floor on the stop distance, as ATR multiple, 0=no floor
 input ulong  MagicNumber          = 95016108; // Magic number
@@ -90,20 +93,26 @@ int hBB=INVALID_HANDLE, hStoch=INVALID_HANDLE, hATR=INVALID_HANDLE;
 datetime last_bar=0;
 int f_log=INVALID_HANDLE;
 
-// -- buy (double-bottom / "W") setup state --
-bool   g_buyActive=false, g_buyBounced=false;
-double g_buyTouch1Low=0, g_buyBounceATR=0;
-int    g_buyBarsSince=0;
+// -- buy (double-bottom / "W") setup state machine --
+// stage: 0=waiting for pivot1, 1=waiting for pivot2, 2=waiting for neckline break
+int    g_buyStage=0;
+double g_buyPivot1=0, g_buyPivot2=0, g_buyNeckline=0;
+int    g_buyPivot1Bar=0, g_buyPivot2Bar=0; // bar_index-equivalent counters (ever-increasing tick of new bars)
+int    g_buyBarsSincePivot1=0, g_buyBarsSincePivot2=0;
 
-// -- sell (double-top / "M") setup state --
-bool   g_sellActive=false, g_sellBounced=false;
-double g_sellTouch1High=0, g_sellBounceATR=0;
-int    g_sellBarsSince=0;
+// -- sell (double-top / "M") setup state machine --
+int    g_sellStage=0;
+double g_sellPivot1=0, g_sellPivot2=0, g_sellNeckline=0;
+int    g_sellPivot1Bar=0, g_sellPivot2Bar=0;
+int    g_sellBarsSincePivot1=0, g_sellBarsSincePivot2=0;
+
+int    g_barCounter=0; // increments once per new bar, used as a simple bar-index clock
 
 // -- outcome tracking (one in-flight position at a time, own-Magic MAX1) --
 ulong  g_trackTicket=0;
 double g_trackEntry=0, g_trackR=0;
-double g_trackGapATR=0, g_trackBounceATR=0, g_trackRawR_ATR=0, g_trackFlooredR_ATR=0;
+double g_trackGapATR=0, g_trackRawR_ATR=0, g_trackFlooredR_ATR=0;
+int    g_trackBarsP1toP2=0, g_trackBarsP2toConfirm=0;
 int    g_trackDir=0;
 string g_trackTag="";
 
@@ -136,10 +145,33 @@ bool HasOurPosition()
    return false;
 }
 
-void ResetBuySetup(){ g_buyActive=false; g_buyBounced=false; g_buyTouch1Low=0; g_buyBarsSince=0; g_buyBounceATR=0; }
-void ResetSellSetup(){ g_sellActive=false; g_sellBounced=false; g_sellTouch1High=0; g_sellBarsSince=0; g_sellBounceATR=0; }
+void ResetBuySetup(){ g_buyStage=0; g_buyPivot1=0; g_buyPivot2=0; g_buyNeckline=0; g_buyBarsSincePivot1=0; g_buyBarsSincePivot2=0; }
+void ResetSellSetup(){ g_sellStage=0; g_sellPivot1=0; g_sellPivot2=0; g_sellNeckline=0; g_sellBarsSincePivot1=0; g_sellBarsSincePivot2=0; }
 
-void OpenTrade(int dir,double sl,double atr,double gapATR,double bounceATR,string tag)
+// Confirmed pivot low/high at shift = PivotRight+1 relative to the bar that just closed
+// (shift 1 in iLow/iHigh terms) -- needs PivotRight bars after it (shifts 1..PivotRight)
+// and PivotLeft bars before it (shifts PivotRight+2..PivotRight+1+PivotLeft) to be confirmed.
+bool IsPivotLow(double &outLow)
+{
+   int pivotShift=1+PivotRight;
+   double val=iLow(_Symbol,Timeframe,pivotShift);
+   for(int k=1;k<=PivotRight;k++) if(iLow(_Symbol,Timeframe,pivotShift-k)<val) return false;
+   for(int k=1;k<=PivotLeft;k++)  if(iLow(_Symbol,Timeframe,pivotShift+k)<val) return false;
+   outLow=val;
+   return true;
+}
+
+bool IsPivotHigh(double &outHigh)
+{
+   int pivotShift=1+PivotRight;
+   double val=iHigh(_Symbol,Timeframe,pivotShift);
+   for(int k=1;k<=PivotRight;k++) if(iHigh(_Symbol,Timeframe,pivotShift-k)>val) return false;
+   for(int k=1;k<=PivotLeft;k++)  if(iHigh(_Symbol,Timeframe,pivotShift+k)>val) return false;
+   outHigh=val;
+   return true;
+}
+
+void OpenTrade(int dir,double sl,double atr,double gapATR,int barsP1toP2,int barsP2toConfirm,string tag)
 {
    if(HasOurPosition()){ Log("ENTRY_SKIPPED","own-Magic position already exists"); return; }
 
@@ -150,7 +182,7 @@ void OpenTrade(int dir,double sl,double atr,double gapATR,double bounceATR,strin
    if(MinStopATR>0 && atr>0 && R<MinStopATR*atr)
    {
       double need=MinStopATR*atr-R;
-      sl=sl-dir*need; // push the stop further out to meet the floor
+      sl=sl-dir*need;
       R=MathAbs(ref-sl);
    }
    double flooredR_ATR=(atr>0) ? R/atr : 0;
@@ -196,8 +228,8 @@ void OpenTrade(int dir,double sl,double atr,double gapATR,double bounceATR,strin
          if(PositionGetString(POSITION_SYMBOL)!=_Symbol) continue;
          if((ulong)PositionGetInteger(POSITION_MAGIC)!=MagicNumber) continue;
          g_trackTicket=tk; g_trackEntry=ref; g_trackR=R; g_trackDir=dir; g_trackTag=tag;
-         g_trackGapATR=gapATR; g_trackBounceATR=bounceATR;
-         g_trackRawR_ATR=rawR_ATR; g_trackFlooredR_ATR=flooredR_ATR;
+         g_trackGapATR=gapATR; g_trackRawR_ATR=rawR_ATR; g_trackFlooredR_ATR=flooredR_ATR;
+         g_trackBarsP1toP2=barsP1toP2; g_trackBarsP2toConfirm=barsP2toConfirm;
          break;
       }
    }
@@ -208,9 +240,9 @@ void CheckNewBar()
    datetime t=iTime(_Symbol,Timeframe,0);
    if(t==0 || t==last_bar) return;
    last_bar=t;
+   g_barCounter++;
 
-   double o=iOpen(_Symbol,Timeframe,1),h=iHigh(_Symbol,Timeframe,1);
-   double l=iLow(_Symbol,Timeframe,1),c=iClose(_Symbol,Timeframe,1);
+   double o=iOpen(_Symbol,Timeframe,1),c=iClose(_Symbol,Timeframe,1);
 
    double upper[1],lower[1];
    if(CopyBuffer(hBB,1,1,1,upper)!=1 || CopyBuffer(hBB,2,1,1,lower)!=1)
@@ -223,113 +255,142 @@ void CheckNewBar()
    double atrbuf[1];
    if(CopyBuffer(hATR,0,1,1,atrbuf)!=1){ Log("ATR_FAIL","no ATR value"); return; }
    double atr=atrbuf[0];
-   if(atr<=0){ return; } // can't scale thresholds without a valid ATR yet (warmup period)
+   if(atr<=0) return;
 
    bool haveOpenPos=HasOurPosition();
 
-   // ---- buy (W / double-bottom) setup ----
-   if(!g_buyActive)
+   double pivLow, pivHigh;
+   bool gotPivotLow=IsPivotLow(pivLow);
+   bool gotPivotHigh=IsPivotHigh(pivHigh);
+   // the confirmed pivot bar is PivotRight+1 bars back from the one that just closed
+   int pivotBarIndex=g_barCounter-PivotRight;
+
+   // ============================= BUY (W) =============================
+   if(g_buyStage==0)
    {
-      if(l<=lower[0])
+      if(gotPivotLow && pivLow<=lower[0]+BandAnchorATR*atr)
       {
-         g_buyActive=true; g_buyTouch1Low=l; g_buyBarsSince=0; g_buyBounced=false;
-         Log("SSANGBI_TOUCH1_BUY","low="+DoubleToString(l,_Digits)+" lowerBB="+DoubleToString(lower[0],_Digits)+" ATR="+DoubleToString(atr,_Digits));
+         g_buyStage=1; g_buyPivot1=pivLow; g_buyPivot1Bar=pivotBarIndex;
+         g_buyNeckline=iHigh(_Symbol,Timeframe,1); g_buyBarsSincePivot1=0;
+         Log("SSANGBI_PIVOT1_BUY","low="+DoubleToString(pivLow,_Digits)+" lowerBB="+DoubleToString(lower[0],_Digits));
       }
    }
-   else
+   else if(g_buyStage==1)
    {
-      g_buyBarsSince++;
-      if(g_buyBarsSince>SsangbiWindowBars)
+      g_buyBarsSincePivot1=g_barCounter-g_buyPivot1Bar;
+      if(iHigh(_Symbol,Timeframe,1)>g_buyNeckline) g_buyNeckline=iHigh(_Symbol,Timeframe,1);
+
+      if(g_buyBarsSincePivot1>MaxPatternBars){ Log("SSANGBI_EXPIRE_BUY","no pivot2 within MaxPatternBars"); ResetBuySetup(); }
+      else if(gotPivotLow && pivLow<g_buyPivot1 && (g_barCounter-PivotRight)<=g_buyPivot1Bar+MaxPatternBars)
       {
-         Log("SSANGBI_EXPIRE_BUY","barsSince="+IntegerToString(g_buyBarsSince));
-         ResetBuySetup();
+         // a new, more extreme low before pivot2 forms -- rebase pivot1 to it
+         g_buyPivot1=pivLow; g_buyPivot1Bar=pivotBarIndex; g_buyBarsSincePivot1=0;
+         g_buyNeckline=iHigh(_Symbol,Timeframe,1);
       }
-      else if(l<g_buyTouch1Low)
-      {
-         g_buyTouch1Low=l; g_buyBarsSince=0; g_buyBounced=false; // rebase to the new, lower low
-      }
-      else if(!g_buyBounced)
-      {
-         if(h>=g_buyTouch1Low+SsangbiMinBounceATR*atr)
-         {
-            g_buyBounced=true;
-            g_buyBounceATR=(h-g_buyTouch1Low)/atr;
-            Log("SSANGBI_BOUNCE_BUY","touch1Low="+DoubleToString(g_buyTouch1Low,_Digits)+" high="+DoubleToString(h,_Digits)+
-                " bounceATR="+DoubleToString(g_buyBounceATR,2));
-         }
-      }
-      else if(l<=g_buyTouch1Low+SsangbiToleranceATR*atr)
+      else if(gotPivotLow && g_buyBarsSincePivot1>=MinPatternBars &&
+              MathAbs(pivLow-g_buyPivot1)<=ToleranceATR*atr && pivotBarIndex>g_buyPivot1Bar)
       {
          bool stochOk=(stochK<=StochOversold);
-         bool closeOk=(c>o);
-         double gapATR=(l-g_buyTouch1Low)/atr;
-         Log("SSANGBI_TOUCH2_CHECK_BUY","touch1Low="+DoubleToString(g_buyTouch1Low,_Digits)+
-             " touch2Low="+DoubleToString(l,_Digits)+" gapATR="+DoubleToString(gapATR,2)+
-             " stochK="+DoubleToString(stochK,2)+" stochOk="+(stochOk?"true":"false")+" closeOk="+(closeOk?"true":"false"));
-         if(stochOk && closeOk)
+         if(stochOk)
          {
-            if(!haveOpenPos)
-            {
-               double sl=l-SsangbiSLBufferATR*atr;
-               OpenTrade(+1,sl,atr,gapATR,g_buyBounceATR,"SSANGBI_BUY");
-            }
-            else
-               Log("ENTRY_SKIPPED","SSANGBI_BUY signal but position already open");
-            ResetBuySetup();
+            g_buyPivot2=pivLow; g_buyPivot2Bar=pivotBarIndex; g_buyBarsSincePivot2=0; g_buyStage=2;
+            Log("SSANGBI_PIVOT2_BUY","pivot1="+DoubleToString(g_buyPivot1,_Digits)+" pivot2="+DoubleToString(g_buyPivot2,_Digits)+
+                " neckline="+DoubleToString(g_buyNeckline,_Digits)+" stochK="+DoubleToString(stochK,2)+
+                " barsP1toP2="+IntegerToString(g_buyPivot2Bar-g_buyPivot1Bar));
          }
+      }
+   }
+   else if(g_buyStage==2)
+   {
+      g_buyBarsSincePivot2=g_barCounter-g_buyPivot2Bar;
+      bool invalid=(c<g_buyPivot1-ToleranceATR*atr);
+      bool timeout=(g_buyBarsSincePivot2>MaxConfirmBars);
+      bool brokeNeckline=(c>g_buyNeckline+NecklineBreakBufferATR*atr);
+
+      if(invalid || timeout)
+      {
+         Log("SSANGBI_EXPIRE_BUY",(invalid?"support broken":"neckline break timeout"));
+         ResetBuySetup();
+      }
+      else if(brokeNeckline)
+      {
+         double gapATR=MathAbs(g_buyPivot2-g_buyPivot1)/atr;
+         int barsP1toP2=g_buyPivot2Bar-g_buyPivot1Bar;
+         int barsP2toConfirm=g_buyBarsSincePivot2;
+         Log("SSANGBI_NECKBREAK_BUY","neckline="+DoubleToString(g_buyNeckline,_Digits)+
+             " close="+DoubleToString(c,_Digits)+" gapATR="+DoubleToString(gapATR,2));
+         if(!haveOpenPos)
+         {
+            double sl=MathMin(g_buyPivot1,g_buyPivot2)-SLBufferATR*atr;
+            OpenTrade(+1,sl,atr,gapATR,barsP1toP2,barsP2toConfirm,"SSANGBI_BUY");
+         }
+         else
+            Log("ENTRY_SKIPPED","SSANGBI_BUY neckline break but position already open");
+         ResetBuySetup();
       }
    }
 
-   // ---- sell (M / double-top) setup ----
-   if(!g_sellActive)
+   // ============================= SELL (M) =============================
+   if(g_sellStage==0)
    {
-      if(h>=upper[0])
+      if(gotPivotHigh && pivHigh>=upper[0]-BandAnchorATR*atr)
       {
-         g_sellActive=true; g_sellTouch1High=h; g_sellBarsSince=0; g_sellBounced=false;
-         Log("SSANGBI_TOUCH1_SELL","high="+DoubleToString(h,_Digits)+" upperBB="+DoubleToString(upper[0],_Digits)+" ATR="+DoubleToString(atr,_Digits));
+         g_sellStage=1; g_sellPivot1=pivHigh; g_sellPivot1Bar=pivotBarIndex;
+         g_sellNeckline=iLow(_Symbol,Timeframe,1); g_sellBarsSincePivot1=0;
+         Log("SSANGBI_PIVOT1_SELL","high="+DoubleToString(pivHigh,_Digits)+" upperBB="+DoubleToString(upper[0],_Digits));
       }
    }
-   else
+   else if(g_sellStage==1)
    {
-      g_sellBarsSince++;
-      if(g_sellBarsSince>SsangbiWindowBars)
+      g_sellBarsSincePivot1=g_barCounter-g_sellPivot1Bar;
+      if(iLow(_Symbol,Timeframe,1)<g_sellNeckline) g_sellNeckline=iLow(_Symbol,Timeframe,1);
+
+      if(g_sellBarsSincePivot1>MaxPatternBars){ Log("SSANGBI_EXPIRE_SELL","no pivot2 within MaxPatternBars"); ResetSellSetup(); }
+      else if(gotPivotHigh && pivHigh>g_sellPivot1 && (g_barCounter-PivotRight)<=g_sellPivot1Bar+MaxPatternBars)
       {
-         Log("SSANGBI_EXPIRE_SELL","barsSince="+IntegerToString(g_sellBarsSince));
-         ResetSellSetup();
+         g_sellPivot1=pivHigh; g_sellPivot1Bar=pivotBarIndex; g_sellBarsSincePivot1=0;
+         g_sellNeckline=iLow(_Symbol,Timeframe,1);
       }
-      else if(h>g_sellTouch1High)
-      {
-         g_sellTouch1High=h; g_sellBarsSince=0; g_sellBounced=false; // rebase to the new, higher high
-      }
-      else if(!g_sellBounced)
-      {
-         if(l<=g_sellTouch1High-SsangbiMinBounceATR*atr)
-         {
-            g_sellBounced=true;
-            g_sellBounceATR=(g_sellTouch1High-l)/atr;
-            Log("SSANGBI_BOUNCE_SELL","touch1High="+DoubleToString(g_sellTouch1High,_Digits)+" low="+DoubleToString(l,_Digits)+
-                " bounceATR="+DoubleToString(g_sellBounceATR,2));
-         }
-      }
-      else if(h>=g_sellTouch1High-SsangbiToleranceATR*atr)
+      else if(gotPivotHigh && g_sellBarsSincePivot1>=MinPatternBars &&
+              MathAbs(pivHigh-g_sellPivot1)<=ToleranceATR*atr && pivotBarIndex>g_sellPivot1Bar)
       {
          bool stochOk=(stochK>=StochOverbought);
-         bool closeOk=(c<o);
-         double gapATR=(g_sellTouch1High-h)/atr;
-         Log("SSANGBI_TOUCH2_CHECK_SELL","touch1High="+DoubleToString(g_sellTouch1High,_Digits)+
-             " touch2High="+DoubleToString(h,_Digits)+" gapATR="+DoubleToString(gapATR,2)+
-             " stochK="+DoubleToString(stochK,2)+" stochOk="+(stochOk?"true":"false")+" closeOk="+(closeOk?"true":"false"));
-         if(stochOk && closeOk)
+         if(stochOk)
          {
-            if(!haveOpenPos)
-            {
-               double sl=h+SsangbiSLBufferATR*atr;
-               OpenTrade(-1,sl,atr,gapATR,g_sellBounceATR,"SSANGBI_SELL");
-            }
-            else
-               Log("ENTRY_SKIPPED","SSANGBI_SELL signal but position already open");
-            ResetSellSetup();
+            g_sellPivot2=pivHigh; g_sellPivot2Bar=pivotBarIndex; g_sellBarsSincePivot2=0; g_sellStage=2;
+            Log("SSANGBI_PIVOT2_SELL","pivot1="+DoubleToString(g_sellPivot1,_Digits)+" pivot2="+DoubleToString(g_sellPivot2,_Digits)+
+                " neckline="+DoubleToString(g_sellNeckline,_Digits)+" stochK="+DoubleToString(stochK,2)+
+                " barsP1toP2="+IntegerToString(g_sellPivot2Bar-g_sellPivot1Bar));
          }
+      }
+   }
+   else if(g_sellStage==2)
+   {
+      g_sellBarsSincePivot2=g_barCounter-g_sellPivot2Bar;
+      bool invalid=(c>g_sellPivot1+ToleranceATR*atr);
+      bool timeout=(g_sellBarsSincePivot2>MaxConfirmBars);
+      bool brokeNeckline=(c<g_sellNeckline-NecklineBreakBufferATR*atr);
+
+      if(invalid || timeout)
+      {
+         Log("SSANGBI_EXPIRE_SELL",(invalid?"resistance broken":"neckline break timeout"));
+         ResetSellSetup();
+      }
+      else if(brokeNeckline)
+      {
+         double gapATR=MathAbs(g_sellPivot2-g_sellPivot1)/atr;
+         int barsP1toP2=g_sellPivot2Bar-g_sellPivot1Bar;
+         int barsP2toConfirm=g_sellBarsSincePivot2;
+         Log("SSANGBI_NECKBREAK_SELL","neckline="+DoubleToString(g_sellNeckline,_Digits)+
+             " close="+DoubleToString(c,_Digits)+" gapATR="+DoubleToString(gapATR,2));
+         if(!haveOpenPos)
+         {
+            double sl=MathMax(g_sellPivot1,g_sellPivot2)+SLBufferATR*atr;
+            OpenTrade(-1,sl,atr,gapATR,barsP1toP2,barsP2toConfirm,"SSANGBI_SELL");
+         }
+         else
+            Log("ENTRY_SKIPPED","SSANGBI_SELL neckline break but position already open");
+         ResetSellSetup();
       }
    }
 }
@@ -352,11 +413,11 @@ int OnInit()
        " | Stoch("+IntegerToString(StochK_Period)+","+IntegerToString(StochD_Period)+","+IntegerToString(StochSlowing)+")"+
        " OB="+DoubleToString(StochOverbought,1)+" OS="+DoubleToString(StochOversold,1)+
        " | ATRPeriod="+IntegerToString(ATRPeriod)+
-       " | SsangbiWindowBars="+IntegerToString(SsangbiWindowBars)+
-       " SsangbiMinBounceATR="+DoubleToString(SsangbiMinBounceATR,2)+
-       " SsangbiToleranceATR="+DoubleToString(SsangbiToleranceATR,2)+
-       " SsangbiSLBufferATR="+DoubleToString(SsangbiSLBufferATR,2)+
-       " | TP_R="+DoubleToString(TP_R,2)+" MinStopATR="+DoubleToString(MinStopATR,2)+
+       " | PivotLeft="+IntegerToString(PivotLeft)+" PivotRight="+IntegerToString(PivotRight)+
+       " MinPatternBars="+IntegerToString(MinPatternBars)+" MaxPatternBars="+IntegerToString(MaxPatternBars)+
+       " | ToleranceATR="+DoubleToString(ToleranceATR,2)+" BandAnchorATR="+DoubleToString(BandAnchorATR,2)+
+       " MaxConfirmBars="+IntegerToString(MaxConfirmBars)+" NecklineBreakBufferATR="+DoubleToString(NecklineBreakBufferATR,2)+
+       " | SLBufferATR="+DoubleToString(SLBufferATR,2)+" TP_R="+DoubleToString(TP_R,2)+" MinStopATR="+DoubleToString(MinStopATR,2)+
        " | Lots="+DoubleToString(Lots,2)+" | Magic="+IntegerToString((int)MagicNumber)+
        " | orders="+(EnableLiveOrders?"ENABLED":"DRY"));
    return INIT_SUCCEEDED;
@@ -390,8 +451,9 @@ void OnTradeTransaction(const MqlTradeTransaction &trans,const MqlTradeRequest &
                  HistoryDealGetDouble(trans.deal,DEAL_COMMISSION);
    string outcome=(profit>0?"WIN":"LOSS");
    Log("MAE_OUTCOME","outcome="+outcome+" profit="+DoubleToString(profit,2)+" R="+DoubleToString(g_trackR,_Digits)+
-       " gapATR="+DoubleToString(g_trackGapATR,2)+" bounceATR="+DoubleToString(g_trackBounceATR,2)+
-       " rawR_ATR="+DoubleToString(g_trackRawR_ATR,2)+" flooredR_ATR="+DoubleToString(g_trackFlooredR_ATR,2)+
+       " gapATR="+DoubleToString(g_trackGapATR,2)+" rawR_ATR="+DoubleToString(g_trackRawR_ATR,2)+
+       " flooredR_ATR="+DoubleToString(g_trackFlooredR_ATR,2)+
+       " barsP1toP2="+IntegerToString(g_trackBarsP1toP2)+" barsP2toConfirm="+IntegerToString(g_trackBarsP2toConfirm)+
        " | "+g_trackTag);
    g_trackTicket=0;
 }
