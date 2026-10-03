@@ -140,6 +140,31 @@
 //| post-hoc explanatory power but, like every other pre/mid-trade signal   |
 //| tried this project, isn't strong enough to act on profitably; only      |
 //| ComboExit's surgical threeBarOneWay+danger-zone combo clears that bar.  |
+//| UseDangerWindowFilter/UseFridayFilter (UNTESTED): unlike everything     |
+//| above (all post-entry diagnostics/exits on THIS EA's own signals), this |
+//| is a pre-entry time-of-day/day-of-week ENTRY BLOCK sourced from an      |
+//| outside reference (a discretionary gold-trading methodology writeup)    |
+//| that names specific KST windows as session-ownership handoff points     |
+//| where whipsaw/one-way risk concentrates: 09:30-10:30 (China open),      |
+//| 14:00-18:00 (Asia close -> Europe open/"London surge", two adjacent     |
+//| windows per the source's own naming), 20:00-22:30 (US pre-market        |
+//| independent window), 00:30-03:30 (Europe close/reversal hour) --        |
+//| UseDangerWindowFilter blocks new entries (all four tags) during any of  |
+//| these. UseFridayFilter separately blocks Friday entries from            |
+//| FridayFilterFromHourKST onward (0=all day), per the same source's       |
+//| specific Friday warning. Motivation: cross-checking these named         |
+//| windows against the live account's actual 2-week trade history (not    |
+//| this EA's own backtest) found ALL of the net loss falling inside them   |
+//| -- 67 of 147 trades (45.6%) fell in the 5 danger windows and totaled    |
+//| -$1,646.67, while the other 80 trades (outside those windows) totaled   |
+//| +$203.70; Friday alone was -$1,408.50 across all 32 trades vs every     |
+//| other weekday combined being roughly flat-to-positive. That's a small,  |
+//| correlational sample (2 weeks, not this system's own 21-month           |
+//| backtest), so it needs ground-truth verification here before being      |
+//| trusted -- the project's track record this session is that most        |
+//| plausible-sounding filters (ADX, trend, efficiency ratio, HTF           |
+//| alignment, ATR expansion) looked promising on small/post-hoc slices     |
+//| and then failed or reversed on the full backtest.                       |
 //| ComboExitDangerMin/UseComboExit (CONFIRMED=10min/true): an AND of the  |
 //| two ideas above instead of either alone -- only closes when a         |
 //| position is BOTH threeBarOneWay=true AND has spent ComboExitDangerMin |
@@ -447,6 +472,10 @@ input int    AsiaSessionStartHour = 6;   // Asia-session skip window start hour,
 input int    AsiaSessionEndHour   = 16;  // Asia-session skip window end hour, Korea time
 input bool   ReverseTrendBearAsiaSession = false; // Reverse TREND_BEAR in Asia session to BUY (UNTESTED, see header)
 input int    MaxMinutesWithoutProgress = 0; // Close position after N min regardless of P&L, 0=disabled (UNTESTED, see header)
+
+input bool   UseDangerWindowFilter = false; // Block new entries (all tags) during 5 KST session-transition windows (UNTESTED, see header)
+input bool   UseFridayFilter    = false; // Block new entries (all tags) on Friday from FridayFilterFromHourKST onward (UNTESTED, see header)
+input int    FridayFilterFromHourKST = 0; // Hour (KST) from which Friday entries are blocked when UseFridayFilter=true (0 = all day Friday)
 input bool   UseTrendFilter     = false; // Skip entry if opposing trend on higher TF (REJECTED, see header)
 input ENUM_TIMEFRAMES TrendFilterTimeframe = PERIOD_M15; // Higher timeframe for UseTrendFilter
 input int    ADXPeriod          = 14;    // ADX period for UseTrendFilter
@@ -977,6 +1006,32 @@ bool InAsiaSessionKST(datetime server_now)
    return (h>=AsiaSessionStartHour && h<AsiaSessionEndHour);
 }
 
+// -- Session-transition "danger window" filter (see header for sourcing and
+//    the live-data correlation that motivated it) -- blocks new entries
+//    (all four tags) during 5 KST windows where session ownership hands
+//    off and whipsaw/one-way risk is reportedly concentrated: 09:30-10:30
+//    (China open), 14:00-18:00 (Asia close -> Europe open/London surge,
+//    kept as two windows to match the source's naming), 20:00-22:30 (US
+//    pre-market independent window), 00:30-03:30 (Europe close/reversal
+//    hour). -------------------------------------------------------------
+bool InDangerWindowKST(datetime server_now)
+{
+   int offsetHours=IsEUDST(server_now)?6:7;
+   MqlDateTime t; TimeToStruct(server_now+offsetHours*3600,t);
+   int minOfDay=t.hour*60+t.min;
+   int starts[5]={570,840,960,1200,30};
+   int ends[5]  ={630,960,1080,1350,210};
+   for(int i=0;i<5;i++) if(minOfDay>=starts[i] && minOfDay<ends[i]) return true;
+   return false;
+}
+
+bool IsFridayKST(datetime server_now)
+{
+   int offsetHours=IsEUDST(server_now)?6:7;
+   MqlDateTime t; TimeToStruct(server_now+offsetHours*3600,t);
+   return (t.day_of_week==5); // MQL5 day_of_week: 0=Sunday
+}
+
 bool InEuropeSessionKST(datetime server_now)
 {
    int h=KST_Hour(server_now);
@@ -1286,6 +1341,11 @@ void CheckNewM2Bar()
    else if(c<o && l<=lo20[0] && l<=lo4[0]) sigdir=-1; // bear (down) signal candle
    if(sigdir==0) return;
 
+   if(UseDangerWindowFilter && InDangerWindowKST(sig))
+   { Log("SIGNAL_SKIPPED","Entry blocked by UseDangerWindowFilter (session-transition danger window)"); return; }
+   if(UseFridayFilter && IsFridayKST(sig) && KST_Hour(sig)>=FridayFilterFromHourKST)
+   { Log("SIGNAL_SKIPPED","Entry blocked by UseFridayFilter (Friday, hour>="+IntegerToString(FridayFilterFromHourKST)+" KST)"); return; }
+
    // BODY vs WICK touch (diagnostic): the entry condition above only requires
    // the candle's high/low (wick) to reach BB20 -- this checks whether the
    // CLOSE (body) also closed beyond BB20, i.e. a "real" break vs a rejection
@@ -1531,6 +1591,8 @@ int OnInit()
        " | AsiaWindow="+IntegerToString(AsiaSessionStartHour)+"-"+IntegerToString(AsiaSessionEndHour)+"KST"+
        " | ReverseTrendBearAsiaSession="+(ReverseTrendBearAsiaSession?"true":"false")+
        " | MaxMinutesWithoutProgress="+IntegerToString(MaxMinutesWithoutProgress)+
+       " | UseDangerWindowFilter="+(UseDangerWindowFilter?"true":"false")+
+       " | UseFridayFilter="+(UseFridayFilter?"true":"false")+" FridayFilterFromHourKST="+IntegerToString(FridayFilterFromHourKST)+
        " | UseTrendFilter="+(UseTrendFilter?"true":"false")+
        " | TrendFilterTF="+EnumToString(TrendFilterTimeframe)+" ADXPeriod="+IntegerToString(ADXPeriod)+
        " ADXThreshold="+DoubleToString(ADXThreshold,1)+
