@@ -140,31 +140,41 @@
 //| post-hoc explanatory power but, like every other pre/mid-trade signal   |
 //| tried this project, isn't strong enough to act on profitably; only      |
 //| ComboExit's surgical threeBarOneWay+danger-zone combo clears that bar.  |
-//| UseDangerWindowFilter/UseFridayFilter (UNTESTED): unlike everything     |
-//| above (all post-entry diagnostics/exits on THIS EA's own signals), this |
-//| is a pre-entry time-of-day/day-of-week ENTRY BLOCK sourced from an      |
-//| outside reference (a discretionary gold-trading methodology writeup)    |
-//| that names specific KST windows as session-ownership handoff points     |
-//| where whipsaw/one-way risk concentrates: 09:30-10:30 (China open),      |
-//| 14:00-18:00 (Asia close -> Europe open/"London surge", two adjacent     |
-//| windows per the source's own naming), 20:00-22:30 (US pre-market        |
-//| independent window), 00:30-03:30 (Europe close/reversal hour) --        |
-//| UseDangerWindowFilter blocks new entries (all four tags) during any of  |
-//| these. UseFridayFilter separately blocks Friday entries from            |
-//| FridayFilterFromHourKST onward (0=all day), per the same source's       |
-//| specific Friday warning. Motivation: cross-checking these named         |
-//| windows against the live account's actual 2-week trade history (not    |
-//| this EA's own backtest) found ALL of the net loss falling inside them   |
-//| -- 67 of 147 trades (45.6%) fell in the 5 danger windows and totaled    |
-//| -$1,646.67, while the other 80 trades (outside those windows) totaled   |
-//| +$203.70; Friday alone was -$1,408.50 across all 32 trades vs every     |
-//| other weekday combined being roughly flat-to-positive. That's a small,  |
-//| correlational sample (2 weeks, not this system's own 21-month           |
-//| backtest), so it needs ground-truth verification here before being      |
-//| trusted -- the project's track record this session is that most        |
-//| plausible-sounding filters (ADX, trend, efficiency ratio, HTF           |
-//| alignment, ATR expansion) looked promising on small/post-hoc slices     |
-//| and then failed or reversed on the full backtest.                       |
+//| UseDangerWindowFilter (REJECTED) / UseFridayFilter (CONFIRMED=all day): |
+//| unlike everything above (all post-entry diagnostics/exits on THIS EA's  |
+//| own signals), these are pre-entry time-of-day/day-of-week ENTRY BLOCKS  |
+//| sourced from an outside reference (a discretionary gold-trading         |
+//| methodology writeup) that names specific KST windows as session-        |
+//| ownership handoff points where whipsaw/one-way risk concentrates:       |
+//| 09:30-10:30 (China open), 14:00-18:00 (Asia close -> Europe open/       |
+//| "London surge", two adjacent windows per the source's own naming),      |
+//| 20:00-22:30 (US pre-market independent window), 00:30-03:30 (Europe     |
+//| close/reversal hour) -- UseDangerWindowFilter blocks new entries (all   |
+//| four tags) during any of these. UseFridayFilter separately blocks       |
+//| Friday entries from FridayFilterFromHourKST onward (0=all day), per     |
+//| the same source's specific Friday warning. Motivation: cross-checking   |
+//| these named windows against the live account's actual 2-week trade     |
+//| history (not this EA's own backtest) found ALL of the net loss falling  |
+//| inside them -- 67 of 147 trades (45.6%) fell in the 5 danger windows    |
+//| and totaled -$1,646.67, while the other 80 trades totaled +$203.70;     |
+//| Friday alone was -$1,408.50 across 32 trades vs every other weekday     |
+//| combined being roughly flat-to-positive. Ground-truth backtest against  |
+//| the ComboExit-confirmed baseline (NET $27,148.70, WR 92.01%, PF 1.382,  |
+//| MaxDD $2,254.80, n=3,273) split the two: UseDangerWindowFilter alone    |
+//| gave NET $17,067.52 (-37.1%), WR 91.41%, PF 1.438, MaxDD $2,225.00      |
+//| (~flat) on n=1,781 (-45.6%, matching the live sample's block rate) --   |
+//| REJECTED, since the 2-week sample's "almost all losses in this window"  |
+//| pattern did NOT reproduce at full-backtest scale (the blocked trades    |
+//| were only mildly worse than average, not catastrophic), same failure    |
+//| mode as every other filter that looked strong on a small/post-hoc       |
+//| slice this session. UseFridayFilter alone gave NET $29,833.29 (+9.9%),  |
+//| WR 92.38%, PF 1.561 on n=2,717 (-17.0%) -- a clean win on every return   |
+//| metric with FEWER trades, so CONFIRMED (MaxDD ticked up slightly to      |
+//| $2,423.10, so it improves returns without reducing tail risk). Both      |
+//| together gave NET $15,297.30 (-43.6%), PF 1.527, MaxDD $1,533.90        |
+//| (-32.0%) on n=1,444 -- combining them cuts worst-case drawdown          |
+//| substantially but at a steep NET cost, so it's a deliberate             |
+//| return-for-safety trade rather than a clear win; left off by default.   |
 //| ComboExitDangerMin/UseComboExit (CONFIRMED=10min/true): an AND of the  |
 //| two ideas above instead of either alone -- only closes when a         |
 //| position is BOTH threeBarOneWay=true AND has spent ComboExitDangerMin |
@@ -473,9 +483,9 @@ input int    AsiaSessionEndHour   = 16;  // Asia-session skip window end hour, K
 input bool   ReverseTrendBearAsiaSession = false; // Reverse TREND_BEAR in Asia session to BUY (UNTESTED, see header)
 input int    MaxMinutesWithoutProgress = 0; // Close position after N min regardless of P&L, 0=disabled (UNTESTED, see header)
 
-input bool   UseDangerWindowFilter = false; // Block new entries (all tags) during 5 KST session-transition windows (UNTESTED, see header)
-input bool   UseFridayFilter    = false; // Block new entries (all tags) on Friday from FridayFilterFromHourKST onward (UNTESTED, see header)
-input int    FridayFilterFromHourKST = 0; // Hour (KST) from which Friday entries are blocked when UseFridayFilter=true (0 = all day Friday)
+input bool   UseDangerWindowFilter = false; // Block new entries (all tags) during 5 KST session-transition windows (REJECTED, see header)
+input bool   UseFridayFilter    = true; // Block new entries (all tags) on Friday from FridayFilterFromHourKST onward (CONFIRMED, see header)
+input int    FridayFilterFromHourKST = 0; // Hour (KST) from which Friday entries are blocked when UseFridayFilter=true (0 = all day Friday) (CONFIRMED, see header)
 input bool   UseTrendFilter     = false; // Skip entry if opposing trend on higher TF (REJECTED, see header)
 input ENUM_TIMEFRAMES TrendFilterTimeframe = PERIOD_M15; // Higher timeframe for UseTrendFilter
 input int    ADXPeriod          = 14;    // ADX period for UseTrendFilter
