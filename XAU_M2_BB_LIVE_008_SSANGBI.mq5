@@ -57,8 +57,28 @@
 //|     TP_R multiple of that stop distance (R=|entry-SL|).               |
 //|                                                                      |
 //| Diagnostic fields in MAE_OUTCOME (gapATR, rawR_ATR, flooredR_ATR,    |
-//| barsPivot1ToPivot2, barsPivot2ToConfirm) for bucketed tuning if this  |
-//| version still shows no edge. Still UNTESTED.                         |
+//| barsPivot1ToPivot2, barsPivot2ToConfirm) for bucketed tuning.         |
+//|                                                                      |
+//| v3 RESULT: n=989, WR 40.85%, NET $3,967.74, PF 1.078, MaxDD          |
+//| $4,073.53 -- the neckline-break fix flipped this from a clear loser  |
+//| (v1: NET -$12,477.64) to a thin net winner, confirming that was the  |
+//| main missing piece. Still far short of the reference document's      |
+//| claimed high manual win rate, and Recovery Factor <1 (MaxDD > NET)   |
+//| means it's fragile. Bucketing the diagnostics found 3 sub-ranges     |
+//| that carry nearly all the profit: gapATR 0.1-0.2 (a small but        |
+//| non-trivial difference between the two pivots -- NEAR-EXACT matches  |
+//| <0.1 ATR apart were net NEGATIVE, -$4,412 over 343 trades, maybe      |
+//| just chop rather than a real structure), barsP1toP2>=5 (very fast    |
+//| double-touches <5 bars apart were net NEGATIVE, -$2,705 over 446     |
+//| trades), and barsP2toConfirm>=4 (neckline breaks confirmed within    |
+//| 2-3 bars of pivot 2 were net NEGATIVE, -$1,522 over 117 trades --     |
+//| likely whipsaws/false breaks rather than genuine follow-through).    |
+//| Applying all three as a post-hoc filter on the SAME v3 data (so this  |
+//| is an in-sample estimate, not yet forward-validated) gave n=356, WR   |
+//| 43.82%, NET $7,970.16 (+101% vs unfiltered), PF 1.393. MinGapATR,     |
+//| the MinPatternBars default (3->5), and MinBarsToConfirm below         |
+//| implement these three findings as actual entry gates for a proper    |
+//| ground-truth backtest, not just a retroactive filter.                 |
 //+------------------------------------------------------------------+
 #property strict
 #include <Trade/Trade.mqh>
@@ -76,11 +96,13 @@ input double StochOversold        = 30.0; // Stoch oversold level (pivot-2 condi
 input int    ATRPeriod            = 14; // ATR period used to scale every distance threshold below
 input int    PivotLeft            = 2; // Bars before the pivot that must be less extreme (ported from reference preset)
 input int    PivotRight           = 1; // Bars after the pivot that must be less extreme (ported from reference preset)
-input int    MinPatternBars       = 3; // Min bars between pivot 1 and pivot 2
+input int    MinPatternBars       = 5; // Min bars between pivot 1 and pivot 2 (CONFIRMED from v3 bucketing, see header)
 input int    MaxPatternBars       = 25; // Max bars between pivot 1 and pivot 2
 input double ToleranceATR         = 0.40; // Max distance between pivot 1 and pivot 2 extremes, as ATR multiple
+input double MinGapATR            = 0.10; // Min distance between pivot 1 and pivot 2 extremes, as ATR multiple (CONFIRMED from v3 bucketing, see header)
 input double BandAnchorATR        = 0.50; // Max distance pivot 1 may sit short of the BB20 band, as ATR multiple (0=must touch/pierce exactly)
 input int    MaxConfirmBars       = 20; // Max bars after pivot 2 to wait for the neckline break
+input int    MinBarsToConfirm     = 4; // Min bars after pivot 2 before a neckline break is accepted (CONFIRMED from v3 bucketing, see header)
 input double NecklineBreakBufferATR = 0.0; // Extra buffer beyond the neckline required for a break, as ATR multiple
 input double SLBufferATR          = 0.3; // Extra buffer beyond pivot 1/2's tighter extreme for the stop, as ATR multiple
 input double TP_R                 = 1.5; // Take profit as a multiple of the stop distance (R)
@@ -288,7 +310,7 @@ void CheckNewBar()
          g_buyNeckline=iHigh(_Symbol,Timeframe,1);
       }
       else if(gotPivotLow && g_buyBarsSincePivot1>=MinPatternBars &&
-              MathAbs(pivLow-g_buyPivot1)<=ToleranceATR*atr && pivotBarIndex>g_buyPivot1Bar)
+              MathAbs(pivLow-g_buyPivot1)>=MinGapATR*atr && MathAbs(pivLow-g_buyPivot1)<=ToleranceATR*atr && pivotBarIndex>g_buyPivot1Bar)
       {
          bool stochOk=(stochK<=StochOversold);
          if(stochOk)
@@ -312,7 +334,7 @@ void CheckNewBar()
          Log("SSANGBI_EXPIRE_BUY",(invalid?"support broken":"neckline break timeout"));
          ResetBuySetup();
       }
-      else if(brokeNeckline)
+      else if(brokeNeckline && g_buyBarsSincePivot2>=MinBarsToConfirm)
       {
          double gapATR=MathAbs(g_buyPivot2-g_buyPivot1)/atr;
          int barsP1toP2=g_buyPivot2Bar-g_buyPivot1Bar;
@@ -352,7 +374,7 @@ void CheckNewBar()
          g_sellNeckline=iLow(_Symbol,Timeframe,1);
       }
       else if(gotPivotHigh && g_sellBarsSincePivot1>=MinPatternBars &&
-              MathAbs(pivHigh-g_sellPivot1)<=ToleranceATR*atr && pivotBarIndex>g_sellPivot1Bar)
+              MathAbs(pivHigh-g_sellPivot1)>=MinGapATR*atr && MathAbs(pivHigh-g_sellPivot1)<=ToleranceATR*atr && pivotBarIndex>g_sellPivot1Bar)
       {
          bool stochOk=(stochK>=StochOverbought);
          if(stochOk)
@@ -376,7 +398,7 @@ void CheckNewBar()
          Log("SSANGBI_EXPIRE_SELL",(invalid?"resistance broken":"neckline break timeout"));
          ResetSellSetup();
       }
-      else if(brokeNeckline)
+      else if(brokeNeckline && g_sellBarsSincePivot2>=MinBarsToConfirm)
       {
          double gapATR=MathAbs(g_sellPivot2-g_sellPivot1)/atr;
          int barsP1toP2=g_sellPivot2Bar-g_sellPivot1Bar;
@@ -415,8 +437,10 @@ int OnInit()
        " | ATRPeriod="+IntegerToString(ATRPeriod)+
        " | PivotLeft="+IntegerToString(PivotLeft)+" PivotRight="+IntegerToString(PivotRight)+
        " MinPatternBars="+IntegerToString(MinPatternBars)+" MaxPatternBars="+IntegerToString(MaxPatternBars)+
-       " | ToleranceATR="+DoubleToString(ToleranceATR,2)+" BandAnchorATR="+DoubleToString(BandAnchorATR,2)+
-       " MaxConfirmBars="+IntegerToString(MaxConfirmBars)+" NecklineBreakBufferATR="+DoubleToString(NecklineBreakBufferATR,2)+
+       " | ToleranceATR="+DoubleToString(ToleranceATR,2)+" MinGapATR="+DoubleToString(MinGapATR,2)+
+       " BandAnchorATR="+DoubleToString(BandAnchorATR,2)+
+       " MaxConfirmBars="+IntegerToString(MaxConfirmBars)+" MinBarsToConfirm="+IntegerToString(MinBarsToConfirm)+
+       " NecklineBreakBufferATR="+DoubleToString(NecklineBreakBufferATR,2)+
        " | SLBufferATR="+DoubleToString(SLBufferATR,2)+" TP_R="+DoubleToString(TP_R,2)+" MinStopATR="+DoubleToString(MinStopATR,2)+
        " | Lots="+DoubleToString(Lots,2)+" | Magic="+IntegerToString((int)MagicNumber)+
        " | orders="+(EnableLiveOrders?"ENABLED":"DRY"));
