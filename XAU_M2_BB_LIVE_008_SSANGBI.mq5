@@ -79,6 +79,29 @@
 //| the MinPatternBars default (3->5), and MinBarsToConfirm below         |
 //| implement these three findings as actual entry gates for a proper    |
 //| ground-truth backtest, not just a retroactive filter.                 |
+//|                                                                      |
+//| v4 RESULT (forward-validated, not in-sample): n=516, WR 42.05%, NET   |
+//| $7,768.30 (+95.8% vs v3's $3,967.74), PF 1.280, MaxDD $2,454.45       |
+//| (-40% vs v3's $4,073.53 -- an unexpected bonus, Recovery Factor went   |
+//| from <1 to ~3.16). The in-sample estimate held up well on fresh data. |
+//| Finer bucketing of barsP2toConfirm within the now-allowed >=4 range    |
+//| showed PF keeps climbing the longer the neckline stays broken before   |
+//| entry (PF 1.28 at >=4 bars, 1.46 at >=8, 1.61 at >=10, 2.22 at >=15,   |
+//| though n shrinks from 516 to 71 over that range) -- BUT this surfaced  |
+//| a real bug in how MinBarsToConfirm was being checked: it only          |
+//| required "the bar where the wait happens to end is ALSO currently      |
+//| above the neckline", not that the neckline stayed broken continuously  |
+//| the whole time. A break-pullback-rebreak sequence could satisfy it by   |
+//| coincidence, and a late entry effectively CHASES price (buying well    |
+//| above the original breakout point) rather than confirming genuine      |
+//| follow-through -- so part of that PF climb may just reflect bigger R   |
+//| from chasing, not real signal quality. Fixed here: g_buyNeckHoldBars/  |
+//| g_sellNeckHoldBars now count CONSECUTIVE bars beyond the neckline,      |
+//| resetting to 0 on any pullback, so MinBarsToConfirm now means "the      |
+//| breakout has held continuously for N bars" and entry still fires at    |
+//| the earliest bar that becomes true (not a fixed wait-then-check).      |
+//| Still uses MinBarsToConfirm=4 as the input default pending its own      |
+//| fresh ground-truth test under this corrected definition.                |
 //+------------------------------------------------------------------+
 #property strict
 #include <Trade/Trade.mqh>
@@ -121,12 +144,14 @@ int    g_buyStage=0;
 double g_buyPivot1=0, g_buyPivot2=0, g_buyNeckline=0;
 int    g_buyPivot1Bar=0, g_buyPivot2Bar=0; // bar_index-equivalent counters (ever-increasing tick of new bars)
 int    g_buyBarsSincePivot1=0, g_buyBarsSincePivot2=0;
+int    g_buyNeckHoldBars=0; // consecutive bars closing above the neckline since it first broke
 
 // -- sell (double-top / "M") setup state machine --
 int    g_sellStage=0;
 double g_sellPivot1=0, g_sellPivot2=0, g_sellNeckline=0;
 int    g_sellPivot1Bar=0, g_sellPivot2Bar=0;
 int    g_sellBarsSincePivot1=0, g_sellBarsSincePivot2=0;
+int    g_sellNeckHoldBars=0; // consecutive bars closing below the neckline since it first broke
 
 int    g_barCounter=0; // increments once per new bar, used as a simple bar-index clock
 
@@ -167,8 +192,8 @@ bool HasOurPosition()
    return false;
 }
 
-void ResetBuySetup(){ g_buyStage=0; g_buyPivot1=0; g_buyPivot2=0; g_buyNeckline=0; g_buyBarsSincePivot1=0; g_buyBarsSincePivot2=0; }
-void ResetSellSetup(){ g_sellStage=0; g_sellPivot1=0; g_sellPivot2=0; g_sellNeckline=0; g_sellBarsSincePivot1=0; g_sellBarsSincePivot2=0; }
+void ResetBuySetup(){ g_buyStage=0; g_buyPivot1=0; g_buyPivot2=0; g_buyNeckline=0; g_buyBarsSincePivot1=0; g_buyBarsSincePivot2=0; g_buyNeckHoldBars=0; }
+void ResetSellSetup(){ g_sellStage=0; g_sellPivot1=0; g_sellPivot2=0; g_sellNeckline=0; g_sellBarsSincePivot1=0; g_sellBarsSincePivot2=0; g_sellNeckHoldBars=0; }
 
 // Confirmed pivot low/high at shift = PivotRight+1 relative to the bar that just closed
 // (shift 1 in iLow/iHigh terms) -- needs PivotRight bars after it (shifts 1..PivotRight)
@@ -315,7 +340,7 @@ void CheckNewBar()
          bool stochOk=(stochK<=StochOversold);
          if(stochOk)
          {
-            g_buyPivot2=pivLow; g_buyPivot2Bar=pivotBarIndex; g_buyBarsSincePivot2=0; g_buyStage=2;
+            g_buyPivot2=pivLow; g_buyPivot2Bar=pivotBarIndex; g_buyBarsSincePivot2=0; g_buyNeckHoldBars=0; g_buyStage=2;
             Log("SSANGBI_PIVOT2_BUY","pivot1="+DoubleToString(g_buyPivot1,_Digits)+" pivot2="+DoubleToString(g_buyPivot2,_Digits)+
                 " neckline="+DoubleToString(g_buyNeckline,_Digits)+" stochK="+DoubleToString(stochK,2)+
                 " barsP1toP2="+IntegerToString(g_buyPivot2Bar-g_buyPivot1Bar));
@@ -327,28 +352,39 @@ void CheckNewBar()
       g_buyBarsSincePivot2=g_barCounter-g_buyPivot2Bar;
       bool invalid=(c<g_buyPivot1-ToleranceATR*atr);
       bool timeout=(g_buyBarsSincePivot2>MaxConfirmBars);
-      bool brokeNeckline=(c>g_buyNeckline+NecklineBreakBufferATR*atr);
 
       if(invalid || timeout)
       {
          Log("SSANGBI_EXPIRE_BUY",(invalid?"support broken":"neckline break timeout"));
          ResetBuySetup();
       }
-      else if(brokeNeckline && g_buyBarsSincePivot2>=MinBarsToConfirm)
+      else
       {
-         double gapATR=MathAbs(g_buyPivot2-g_buyPivot1)/atr;
-         int barsP1toP2=g_buyPivot2Bar-g_buyPivot1Bar;
-         int barsP2toConfirm=g_buyBarsSincePivot2;
-         Log("SSANGBI_NECKBREAK_BUY","neckline="+DoubleToString(g_buyNeckline,_Digits)+
-             " close="+DoubleToString(c,_Digits)+" gapATR="+DoubleToString(gapATR,2));
-         if(!haveOpenPos)
+         bool aboveNeck=(c>g_buyNeckline+NecklineBreakBufferATR*atr);
+         // CONSECUTIVE hold, not just "still above on whichever bar the wait
+         // happens to end on" -- a dip back below the neckline resets the
+         // streak, so a real whipsaw (break, pull back, break again) has to
+         // re-earn the full MinBarsToConfirm from scratch, instead of being
+         // credited for bars spent below the neckline in between.
+         if(aboveNeck) g_buyNeckHoldBars++; else g_buyNeckHoldBars=0;
+
+         if(g_buyNeckHoldBars>=MinBarsToConfirm)
          {
-            double sl=MathMin(g_buyPivot1,g_buyPivot2)-SLBufferATR*atr;
-            OpenTrade(+1,sl,atr,gapATR,barsP1toP2,barsP2toConfirm,"SSANGBI_BUY");
+            double gapATR=MathAbs(g_buyPivot2-g_buyPivot1)/atr;
+            int barsP1toP2=g_buyPivot2Bar-g_buyPivot1Bar;
+            int barsP2toConfirm=g_buyBarsSincePivot2;
+            Log("SSANGBI_NECKBREAK_BUY","neckline="+DoubleToString(g_buyNeckline,_Digits)+
+                " close="+DoubleToString(c,_Digits)+" gapATR="+DoubleToString(gapATR,2)+
+                " holdBars="+IntegerToString(g_buyNeckHoldBars));
+            if(!haveOpenPos)
+            {
+               double sl=MathMin(g_buyPivot1,g_buyPivot2)-SLBufferATR*atr;
+               OpenTrade(+1,sl,atr,gapATR,barsP1toP2,barsP2toConfirm,"SSANGBI_BUY");
+            }
+            else
+               Log("ENTRY_SKIPPED","SSANGBI_BUY neckline break but position already open");
+            ResetBuySetup();
          }
-         else
-            Log("ENTRY_SKIPPED","SSANGBI_BUY neckline break but position already open");
-         ResetBuySetup();
       }
    }
 
@@ -379,7 +415,7 @@ void CheckNewBar()
          bool stochOk=(stochK>=StochOverbought);
          if(stochOk)
          {
-            g_sellPivot2=pivHigh; g_sellPivot2Bar=pivotBarIndex; g_sellBarsSincePivot2=0; g_sellStage=2;
+            g_sellPivot2=pivHigh; g_sellPivot2Bar=pivotBarIndex; g_sellBarsSincePivot2=0; g_sellNeckHoldBars=0; g_sellStage=2;
             Log("SSANGBI_PIVOT2_SELL","pivot1="+DoubleToString(g_sellPivot1,_Digits)+" pivot2="+DoubleToString(g_sellPivot2,_Digits)+
                 " neckline="+DoubleToString(g_sellNeckline,_Digits)+" stochK="+DoubleToString(stochK,2)+
                 " barsP1toP2="+IntegerToString(g_sellPivot2Bar-g_sellPivot1Bar));
@@ -391,20 +427,25 @@ void CheckNewBar()
       g_sellBarsSincePivot2=g_barCounter-g_sellPivot2Bar;
       bool invalid=(c>g_sellPivot1+ToleranceATR*atr);
       bool timeout=(g_sellBarsSincePivot2>MaxConfirmBars);
-      bool brokeNeckline=(c<g_sellNeckline-NecklineBreakBufferATR*atr);
 
       if(invalid || timeout)
       {
          Log("SSANGBI_EXPIRE_SELL",(invalid?"resistance broken":"neckline break timeout"));
          ResetSellSetup();
       }
-      else if(brokeNeckline && g_sellBarsSincePivot2>=MinBarsToConfirm)
+      else
+      {
+      bool belowNeck=(c<g_sellNeckline-NecklineBreakBufferATR*atr);
+      if(belowNeck) g_sellNeckHoldBars++; else g_sellNeckHoldBars=0;
+
+      if(g_sellNeckHoldBars>=MinBarsToConfirm)
       {
          double gapATR=MathAbs(g_sellPivot2-g_sellPivot1)/atr;
          int barsP1toP2=g_sellPivot2Bar-g_sellPivot1Bar;
          int barsP2toConfirm=g_sellBarsSincePivot2;
          Log("SSANGBI_NECKBREAK_SELL","neckline="+DoubleToString(g_sellNeckline,_Digits)+
-             " close="+DoubleToString(c,_Digits)+" gapATR="+DoubleToString(gapATR,2));
+             " close="+DoubleToString(c,_Digits)+" gapATR="+DoubleToString(gapATR,2)+
+             " holdBars="+IntegerToString(g_sellNeckHoldBars));
          if(!haveOpenPos)
          {
             double sl=MathMax(g_sellPivot1,g_sellPivot2)+SLBufferATR*atr;
@@ -413,6 +454,7 @@ void CheckNewBar()
          else
             Log("ENTRY_SKIPPED","SSANGBI_SELL neckline break but position already open");
          ResetSellSetup();
+      }
       }
    }
 }
