@@ -511,8 +511,20 @@
 //| previous NY-session-window's own high/low (user-requested addition,    |
 //| tracked separately from the whole-day high/low since a session's       |
 //| range can differ from the full calendar day's). Each zone is its own   |
-//| toggle so they can be bucketed individually before combining. Not yet  |
-//| backtested.                                                            |
+//| toggle so they can be bucketed individually before combining.          |
+//|                                                                      |
+//| zoneDistATR= in MAE_OUTCOME (diagnostic, always logged regardless of   |
+//| UseSupplyZoneFilter's on/off state): distance from the signal close to |
+//| the NEAREST enabled zone level, in ATR(Timeframe) units ("n/a" if no   |
+//| enabled zone has a value yet). Per the user's hypothesis: a 매물대       |
+//| sitting right at a breakout close can act as resistance AGAINST a      |
+//| TREND_BULL/BEAR (continuation) entry specifically -- not FADE, where   |
+//| the zone is the expected target rather than an obstacle -- which may   |
+//| explain some of 001's one-way/against-trend losses. Bucket this field  |
+//| by trade tag (TREND_* vs FADE_*) and distance range on a normal        |
+//| backtest (filter left off) before deciding whether to turn             |
+//| UseSupplyZoneFilter into an active block on TREND_* entries only.      |
+//| Not yet backtested.                                                    |
 //+------------------------------------------------------------------+
 #property strict
 #include <Trade/Trade.mqh>
@@ -747,6 +759,19 @@ bool   g_trackBodyTouch[TRACK_SLOTS];
 bool   g_lastPrior5Same=false; // transient handoff value, set right before OpenTrade()
 bool   g_trackPrior5Same[TRACK_SLOTS];
 
+// -- 매물대 proximity at entry (diagnostic only, no trading effect unless
+//    UseSupplyZoneFilter=true): distance from the signal close to the
+//    NEAREST enabled zone level, in ATR(Timeframe) units. Logged on every
+//    trade regardless of the filter's on/off state so TREND_BULL/BEAR
+//    (continuation) outcomes can be bucketed by "was there a supply zone
+//    right at the breakout close" without needing a fresh backtest per
+//    threshold -- the user's hypothesis is that a zone there acts as
+//    resistance against the continuation, explaining some one-way/against-
+//    trend losses in 001's TREND tags specifically (not FADE, where the
+//    zone is the expected target, not an obstacle).
+double g_lastZoneDistATR=999.0; // transient handoff value, set right before OpenTrade()
+double g_trackZoneDistATR[TRACK_SLOTS];
+
 // -- pre-signal ADX rise tracking (diagnostic only, no trading effect):
 //    for a BEAR signal candle, compares the M2-timeframe ADX at the
 //    candle furthest from the signal among the prior 5 (shift 6, "candle
@@ -915,6 +940,7 @@ void StartMAETracking(ulong ticket,double entry,double R,int dir,string tag)
    g_trackLastSample[i]=TimeCurrent(); g_timeMildMin[i]=0; g_timeDangerMin[i]=0;
    g_trackBodyTouch[i]=g_lastBodyTouch;
    g_trackPrior5Same[i]=g_lastPrior5Same;
+   g_trackZoneDistATR[i]=g_lastZoneDistATR;
    g_trackAdxRiseDiff[i]=g_lastAdxRiseDiff; g_trackAdxRiseKnown[i]=g_lastAdxRiseKnown;
    g_trackEffRatio[i]=g_lastEffRatio; g_trackEffRatioKnown[i]=g_lastEffRatioKnown;
    g_trackHtfAligned[i]=g_lastHtfAligned; g_trackHtfKnown[i]=g_lastHtfKnown;
@@ -1242,32 +1268,45 @@ void UpdateSupplyZones(datetime sig,double h,double l)
    g_szInNYSessPrevBar=inNYSess;
 }
 
-bool NearSupplyZone(double price,double atr)
+// Distance from price to the NEAREST enabled zone level, in ATR units
+// (999.0 = no enabled zone has a value yet, e.g. before the first Asia/NY
+// box of the backtest has formed).
+double DistanceToNearestZone(double price,double atr)
 {
-   if(atr<=0) return false;
-   double thresh=SupplyZoneATR*atr;
+   if(atr<=0) return 999.0;
+   double best=999.0;
 
    if(UseAsiaBoxZone && g_szAsiaBoxSet)
    {
-      if(MathAbs(price-g_szAsiaHigh)<=thresh || MathAbs(price-g_szAsiaLow)<=thresh) return true;
+      best=MathMin(best,MathAbs(price-g_szAsiaHigh)/atr);
+      best=MathMin(best,MathAbs(price-g_szAsiaLow)/atr);
    }
    if(UseNYBoxZone && g_szNYBoxSet)
    {
-      if(MathAbs(price-g_szNYHigh)<=thresh || MathAbs(price-g_szNYLow)<=thresh) return true;
+      best=MathMin(best,MathAbs(price-g_szNYHigh)/atr);
+      best=MathMin(best,MathAbs(price-g_szNYLow)/atr);
    }
    if(UseTodayHighLowZone)
    {
-      if(MathAbs(price-g_szTodayHigh)<=thresh || MathAbs(price-g_szTodayLow)<=thresh) return true;
+      best=MathMin(best,MathAbs(price-g_szTodayHigh)/atr);
+      best=MathMin(best,MathAbs(price-g_szTodayLow)/atr);
    }
    if(UsePrevDayHighLowZone && g_szHavePrevDay)
    {
-      if(MathAbs(price-g_szPrevDayHigh)<=thresh || MathAbs(price-g_szPrevDayLow)<=thresh) return true;
+      best=MathMin(best,MathAbs(price-g_szPrevDayHigh)/atr);
+      best=MathMin(best,MathAbs(price-g_szPrevDayLow)/atr);
    }
    if(UsePrevNYHighLowZone && g_szHavePrevNY)
    {
-      if(MathAbs(price-g_szPrevNYHigh)<=thresh || MathAbs(price-g_szPrevNYLow)<=thresh) return true;
+      best=MathMin(best,MathAbs(price-g_szPrevNYHigh)/atr);
+      best=MathMin(best,MathAbs(price-g_szPrevNYLow)/atr);
    }
-   return false;
+   return best;
+}
+
+bool NearSupplyZone(double price,double atr)
+{
+   return DistanceToNearestZone(price,atr)<=SupplyZoneATR;
 }
 
 bool HasOurPosition()
@@ -1789,6 +1828,10 @@ void CheckNewM2Bar()
    // a failure signal, so disable the check there (0 = disabled).
    g_lastBandLevel=(dir==sigdir) ? (sigdir==+1 ? up20[0] : lo20[0]) : 0;
    g_lastBodyTouch=bodyTouch;
+   {
+      double atrSigDiag[1];
+      g_lastZoneDistATR=(CopyBuffer(hATR_Sig,0,1,1,atrSigDiag)==1) ? DistanceToNearestZone(c,atrSigDiag[0]) : 999.0;
+   }
    g_lastPrior5Same=prior5Same;
    g_lastAdxRiseDiff=adxRiseDiff; g_lastAdxRiseKnown=adxRiseKnown;
    g_lastEffRatio=effRatio; g_lastEffRatioKnown=effRatioKnown;
@@ -1948,6 +1991,7 @@ void OnTradeTransaction(const MqlTradeTransaction &trans,const MqlTradeRequest &
        " effRatio="+(g_trackEffRatioKnown[i]?DoubleToString(g_trackEffRatio[i],3):"n/a")+
        " htfAligned="+(!g_trackHtfKnown[i]?"n/a":(g_trackHtfAligned[i]?"true":"false"))+
        " atrExpansion="+(g_trackAtrKnown[i]?DoubleToString(g_trackAtrExpansion[i],3):"n/a")+
+       " zoneDistATR="+(g_trackZoneDistATR[i]>=999.0?"n/a":DoubleToString(g_trackZoneDistATR[i],3))+
        " | "+g_trackTag[i]);
    g_trackTicket[i]=0; // free slot
    g_waitingFirstBar[i]=false;
