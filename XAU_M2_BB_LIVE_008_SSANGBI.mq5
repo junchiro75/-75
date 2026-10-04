@@ -127,8 +127,8 @@ input double BandAnchorATR        = 0.50; // Max distance pivot 1 may sit short 
 input int    MaxConfirmBars       = 20; // Max bars after pivot 2 to wait for the neckline break
 input int    MinBarsToConfirm     = 4; // Min bars after pivot 2 before a neckline break is accepted (CONFIRMED from v3 bucketing, see header)
 input double NecklineBreakBufferATR = 0.0; // Extra buffer beyond the neckline required for a break, as ATR multiple
-input double SLBufferATR          = 0.3; // Extra buffer beyond pivot 1/2's tighter extreme for the stop, as ATR multiple
-input double TP_R                 = 1.5; // Take profit as a multiple of the stop distance (R)
+input double SLBufferATR          = 0.15; // Extra buffer beyond pivot 1/2's tighter extreme for the stop, as ATR multiple (CONFIRMED from v5 bucketing: 0.15 beats 0.30 on NET/WR/PF/MaxDD)
+input double TP_R                 = 4.0; // Take profit as a multiple of the stop distance (R) (CONFIRMED from v5 bucketing: 4.0 is the NET/PF peak across 1.0-5.0 sweep)
 input double MinStopATR           = 1.0; // Floor on the stop distance, as ATR multiple, 0=no floor
 input ulong  MagicNumber          = 95016108; // Magic number
 input int    MaxDeviationPts      = 50; // Max price deviation (points)
