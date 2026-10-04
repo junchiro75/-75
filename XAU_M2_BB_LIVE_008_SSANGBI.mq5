@@ -121,7 +121,7 @@ input int    PivotLeft            = 2; // Bars before the pivot that must be les
 input int    PivotRight           = 1; // Bars after the pivot that must be less extreme (ported from reference preset)
 input int    MinPatternBars       = 5; // Min bars between pivot 1 and pivot 2 (CONFIRMED from v3 bucketing, see header)
 input int    MaxPatternBars       = 25; // Max bars between pivot 1 and pivot 2
-input double ToleranceATR         = 0.40; // Max distance between pivot 1 and pivot 2 extremes, as ATR multiple
+input double ToleranceATR         = 0.25; // Max distance between pivot 1 and pivot 2 extremes, as ATR multiple (CONFIRMED from v5 bucketing: 0.25 beats 0.40 on NET/WR/PF/MaxDD)
 input double MinGapATR            = 0.10; // Min distance between pivot 1 and pivot 2 extremes, as ATR multiple (CONFIRMED from v3 bucketing, see header)
 input double BandAnchorATR        = 0.50; // Max distance pivot 1 may sit short of the BB20 band, as ATR multiple (0=must touch/pierce exactly)
 input int    MaxConfirmBars       = 20; // Max bars after pivot 2 to wait for the neckline break
