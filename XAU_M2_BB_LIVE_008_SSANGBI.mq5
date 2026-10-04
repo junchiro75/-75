@@ -102,6 +102,40 @@
 //| the earliest bar that becomes true (not a fixed wait-then-check).      |
 //| Still uses MinBarsToConfirm=4 as the input default pending its own      |
 //| fresh ground-truth test under this corrected definition.                |
+//|                                                                      |
+//| v5 bucketing (fresh ground-truth backtests, not retroactive filters,   |
+//| since entry timing is path-dependent on MinBarsToConfirm's definition):|
+//| ToleranceATR 0.40->0.25, SLBufferATR 0.30->0.15, TP_R 1.5->4.0,         |
+//| MaxPatternBars 25->30 all confirmed as new defaults; MinGapATR (0.10), |
+//| BandAnchorATR (0.50), MaxConfirmBars (20), MinStopATR (floor never     |
+//| binds in the tested range) left unchanged. Result: NET $7,009->$16,132,|
+//| PF 1.303->2.114 (n=188, WR 26.06%) -- lower win rate but much better   |
+//| R:R from letting winners run further (TP_R=4.0).                       |
+//|                                                                      |
+//| v6: optional filters ported from a 주노짜앙/지킬 reference document     |
+//| (double-checked against the full PDF, not just the two screenshots)   |
+//| the user wanted tried to raise the win rate: (1) UseTangleGate --     |
+//| the doc's "가단" (17-weighted MA + 20-simple MA, i.e. the BB base      |
+//| line) must have crossed >=MinTangleCount times in the lookback before |
+//| pivot1 is accepted, since "가단이 꼬이지 않으면 변곡은 나올 수 없다";    |
+//| (2) Use17BreakConfirm -- close must also clear the 17-weighted MA,     |
+//| not just the neckline, before a hold-bar counts, since "각질에서 잡지   |
+//|말고 적어도 17까지 보라" (4-period MA fakeouts are common, 17-period     |
+//| ones rarely are); (3) UseHTFCrossGate -- a higher-timeframe (default   |
+//| M5) 4/17-weighted-MA pair must be in golden(buy)/dead(sell) state at   |
+//| pivot2, since "최소 5분 골든크로스가 나야" is one of the doc's three      |
+//| named preconditions for trusting a 쌍비 setup; (4) UseMACDGate -- MACD  |
+//| main must sit on the trade's side of its signal line AND the          |
+//| histogram must be turning further that way at pivot2, per "맥디가       |
+//| 방향을 틀고 교차하는지" from the user's own checklist. The doc's        |
+//| "매물대" (volume/supply-demand zone) condition is intentionally NOT     |
+//| implemented -- MT5 has no reliable volume-profile data for this, and   |
+//| the existing BB20-band anchor (BandAnchorATR) already stands in for    |
+//| the document's own admission that "모든 건 다 매물대입니다. 볼밴도"     |
+//| (bands themselves count as one of its matter-of-fact 매물대 proxies).   |
+//| All four default OFF so the v5-confirmed baseline above reproduces     |
+//| exactly; each is independently toggleable for its own ground-truth     |
+//| backtest before any combination is tried.                              |
 //+------------------------------------------------------------------+
 #property strict
 #include <Trade/Trade.mqh>
@@ -130,11 +164,27 @@ input double NecklineBreakBufferATR = 0.0; // Extra buffer beyond the neckline r
 input double SLBufferATR          = 0.15; // Extra buffer beyond pivot 1/2's tighter extreme for the stop, as ATR multiple (CONFIRMED from v5 bucketing: 0.15 beats 0.30 on NET/WR/PF/MaxDD)
 input double TP_R                 = 4.0; // Take profit as a multiple of the stop distance (R) (CONFIRMED from v5 bucketing: 4.0 is the NET/PF peak across 1.0-5.0 sweep)
 input double MinStopATR           = 1.0; // Floor on the stop distance, as ATR multiple, 0=no floor
+
+input bool   UseTangleGate        = false; // Require the 17-weighted/20-simple MA pair ("가단") to have crossed >=MinTangleCount times before pivot1 is accepted
+input int    WMA17Period          = 17; // Period of the 17-weighted MA ("가단"'s fast leg; also the fakeout-filter/target MA)
+input int    TangleLookbackBars   = 30; // Bars scanned backward from pivot1 for WMA17/SMA20 crossovers
+input int    MinTangleCount       = 2; // Min WMA17/SMA20 crossovers required in that lookback for the tangle gate to pass
+input bool   Use17BreakConfirm    = false; // Also require the close to be beyond WMA17 (not just the neckline) before counting a neckline-hold bar -- targets the "각질에서 잡지 말고 17까지 보라" fakeout filter
+input bool   UseHTFCrossGate      = false; // Require a higher-timeframe fast/slow WMA pair to be in golden(buy)/dead(sell) cross state at pivot2
+input ENUM_TIMEFRAMES HTFTimeframe = PERIOD_M5; // Higher timeframe for the cross gate (source material: "최소 5분봉 골든/데드크로스")
+input int    HTFFastPeriod        = 4; // HTF fast WMA period ("4가중")
+input int    HTFSlowPeriod        = 17; // HTF slow WMA period ("17가중")
+input bool   UseMACDGate          = false; // Require MACD main/signal relationship and histogram direction to agree with trade direction at pivot2
+input int    MACDFastPeriod       = 12; // MACD fast EMA period
+input int    MACDSlowPeriod       = 26; // MACD slow EMA period
+input int    MACDSignalPeriod     = 9; // MACD signal period
+
 input ulong  MagicNumber          = 95016108; // Magic number
 input int    MaxDeviationPts      = 50; // Max price deviation (points)
 input bool   EnableLiveOrders     = false; // Enable live orders
 
 int hBB=INVALID_HANDLE, hStoch=INVALID_HANDLE, hATR=INVALID_HANDLE;
+int hWMA17=INVALID_HANDLE, hHTFFastMA=INVALID_HANDLE, hHTFSlowMA=INVALID_HANDLE, hMACD=INVALID_HANDLE;
 datetime last_bar=0;
 int f_log=INVALID_HANDLE;
 
@@ -216,6 +266,67 @@ bool IsPivotHigh(double &outHigh)
    for(int k=1;k<=PivotLeft;k++)  if(iHigh(_Symbol,Timeframe,pivotShift+k)>val) return false;
    outHigh=val;
    return true;
+}
+
+// -- optional filters ported from the 주노짜앙/지킬 reference document --
+// All default OFF so the existing confirmed baseline reproduces exactly;
+// each is independently toggleable for its own ground-truth backtest.
+
+bool GetWMA17(double &outVal)
+{
+   double buf[1];
+   if(CopyBuffer(hWMA17,0,1,1,buf)!=1) return false;
+   outVal=buf[0];
+   return true;
+}
+
+// "가단" = the 17-weighted/20-simple MA pair (BB base line = SMA(BBPeriod), reused
+// here rather than a second handle). Counts how many times they crossed in the
+// lookback window right before pivot1 -- the source material's "가단이 몇 차례
+// 꼬였다" precondition for trusting a reversal pattern.
+bool TangleGateOk()
+{
+   if(!UseTangleGate) return true;
+   int n=TangleLookbackBars+1;
+   double w[], s[];
+   ArraySetAsSeries(w,true); ArraySetAsSeries(s,true);
+   if(CopyBuffer(hWMA17,0,1,n,w)!=n) return false;
+   if(CopyBuffer(hBB,0,1,n,s)!=n) return false; // BB base line (buffer 0) = SMA(BBPeriod)
+   int crosses=0;
+   bool prevAbove=(w[n-1]>s[n-1]);
+   for(int i=n-2;i>=0;i--)
+   {
+      bool above=(w[i]>s[i]);
+      if(above!=prevAbove) crosses++;
+      prevAbove=above;
+   }
+   return crosses>=MinTangleCount;
+}
+
+// Higher-timeframe fast/slow WMA state (golden=fast>slow, dead=fast<slow) at the
+// last closed HTF bar -- the source material's "최소 5분 골든/데드크로스" precondition.
+bool HTFCrossGateOk(int dir)
+{
+   if(!UseHTFCrossGate) return true;
+   double f[1],s[1];
+   if(CopyBuffer(hHTFFastMA,0,1,1,f)!=1) return false;
+   if(CopyBuffer(hHTFSlowMA,0,1,1,s)!=1) return false;
+   return (dir==+1) ? (f[0]>s[0]) : (f[0]<s[0]);
+}
+
+// MACD must sit on the trade's side of its signal line AND the histogram must be
+// turning further that way (not just crossed once and flattening) -- the source
+// material's "맥디가 방향을 틀고 교차하는지" check.
+bool MACDGateOk(int dir)
+{
+   if(!UseMACDGate) return true;
+   double main[], signal[];
+   ArraySetAsSeries(main,true); ArraySetAsSeries(signal,true);
+   if(CopyBuffer(hMACD,0,1,2,main)!=2) return false;
+   if(CopyBuffer(hMACD,1,1,2,signal)!=2) return false;
+   double hist0=main[0]-signal[0], hist1=main[1]-signal[1];
+   if(dir==+1) return (main[0]>signal[0]) && (hist0>hist1);
+   else        return (main[0]<signal[0]) && (hist0<hist1);
 }
 
 void OpenTrade(int dir,double sl,double atr,double gapATR,int barsP1toP2,int barsP2toConfirm,string tag)
@@ -315,7 +426,7 @@ void CheckNewBar()
    // ============================= BUY (W) =============================
    if(g_buyStage==0)
    {
-      if(gotPivotLow && pivLow<=lower[0]+BandAnchorATR*atr)
+      if(gotPivotLow && pivLow<=lower[0]+BandAnchorATR*atr && TangleGateOk())
       {
          g_buyStage=1; g_buyPivot1=pivLow; g_buyPivot1Bar=pivotBarIndex;
          g_buyNeckline=iHigh(_Symbol,Timeframe,1); g_buyBarsSincePivot1=0;
@@ -338,7 +449,7 @@ void CheckNewBar()
               MathAbs(pivLow-g_buyPivot1)>=MinGapATR*atr && MathAbs(pivLow-g_buyPivot1)<=ToleranceATR*atr && pivotBarIndex>g_buyPivot1Bar)
       {
          bool stochOk=(stochK<=StochOversold);
-         if(stochOk)
+         if(stochOk && HTFCrossGateOk(+1) && MACDGateOk(+1))
          {
             g_buyPivot2=pivLow; g_buyPivot2Bar=pivotBarIndex; g_buyBarsSincePivot2=0; g_buyNeckHoldBars=0; g_buyStage=2;
             Log("SSANGBI_PIVOT2_BUY","pivot1="+DoubleToString(g_buyPivot1,_Digits)+" pivot2="+DoubleToString(g_buyPivot2,_Digits)+
@@ -361,6 +472,11 @@ void CheckNewBar()
       else
       {
          bool aboveNeck=(c>g_buyNeckline+NecklineBreakBufferATR*atr);
+         if(Use17BreakConfirm)
+         {
+            double wma17;
+            aboveNeck=aboveNeck && GetWMA17(wma17) && c>wma17;
+         }
          // CONSECUTIVE hold, not just "still above on whichever bar the wait
          // happens to end on" -- a dip back below the neckline resets the
          // streak, so a real whipsaw (break, pull back, break again) has to
@@ -391,7 +507,7 @@ void CheckNewBar()
    // ============================= SELL (M) =============================
    if(g_sellStage==0)
    {
-      if(gotPivotHigh && pivHigh>=upper[0]-BandAnchorATR*atr)
+      if(gotPivotHigh && pivHigh>=upper[0]-BandAnchorATR*atr && TangleGateOk())
       {
          g_sellStage=1; g_sellPivot1=pivHigh; g_sellPivot1Bar=pivotBarIndex;
          g_sellNeckline=iLow(_Symbol,Timeframe,1); g_sellBarsSincePivot1=0;
@@ -413,7 +529,7 @@ void CheckNewBar()
               MathAbs(pivHigh-g_sellPivot1)>=MinGapATR*atr && MathAbs(pivHigh-g_sellPivot1)<=ToleranceATR*atr && pivotBarIndex>g_sellPivot1Bar)
       {
          bool stochOk=(stochK>=StochOverbought);
-         if(stochOk)
+         if(stochOk && HTFCrossGateOk(-1) && MACDGateOk(-1))
          {
             g_sellPivot2=pivHigh; g_sellPivot2Bar=pivotBarIndex; g_sellBarsSincePivot2=0; g_sellNeckHoldBars=0; g_sellStage=2;
             Log("SSANGBI_PIVOT2_SELL","pivot1="+DoubleToString(g_sellPivot1,_Digits)+" pivot2="+DoubleToString(g_sellPivot2,_Digits)+
@@ -436,6 +552,11 @@ void CheckNewBar()
       else
       {
       bool belowNeck=(c<g_sellNeckline-NecklineBreakBufferATR*atr);
+      if(Use17BreakConfirm)
+      {
+         double wma17;
+         belowNeck=belowNeck && GetWMA17(wma17) && c<wma17;
+      }
       if(belowNeck) g_sellNeckHoldBars++; else g_sellNeckHoldBars=0;
 
       if(g_sellNeckHoldBars>=MinBarsToConfirm)
@@ -464,7 +585,13 @@ int OnInit()
    hBB=iBands(_Symbol,Timeframe,BBPeriod,0,BBDev,PRICE_CLOSE);
    hStoch=iStochastic(_Symbol,Timeframe,StochK_Period,StochD_Period,StochSlowing,MODE_SMA,STO_LOWHIGH);
    hATR=iATR(_Symbol,Timeframe,ATRPeriod);
-   if(hBB==INVALID_HANDLE || hStoch==INVALID_HANDLE || hATR==INVALID_HANDLE){ Print("Indicator handle creation failed"); return INIT_FAILED; }
+   hWMA17=iMA(_Symbol,Timeframe,WMA17Period,0,MODE_LWMA,PRICE_CLOSE);
+   hHTFFastMA=iMA(_Symbol,HTFTimeframe,HTFFastPeriod,0,MODE_LWMA,PRICE_CLOSE);
+   hHTFSlowMA=iMA(_Symbol,HTFTimeframe,HTFSlowPeriod,0,MODE_LWMA,PRICE_CLOSE);
+   hMACD=iMACD(_Symbol,Timeframe,MACDFastPeriod,MACDSlowPeriod,MACDSignalPeriod,PRICE_CLOSE);
+   if(hBB==INVALID_HANDLE || hStoch==INVALID_HANDLE || hATR==INVALID_HANDLE ||
+      hWMA17==INVALID_HANDLE || hHTFFastMA==INVALID_HANDLE || hHTFSlowMA==INVALID_HANDLE || hMACD==INVALID_HANDLE)
+   { Print("Indicator handle creation failed"); return INIT_FAILED; }
 
    f_log=FileOpen("XAU_M2_BB_LIVE_008_SSANGBI_LOG.csv",FILE_READ|FILE_WRITE|FILE_CSV|FILE_ANSI|FILE_SHARE_READ,',');
    if(f_log!=INVALID_HANDLE) FileSeek(f_log,0,SEEK_END);
@@ -484,6 +611,12 @@ int OnInit()
        " MaxConfirmBars="+IntegerToString(MaxConfirmBars)+" MinBarsToConfirm="+IntegerToString(MinBarsToConfirm)+
        " NecklineBreakBufferATR="+DoubleToString(NecklineBreakBufferATR,2)+
        " | SLBufferATR="+DoubleToString(SLBufferATR,2)+" TP_R="+DoubleToString(TP_R,2)+" MinStopATR="+DoubleToString(MinStopATR,2)+
+       " | UseTangleGate="+(UseTangleGate?"true":"false")+" WMA17Period="+IntegerToString(WMA17Period)+
+       " TangleLookbackBars="+IntegerToString(TangleLookbackBars)+" MinTangleCount="+IntegerToString(MinTangleCount)+
+       " Use17BreakConfirm="+(Use17BreakConfirm?"true":"false")+
+       " | UseHTFCrossGate="+(UseHTFCrossGate?"true":"false")+" HTFTimeframe="+EnumToString(HTFTimeframe)+
+       " HTFFastPeriod="+IntegerToString(HTFFastPeriod)+" HTFSlowPeriod="+IntegerToString(HTFSlowPeriod)+
+       " | UseMACDGate="+(UseMACDGate?"true":"false")+" MACD("+IntegerToString(MACDFastPeriod)+","+IntegerToString(MACDSlowPeriod)+","+IntegerToString(MACDSignalPeriod)+")"+
        " | Lots="+DoubleToString(Lots,2)+" | Magic="+IntegerToString((int)MagicNumber)+
        " | orders="+(EnableLiveOrders?"ENABLED":"DRY"));
    return INIT_SUCCEEDED;
@@ -495,6 +628,10 @@ void OnDeinit(const int reason)
    if(hBB!=INVALID_HANDLE) IndicatorRelease(hBB);
    if(hStoch!=INVALID_HANDLE) IndicatorRelease(hStoch);
    if(hATR!=INVALID_HANDLE) IndicatorRelease(hATR);
+   if(hWMA17!=INVALID_HANDLE) IndicatorRelease(hWMA17);
+   if(hHTFFastMA!=INVALID_HANDLE) IndicatorRelease(hHTFFastMA);
+   if(hHTFSlowMA!=INVALID_HANDLE) IndicatorRelease(hHTFSlowMA);
+   if(hMACD!=INVALID_HANDLE) IndicatorRelease(hMACD);
 }
 
 void OnTick()
