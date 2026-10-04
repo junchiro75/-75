@@ -502,6 +502,17 @@
 //| rising ADX (trend strengthening) into a FADE_BEAR_OS buy predicts a     |
 //| worse outcome than a flat/falling one. No backtest yet -- needs a fresh |
 //| one since this is a new field (not in any already-logged run).         |
+//|                                                                      |
+//| UseSupplyZoneFilter (OFF by default): 매물대 proximity gate ported from  |
+//| the 주노짜앙/지킬 reference doc + the [매물대]/HHJ TradingView scripts    |
+//| the user shared -- requires the signal close within SupplyZoneATR of   |
+//| at least one enabled zone level: Asia/NY session opening-hour box,     |
+//| today's running high/low, previous KST day's high/low, and the         |
+//| previous NY-session-window's own high/low (user-requested addition,    |
+//| tracked separately from the whole-day high/low since a session's       |
+//| range can differ from the full calendar day's). Each zone is its own   |
+//| toggle so they can be bucketed individually before combining. Not yet  |
+//| backtested.                                                            |
 //+------------------------------------------------------------------+
 #property strict
 #include <Trade/Trade.mqh>
@@ -592,10 +603,43 @@ input bool   UseComboExit       = true; // Close only when BOTH threeBarOneWay A
 
 input bool   SkipFadeBearOSWickTouch = true; // Skip FADE_BEAR_OS wick-only touches (CONFIRMED, see header)
 
+// -- 매물대 (supply/demand zone) proximity filter, ported from the 주노짜앙/지킬 -
+// reference doc + [매물대]/HHJ TradingView scripts the user shared: require the
+// signal close to be within SupplyZoneATR of at least one enabled zone level
+// (session opening-hour box, today/prev-day high-low, prev NY-session high-low).
+// Master OFF by default; each zone independently toggleable for its own
+// ground-truth backtest before combining.
+input bool   UseSupplyZoneFilter   = false; // Require the signal close within SupplyZoneATR of >=1 enabled supply-zone level
+input double SupplyZoneATR         = 0.5; // Proximity threshold, as ATR(Timeframe) multiple
+input bool   UseAsiaBoxZone        = true; // Include the Asia-session opening-hour candle's high/low
+input int    AsiaOpenHourKST       = 8; // KST hour whose candle defines the Asia session open box (source doc: 아시아 7-8시 시작)
+input bool   UseNYBoxZone          = true; // Include the NY/US-session opening-hour candle's high/low
+input double NYOpenHourKST         = 22.5; // KST hour (decimal) whose candle defines the NY session open box (source doc: 22:30 본장)
+input bool   UseTodayHighLowZone   = true; // Include today's running high/low (so far, KST calendar day)
+input bool   UsePrevDayHighLowZone = true; // Include the previous KST calendar day's high/low
+input bool   UsePrevNYHighLowZone  = true; // Include the previous day's NY-session-window high/low (user-requested: "미국장 전일 고가저가")
+input double NYSessionStartHourKST = 20.0; // KST hour (decimal) the NY session window starts, for 전일 미장 고가/저가 tracking (wraps past midnight)
+input double NYSessionEndHourKST   = 6.0; // KST hour (decimal) the NY session window ends
+
 int hBB20=INVALID_HANDLE,hBB4=INVALID_HANDLE,hStoch=INVALID_HANDLE,hADX=INVALID_HANDLE,hADXM2=INVALID_HANDLE;
 int hBB20_HTF=INVALID_HANDLE,hBB4_HTF=INVALID_HANDLE,hATR_HTF=INVALID_HANDLE;
+int hATR_Sig=INVALID_HANDLE;
 datetime last_m2_bar=0;
 int f_log=INVALID_HANDLE;
+
+// -- supply-zone state (all in KST calendar-day terms) --
+int    g_szLastDay=-1;          // KST day index of the last processed bar, -1=uninitialized
+bool   g_szAsiaBoxSet=false;    // today's Asia open-hour box already captured
+double g_szAsiaHigh=0, g_szAsiaLow=0;
+bool   g_szNYBoxSet=false;      // today's NY open-hour box already captured
+double g_szNYHigh=0, g_szNYLow=0;
+double g_szTodayHigh=0, g_szTodayLow=0;
+double g_szPrevDayHigh=0, g_szPrevDayLow=0;
+bool   g_szHavePrevDay=false;
+double g_szNYSessHigh=0, g_szNYSessLow=0;     // running NY-session-window high/low (in progress)
+double g_szPrevNYHigh=0, g_szPrevNYLow=0;     // finalized previous NY-session-window high/low
+bool   g_szHavePrevNY=false;
+bool   g_szInNYSessPrevBar=false;             // was the previously processed bar inside the NY session window
 
 // -- consecutive-loss circuit breaker (diagnostic always on; ACTS only if
 //    UseCircuitBreaker=true) --------------------------------------------
@@ -1138,6 +1182,94 @@ bool InEuropeSessionKST(datetime server_now)
    return (h>=16 && h<22);
 }
 
+// -- 매물대 (supply/demand zone) tracking, all in KST calendar-day terms --
+int KSTDayIndex(datetime server_now)
+{
+   int offsetHours=IsEUDST(server_now)?6:7;
+   datetime kst=server_now+offsetHours*3600;
+   return (int)(kst/86400);
+}
+
+// Called once per new signal-timeframe bar with that bar's own high/low --
+// rolls today's running high/low into "previous day" at KST midnight,
+// captures the Asia/NY session opening-hour boxes the first time each
+// day's clock reaches them, and finalizes the previous NY-session-window
+// high/low the moment that window closes (so it reads as "어제 미장
+// 고가/저가" for the whole of the following session).
+void UpdateSupplyZones(datetime sig,double h,double l)
+{
+   int day=KSTDayIndex(sig);
+   int hourKST=KST_Hour(sig);
+   int offsetHours=IsEUDST(sig)?6:7;
+   MqlDateTime t; TimeToStruct(sig+offsetHours*3600,t);
+   int minOfDay=t.hour*60+t.min;
+
+   if(g_szLastDay<0)
+   {
+      g_szLastDay=day; g_szTodayHigh=h; g_szTodayLow=l;
+      g_szAsiaBoxSet=false; g_szNYBoxSet=false;
+   }
+   else if(day!=g_szLastDay)
+   {
+      g_szPrevDayHigh=g_szTodayHigh; g_szPrevDayLow=g_szTodayLow; g_szHavePrevDay=true;
+      g_szTodayHigh=h; g_szTodayLow=l;
+      g_szAsiaBoxSet=false; g_szNYBoxSet=false;
+      g_szLastDay=day;
+   }
+   else
+   {
+      if(h>g_szTodayHigh) g_szTodayHigh=h;
+      if(l<g_szTodayLow)  g_szTodayLow=l;
+   }
+
+   if(!g_szAsiaBoxSet && hourKST==AsiaOpenHourKST)
+   { g_szAsiaHigh=h; g_szAsiaLow=l; g_szAsiaBoxSet=true; }
+
+   int nyOpenMin=(int)MathRound(NYOpenHourKST*60);
+   if(!g_szNYBoxSet && minOfDay>=nyOpenMin && minOfDay<nyOpenMin+60)
+   { g_szNYHigh=h; g_szNYLow=l; g_szNYBoxSet=true; }
+
+   bool inNYSess=InWindowKST(minOfDay,NYSessionStartHourKST,NYSessionEndHourKST);
+   if(inNYSess)
+   {
+      if(!g_szInNYSessPrevBar){ g_szNYSessHigh=h; g_szNYSessLow=l; }
+      else { if(h>g_szNYSessHigh) g_szNYSessHigh=h; if(l<g_szNYSessLow) g_szNYSessLow=l; }
+   }
+   else if(g_szInNYSessPrevBar)
+   {
+      g_szPrevNYHigh=g_szNYSessHigh; g_szPrevNYLow=g_szNYSessLow; g_szHavePrevNY=true;
+   }
+   g_szInNYSessPrevBar=inNYSess;
+}
+
+bool NearSupplyZone(double price,double atr)
+{
+   if(atr<=0) return false;
+   double thresh=SupplyZoneATR*atr;
+
+   if(UseAsiaBoxZone && g_szAsiaBoxSet)
+   {
+      if(MathAbs(price-g_szAsiaHigh)<=thresh || MathAbs(price-g_szAsiaLow)<=thresh) return true;
+   }
+   if(UseNYBoxZone && g_szNYBoxSet)
+   {
+      if(MathAbs(price-g_szNYHigh)<=thresh || MathAbs(price-g_szNYLow)<=thresh) return true;
+   }
+   if(UseTodayHighLowZone)
+   {
+      if(MathAbs(price-g_szTodayHigh)<=thresh || MathAbs(price-g_szTodayLow)<=thresh) return true;
+   }
+   if(UsePrevDayHighLowZone && g_szHavePrevDay)
+   {
+      if(MathAbs(price-g_szPrevDayHigh)<=thresh || MathAbs(price-g_szPrevDayLow)<=thresh) return true;
+   }
+   if(UsePrevNYHighLowZone && g_szHavePrevNY)
+   {
+      if(MathAbs(price-g_szPrevNYHigh)<=thresh || MathAbs(price-g_szPrevNYLow)<=thresh) return true;
+   }
+   return false;
+}
+
 bool HasOurPosition()
 {
    for(int i=PositionsTotal()-1;i>=0;i--)
@@ -1311,6 +1443,8 @@ void CheckNewM2Bar()
    datetime sig=iTime(_Symbol,Timeframe,1);
    if(sig==0){ Log("BAR_DATA_FAIL","iTime(1) returned 0"); return; }
 
+   UpdateSupplyZones(sig,h,l);
+
    for(int i=0;i<TRACK_SLOTS;i++)
    {
       if(!g_waitingFirstBar[i]) continue;
@@ -1449,6 +1583,13 @@ void CheckNewM2Bar()
    { Log("SIGNAL_SKIPPED","Entry blocked by UseFridayFilter (Friday, hour>="+IntegerToString(FridayFilterFromHourKST)+" KST)"); return; }
    if(UseFridayNarrowWindow && !InFridayNarrowAllowedWindowKST(sig))
    { Log("SIGNAL_SKIPPED","Entry blocked by UseFridayNarrowWindow (Friday, outside 10:30-15:00 KST)"); return; }
+   if(UseSupplyZoneFilter)
+   {
+      double atrSigBuf[1];
+      if(CopyBuffer(hATR_Sig,0,1,1,atrSigBuf)!=1){ Log("ATR_SIG_FAIL","no ATR(Timeframe) value"); return; }
+      if(!NearSupplyZone(c,atrSigBuf[0]))
+      { Log("SIGNAL_SKIPPED","Entry blocked by UseSupplyZoneFilter (not within SupplyZoneATR of any enabled zone)"); return; }
+   }
 
    // BODY vs WICK touch (diagnostic): the entry condition above only requires
    // the candle's high/low (wick) to reach BB20 -- this checks whether the
@@ -1672,8 +1813,9 @@ int OnInit()
    hBB20_HTF=iBands(_Symbol,HigherTFForTrend,20,0,2.0,PRICE_CLOSE);
    hBB4_HTF =iBands(_Symbol,HigherTFForTrend,4,0,4.0,PRICE_OPEN);
    hATR_HTF =iATR(_Symbol,HigherTFForTrend,ATRPeriod);
+   hATR_Sig =iATR(_Symbol,Timeframe,ATRPeriod);
    if(hBB20==INVALID_HANDLE || hBB4==INVALID_HANDLE || hStoch==INVALID_HANDLE || hADX==INVALID_HANDLE || hADXM2==INVALID_HANDLE ||
-      hBB20_HTF==INVALID_HANDLE || hBB4_HTF==INVALID_HANDLE || hATR_HTF==INVALID_HANDLE) return INIT_FAILED;
+      hBB20_HTF==INVALID_HANDLE || hBB4_HTF==INVALID_HANDLE || hATR_HTF==INVALID_HANDLE || hATR_Sig==INVALID_HANDLE) return INIT_FAILED;
 
    f_log=FileOpen("XAU_M2_BB_LIVE_001_STOCH_v2_LOG.csv",FILE_READ|FILE_WRITE|FILE_CSV|FILE_ANSI|FILE_SHARE_READ,',');
    if(f_log!=INVALID_HANDLE)
@@ -1728,6 +1870,12 @@ int OnInit()
        " | Trend10LookbackBars="+IntegerToString(Trend10LookbackBars)+" UseEntryTrend10OpposeExit="+(UseEntryTrend10OpposeExit?"true":"false")+
        " | ComboExitDangerMin="+DoubleToString(ComboExitDangerMin,1)+" UseComboExit="+(UseComboExit?"true":"false")+
        " | SkipFadeBearOSWickTouch="+(SkipFadeBearOSWickTouch?"true":"false")+
+       " | UseSupplyZoneFilter="+(UseSupplyZoneFilter?"true":"false")+" SupplyZoneATR="+DoubleToString(SupplyZoneATR,2)+
+       " UseAsiaBoxZone="+(UseAsiaBoxZone?"true":"false")+" AsiaOpenHourKST="+IntegerToString(AsiaOpenHourKST)+
+       " UseNYBoxZone="+(UseNYBoxZone?"true":"false")+" NYOpenHourKST="+DoubleToString(NYOpenHourKST,2)+
+       " UseTodayHighLowZone="+(UseTodayHighLowZone?"true":"false")+" UsePrevDayHighLowZone="+(UsePrevDayHighLowZone?"true":"false")+
+       " UsePrevNYHighLowZone="+(UsePrevNYHighLowZone?"true":"false")+
+       " NYSessionWindow="+DoubleToString(NYSessionStartHourKST,2)+"-"+DoubleToString(NYSessionEndHourKST,2)+"KST"+
        " | Lots="+DoubleToString(Lots,2)+" | Magic="+IntegerToString((int)MagicNumber)+
        " | orders="+(EnableLiveOrders?"ENABLED":"DRY"));
    return INIT_SUCCEEDED;
@@ -1744,6 +1892,7 @@ void OnDeinit(const int reason)
    if(hBB20_HTF!=INVALID_HANDLE) IndicatorRelease(hBB20_HTF);
    if(hBB4_HTF!=INVALID_HANDLE) IndicatorRelease(hBB4_HTF);
    if(hATR_HTF!=INVALID_HANDLE) IndicatorRelease(hATR_HTF);
+   if(hATR_Sig!=INVALID_HANDLE) IndicatorRelease(hATR_Sig);
 }
 
 void OnTick()
