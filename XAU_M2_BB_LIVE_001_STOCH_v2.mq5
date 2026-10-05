@@ -513,25 +513,37 @@
 //| range can differ from the full calendar day's). Each zone is its own   |
 //| toggle so they can be bucketed individually before combining.          |
 //|                                                                      |
-//| zoneDistATR= in MAE_OUTCOME (diagnostic, always logged regardless of   |
-//| UseSupplyZoneFilter's on/off state): distance from the signal close to |
-//| the NEAREST enabled zone level, in ATR(Timeframe) units ("n/a" if no   |
-//| enabled zone has a value yet).                                        |
+//| FIRST bucketing pass (n=1,903 trades) ran on a log with                |
+//| UseTradingWindowFilter=true drifted from this file's own defaults --   |
+//| it showed zoneDistATR 0-0.3 as the ONLY negative-NET bucket for        |
+//| TREND_BULL/BEAR (n=216, NET -$1,239.40, PF 0.834), which looked like a  |
+//| clean confirmation of the user's hypothesis (매물대 at the breakout      |
+//| close resists TREND continuation but not FADE). UseSupplyZoneFilter     |
+//| was built as a TREND-only block on that basis and set SupplyZoneATR=0.3|
+//| by default.                                                            |
 //|                                                                      |
-//| CONFIRMED via bucketing (n=1,903 trades, UseSupplyZoneFilter=false,    |
-//| UseTradingWindowFilter=true with non-confirmed window bounds -- a      |
-//| settings drift from this file's own delivered defaults, flagged to     |
-//| the user, not yet re-verified against them): zoneDistATR 0-0.3 was     |
-//| the ONLY bucket with negative NET for TREND_BULL/BEAR trades (n=216,   |
-//| WR 88.89%, NET -$1,239.40, PF 0.834) -- a 매물대 sitting right at the    |
-//| breakout close acts as resistance against the continuation, exactly    |
-//| as the user hypothesized. Every FADE bucket at the same proximity      |
-//| stayed solidly profitable (n=287, WR 91.99%, PF 1.322), since for      |
-//| FADE the zone holding IS the expected win, not an obstacle.            |
-//| UseSupplyZoneFilter now implements this as an active, TREND-only       |
-//| block: skips TREND_BULL/BEAR entries when zoneDistATR<=SupplyZoneATR   |
-//| (default 0.3); FADE entries are never affected by this filter. Not     |
-//| yet forward-validated with the filter actually ON.                     |
+//| THAT DID NOT REPLICATE under corrected settings (UseTradingWindowFilter|
+//| =false, matching this file's real defaults). A clean head-to-head       |
+//| (filter ON vs OFF, otherwise identical settings) showed PF improving     |
+//| slightly (TREND 1.423->1.459) but NET actually FALLING ($11,707.73->    |
+//| $9,455.81, -$2,251.92) -- re-bucketing the OFF run showed 0-0.3 was      |
+//| actually net-POSITIVE ($2,065.94 over n=318) under correct settings,     |
+//| just lower-PF than most other buckets (1.268, second-lowest of 5) --     |
+//| not an actual loss bucket. Blocking it cut a still-profitable slice.     |
+//| The one pattern that DID replicate across both datasets: 0.3-0.6 was     |
+//| consistently TREND's best bucket by far (PF 2.198, then 2.289).          |
+//|                                                                        |
+//| Currently re-testing a tighter SupplyZoneATR=0.15 cutoff to see if an    |
+//| even narrower "right at the wall" zone is the real danger zone (vs       |
+//| 0-0.3 being too wide and catching profitable trades along with bad       |
+//| ones). Not yet validated either way -- treat UseSupplyZoneFilter as      |
+//| experimental until a tighter cutoff's own clean head-to-head confirms    |
+//| a real NET improvement, not just a PF one.                               |
+//|                                                                        |
+//| zoneDistATR= in MAE_OUTCOME (diagnostic, always logged regardless of    |
+//| UseSupplyZoneFilter's on/off state): distance from the signal close to   |
+//| the NEAREST enabled zone level, in ATR(Timeframe) units ("n/a" if no     |
+//| enabled zone has a value yet).                                          |
 //+------------------------------------------------------------------+
 #property strict
 #include <Trade/Trade.mqh>
@@ -629,7 +641,7 @@ input bool   SkipFadeBearOSWickTouch = true; // Skip FADE_BEAR_OS wick-only touc
 // Master OFF by default; each zone independently toggleable for its own
 // ground-truth backtest before combining.
 input bool   UseSupplyZoneFilter   = false; // Block TREND_BULL/BEAR (continuation) entries when zoneDistATR<=SupplyZoneATR; FADE entries are never blocked (CONFIRMED by zoneDistATR bucketing, see header)
-input double SupplyZoneATR         = 0.3; // TREND-block threshold, as ATR(Timeframe) multiple (CONFIRMED: 0-0.3 was the only negative-NET bucket for TREND trades)
+input double SupplyZoneATR         = 0.15; // TREND-block threshold, as ATR(Timeframe) multiple (0.30 tested CLEAN head-to-head: PF +0.036 but NET -$2,251.92 on TREND since that whole bucket was actually net-positive on corrected settings, see header -- re-testing a tighter cutoff)
 input bool   UseAsiaBoxZone        = true; // Include the Asia-session opening-hour candle's high/low
 input int    AsiaOpenHourKST       = 8; // KST hour whose candle defines the Asia session open box (source doc: 아시아 7-8시 시작)
 input bool   UseNYBoxZone          = true; // Include the NY/US-session opening-hour candle's high/low
