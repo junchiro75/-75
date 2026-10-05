@@ -516,15 +516,22 @@
 //| zoneDistATR= in MAE_OUTCOME (diagnostic, always logged regardless of   |
 //| UseSupplyZoneFilter's on/off state): distance from the signal close to |
 //| the NEAREST enabled zone level, in ATR(Timeframe) units ("n/a" if no   |
-//| enabled zone has a value yet). Per the user's hypothesis: a 매물대       |
-//| sitting right at a breakout close can act as resistance AGAINST a      |
-//| TREND_BULL/BEAR (continuation) entry specifically -- not FADE, where   |
-//| the zone is the expected target rather than an obstacle -- which may   |
-//| explain some of 001's one-way/against-trend losses. Bucket this field  |
-//| by trade tag (TREND_* vs FADE_*) and distance range on a normal        |
-//| backtest (filter left off) before deciding whether to turn             |
-//| UseSupplyZoneFilter into an active block on TREND_* entries only.      |
-//| Not yet backtested.                                                    |
+//| enabled zone has a value yet).                                        |
+//|                                                                      |
+//| CONFIRMED via bucketing (n=1,903 trades, UseSupplyZoneFilter=false,    |
+//| UseTradingWindowFilter=true with non-confirmed window bounds -- a      |
+//| settings drift from this file's own delivered defaults, flagged to     |
+//| the user, not yet re-verified against them): zoneDistATR 0-0.3 was     |
+//| the ONLY bucket with negative NET for TREND_BULL/BEAR trades (n=216,   |
+//| WR 88.89%, NET -$1,239.40, PF 0.834) -- a 매물대 sitting right at the    |
+//| breakout close acts as resistance against the continuation, exactly    |
+//| as the user hypothesized. Every FADE bucket at the same proximity      |
+//| stayed solidly profitable (n=287, WR 91.99%, PF 1.322), since for      |
+//| FADE the zone holding IS the expected win, not an obstacle.            |
+//| UseSupplyZoneFilter now implements this as an active, TREND-only       |
+//| block: skips TREND_BULL/BEAR entries when zoneDistATR<=SupplyZoneATR   |
+//| (default 0.3); FADE entries are never affected by this filter. Not     |
+//| yet forward-validated with the filter actually ON.                     |
 //+------------------------------------------------------------------+
 #property strict
 #include <Trade/Trade.mqh>
@@ -621,8 +628,8 @@ input bool   SkipFadeBearOSWickTouch = true; // Skip FADE_BEAR_OS wick-only touc
 // (session opening-hour box, today/prev-day high-low, prev NY-session high-low).
 // Master OFF by default; each zone independently toggleable for its own
 // ground-truth backtest before combining.
-input bool   UseSupplyZoneFilter   = false; // Require the signal close within SupplyZoneATR of >=1 enabled supply-zone level
-input double SupplyZoneATR         = 0.5; // Proximity threshold, as ATR(Timeframe) multiple
+input bool   UseSupplyZoneFilter   = false; // Block TREND_BULL/BEAR (continuation) entries when zoneDistATR<=SupplyZoneATR; FADE entries are never blocked (CONFIRMED by zoneDistATR bucketing, see header)
+input double SupplyZoneATR         = 0.3; // TREND-block threshold, as ATR(Timeframe) multiple (CONFIRMED: 0-0.3 was the only negative-NET bucket for TREND trades)
 input bool   UseAsiaBoxZone        = true; // Include the Asia-session opening-hour candle's high/low
 input int    AsiaOpenHourKST       = 8; // KST hour whose candle defines the Asia session open box (source doc: 아시아 7-8시 시작)
 input bool   UseNYBoxZone          = true; // Include the NY/US-session opening-hour candle's high/low
@@ -1622,13 +1629,6 @@ void CheckNewM2Bar()
    { Log("SIGNAL_SKIPPED","Entry blocked by UseFridayFilter (Friday, hour>="+IntegerToString(FridayFilterFromHourKST)+" KST)"); return; }
    if(UseFridayNarrowWindow && !InFridayNarrowAllowedWindowKST(sig))
    { Log("SIGNAL_SKIPPED","Entry blocked by UseFridayNarrowWindow (Friday, outside 10:30-15:00 KST)"); return; }
-   if(UseSupplyZoneFilter)
-   {
-      double atrSigBuf[1];
-      if(CopyBuffer(hATR_Sig,0,1,1,atrSigBuf)!=1){ Log("ATR_SIG_FAIL","no ATR(Timeframe) value"); return; }
-      if(!NearSupplyZone(c,atrSigBuf[0]))
-      { Log("SIGNAL_SKIPPED","Entry blocked by UseSupplyZoneFilter (not within SupplyZoneATR of any enabled zone)"); return; }
-   }
 
    // BODY vs WICK touch (diagnostic): the entry condition above only requires
    // the candle's high/low (wick) to reach BB20 -- this checks whether the
@@ -1831,6 +1831,19 @@ void CheckNewM2Bar()
    {
       double atrSigDiag[1];
       g_lastZoneDistATR=(CopyBuffer(hATR_Sig,0,1,1,atrSigDiag)==1) ? DistanceToNearestZone(c,atrSigDiag[0]) : 999.0;
+   }
+   // TREND-only 매물대 block (CONFIRMED finding, see header): a supply zone
+   // sitting right at a TREND_BULL/BEAR breakout close acts as resistance
+   // against the continuation -- zoneDistATR 0-0.3 was the ONLY bucket with
+   // negative NET for TREND trades (n=216, WR 88.89%, PF 0.834), while every
+   // FADE bucket (same proximity included) stayed solidly profitable, since
+   // for FADE the zone holding is the expected win, not an obstacle. Scoped
+   // to dir==sigdir (continuation) only -- FADE entries are never blocked.
+   if(UseSupplyZoneFilter && dir==sigdir && g_lastZoneDistATR<=SupplyZoneATR)
+   {
+      Log("SIGNAL_SKIPPED","TREND entry blocked by UseSupplyZoneFilter: zoneDistATR="+
+          DoubleToString(g_lastZoneDistATR,3)+" <= "+DoubleToString(SupplyZoneATR,2));
+      return;
    }
    g_lastPrior5Same=prior5Same;
    g_lastAdxRiseDiff=adxRiseDiff; g_lastAdxRiseKnown=adxRiseKnown;
