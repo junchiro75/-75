@@ -179,12 +179,44 @@ input int    MACDFastPeriod       = 12; // MACD fast EMA period
 input int    MACDSlowPeriod       = 26; // MACD slow EMA period
 input int    MACDSignalPeriod     = 9; // MACD signal period
 
+// -- 매물대 (supply/demand zone) anchor, ported from the 주노짜앙/지킬 reference -
+// doc + [매물대]/HHJ TradingView scripts, same infrastructure as 001 M2's
+// UseSupplyZoneFilter. On 001, a simple distance-based TREND block did NOT
+// show a robust, replicated edge (see that file's header) -- here it is
+// applied differently: as an ADDITIONAL required condition on pivot1 itself
+// (stacked onto the existing BB20 band anchor via AND), since 008's whole
+// premise is that pivot1 sits at a 매물대 already; this tests whether a
+// RICHER zone definition (session boxes, day high/low, prev NY high/low)
+// makes that anchor more selective/reliable than BB20 alone. Default OFF so
+// the confirmed baseline reproduces exactly.
+input bool   UseSupplyZoneAnchor   = false; // Also require pivot1 within SupplyZoneATR of >=1 enabled 매물대 zone level (stacks onto BandAnchorATR, does not replace it)
+input double SupplyZoneATR         = 0.5; // Proximity threshold, as ATR(Timeframe) multiple
+input bool   UseAsiaBoxZone        = true; // Include the Asia-session opening-hour candle's high/low
+input int    AsiaOpenHourKST       = 8; // KST hour whose candle defines the Asia session open box
+input bool   UseNYBoxZone          = true; // Include the NY/US-session opening-hour candle's high/low
+input double NYOpenHourKST         = 22.5; // KST hour (decimal) whose candle defines the NY session open box
+input bool   UseTodayHighLowZone   = true; // Include today's running high/low (so far, KST calendar day)
+input bool   UsePrevDayHighLowZone = true; // Include the previous KST calendar day's high/low
+input bool   UsePrevNYHighLowZone  = true; // Include the previous day's NY-session-window high/low
+input double NYSessionStartHourKST = 20.0; // KST hour (decimal) the NY session window starts (wraps past midnight)
+input double NYSessionEndHourKST   = 6.0; // KST hour (decimal) the NY session window ends
+
 input ulong  MagicNumber          = 95016108; // Magic number
 input int    MaxDeviationPts      = 50; // Max price deviation (points)
 input bool   EnableLiveOrders     = false; // Enable live orders
 
 int hBB=INVALID_HANDLE, hStoch=INVALID_HANDLE, hATR=INVALID_HANDLE;
 int hWMA17=INVALID_HANDLE, hHTFFastMA=INVALID_HANDLE, hHTFSlowMA=INVALID_HANDLE, hMACD=INVALID_HANDLE;
+
+// -- supply-zone state (all in KST calendar-day terms), ported from 001 M2 --
+int    g_szLastDay=-1;
+bool   g_szAsiaBoxSet=false; double g_szAsiaHigh=0, g_szAsiaLow=0;
+bool   g_szNYBoxSet=false;   double g_szNYHigh=0, g_szNYLow=0;
+double g_szTodayHigh=0, g_szTodayLow=0;
+double g_szPrevDayHigh=0, g_szPrevDayLow=0; bool g_szHavePrevDay=false;
+double g_szNYSessHigh=0, g_szNYSessLow=0;
+double g_szPrevNYHigh=0, g_szPrevNYLow=0;   bool g_szHavePrevNY=false;
+bool   g_szInNYSessPrevBar=false;
 datetime last_bar=0;
 int f_log=INVALID_HANDLE;
 
@@ -329,6 +361,111 @@ bool MACDGateOk(int dir)
    else        return (main[0]<signal[0]) && (hist0<hist1);
 }
 
+// -- 매물대 (supply/demand zone) tracking, ported from 001 M2 (same logic,
+// same KST calendar-day semantics) --
+bool IsEUDST_SZ(datetime server_now)
+{
+   MqlDateTime t; TimeToStruct(server_now,t);
+   MqlDateTime dstStartT; dstStartT.year=t.year; dstStartT.mon=3; dstStartT.day=31; dstStartT.hour=0; dstStartT.min=0; dstStartT.sec=0;
+   datetime dstStart=StructToTime(dstStartT);
+   MqlDateTime cur1; TimeToStruct(dstStart,cur1); dstStart-=cur1.day_of_week*86400;
+   MqlDateTime dstEndT; dstEndT.year=t.year; dstEndT.mon=10; dstEndT.day=31; dstEndT.hour=0; dstEndT.min=0; dstEndT.sec=0;
+   datetime dstEnd=StructToTime(dstEndT);
+   MqlDateTime cur2; TimeToStruct(dstEnd,cur2); dstEnd-=cur2.day_of_week*86400;
+   return (server_now>=dstStart && server_now<dstEnd);
+}
+
+int KST_Hour_SZ(datetime server_now)
+{
+   int offsetHours=IsEUDST_SZ(server_now)?6:7;
+   MqlDateTime t; TimeToStruct(server_now+offsetHours*3600,t);
+   return t.hour;
+}
+
+int KSTDayIndex(datetime server_now)
+{
+   int offsetHours=IsEUDST_SZ(server_now)?6:7;
+   datetime kst=server_now+offsetHours*3600;
+   return (int)(kst/86400);
+}
+
+bool InWindowKST_SZ(int minOfDay,double startHour,double endHour)
+{
+   int start=(int)MathRound(startHour*60);
+   int end=(int)MathRound(endHour*60);
+   if(start<=end) return (minOfDay>=start && minOfDay<end);
+   return (minOfDay>=start || minOfDay<end);
+}
+
+void UpdateSupplyZones(datetime sig,double h,double l)
+{
+   int day=KSTDayIndex(sig);
+   int hourKST=KST_Hour_SZ(sig);
+   int offsetHours=IsEUDST_SZ(sig)?6:7;
+   MqlDateTime t; TimeToStruct(sig+offsetHours*3600,t);
+   int minOfDay=t.hour*60+t.min;
+
+   if(g_szLastDay<0)
+   {
+      g_szLastDay=day; g_szTodayHigh=h; g_szTodayLow=l;
+      g_szAsiaBoxSet=false; g_szNYBoxSet=false;
+   }
+   else if(day!=g_szLastDay)
+   {
+      g_szPrevDayHigh=g_szTodayHigh; g_szPrevDayLow=g_szTodayLow; g_szHavePrevDay=true;
+      g_szTodayHigh=h; g_szTodayLow=l;
+      g_szAsiaBoxSet=false; g_szNYBoxSet=false;
+      g_szLastDay=day;
+   }
+   else
+   {
+      if(h>g_szTodayHigh) g_szTodayHigh=h;
+      if(l<g_szTodayLow)  g_szTodayLow=l;
+   }
+
+   if(!g_szAsiaBoxSet && hourKST==AsiaOpenHourKST)
+   { g_szAsiaHigh=h; g_szAsiaLow=l; g_szAsiaBoxSet=true; }
+
+   int nyOpenMin=(int)MathRound(NYOpenHourKST*60);
+   if(!g_szNYBoxSet && minOfDay>=nyOpenMin && minOfDay<nyOpenMin+60)
+   { g_szNYHigh=h; g_szNYLow=l; g_szNYBoxSet=true; }
+
+   bool inNYSess=InWindowKST_SZ(minOfDay,NYSessionStartHourKST,NYSessionEndHourKST);
+   if(inNYSess)
+   {
+      if(!g_szInNYSessPrevBar){ g_szNYSessHigh=h; g_szNYSessLow=l; }
+      else { if(h>g_szNYSessHigh) g_szNYSessHigh=h; if(l<g_szNYSessLow) g_szNYSessLow=l; }
+   }
+   else if(g_szInNYSessPrevBar)
+   {
+      g_szPrevNYHigh=g_szNYSessHigh; g_szPrevNYLow=g_szNYSessLow; g_szHavePrevNY=true;
+   }
+   g_szInNYSessPrevBar=inNYSess;
+}
+
+double DistanceToNearestZone(double price,double atr)
+{
+   if(atr<=0) return 999.0;
+   double best=999.0;
+   if(UseAsiaBoxZone && g_szAsiaBoxSet)
+   { best=MathMin(best,MathAbs(price-g_szAsiaHigh)/atr); best=MathMin(best,MathAbs(price-g_szAsiaLow)/atr); }
+   if(UseNYBoxZone && g_szNYBoxSet)
+   { best=MathMin(best,MathAbs(price-g_szNYHigh)/atr); best=MathMin(best,MathAbs(price-g_szNYLow)/atr); }
+   if(UseTodayHighLowZone)
+   { best=MathMin(best,MathAbs(price-g_szTodayHigh)/atr); best=MathMin(best,MathAbs(price-g_szTodayLow)/atr); }
+   if(UsePrevDayHighLowZone && g_szHavePrevDay)
+   { best=MathMin(best,MathAbs(price-g_szPrevDayHigh)/atr); best=MathMin(best,MathAbs(price-g_szPrevDayLow)/atr); }
+   if(UsePrevNYHighLowZone && g_szHavePrevNY)
+   { best=MathMin(best,MathAbs(price-g_szPrevNYHigh)/atr); best=MathMin(best,MathAbs(price-g_szPrevNYLow)/atr); }
+   return best;
+}
+
+bool NearSupplyZone(double price,double atr)
+{
+   if(!UseSupplyZoneAnchor) return true;
+   return DistanceToNearestZone(price,atr)<=SupplyZoneATR;
+}
+
 void OpenTrade(int dir,double sl,double atr,double gapATR,int barsP1toP2,int barsP2toConfirm,string tag)
 {
    if(HasOurPosition()){ Log("ENTRY_SKIPPED","own-Magic position already exists"); return; }
@@ -415,6 +552,8 @@ void CheckNewBar()
    double atr=atrbuf[0];
    if(atr<=0) return;
 
+   UpdateSupplyZones(iTime(_Symbol,Timeframe,1),iHigh(_Symbol,Timeframe,1),iLow(_Symbol,Timeframe,1));
+
    bool haveOpenPos=HasOurPosition();
 
    double pivLow, pivHigh;
@@ -426,7 +565,7 @@ void CheckNewBar()
    // ============================= BUY (W) =============================
    if(g_buyStage==0)
    {
-      if(gotPivotLow && pivLow<=lower[0]+BandAnchorATR*atr && TangleGateOk())
+      if(gotPivotLow && pivLow<=lower[0]+BandAnchorATR*atr && TangleGateOk() && NearSupplyZone(pivLow,atr))
       {
          g_buyStage=1; g_buyPivot1=pivLow; g_buyPivot1Bar=pivotBarIndex;
          g_buyNeckline=iHigh(_Symbol,Timeframe,1); g_buyBarsSincePivot1=0;
@@ -507,7 +646,7 @@ void CheckNewBar()
    // ============================= SELL (M) =============================
    if(g_sellStage==0)
    {
-      if(gotPivotHigh && pivHigh>=upper[0]-BandAnchorATR*atr && TangleGateOk())
+      if(gotPivotHigh && pivHigh>=upper[0]-BandAnchorATR*atr && TangleGateOk() && NearSupplyZone(pivHigh,atr))
       {
          g_sellStage=1; g_sellPivot1=pivHigh; g_sellPivot1Bar=pivotBarIndex;
          g_sellNeckline=iLow(_Symbol,Timeframe,1); g_sellBarsSincePivot1=0;
@@ -617,6 +756,12 @@ int OnInit()
        " | UseHTFCrossGate="+(UseHTFCrossGate?"true":"false")+" HTFTimeframe="+EnumToString(HTFTimeframe)+
        " HTFFastPeriod="+IntegerToString(HTFFastPeriod)+" HTFSlowPeriod="+IntegerToString(HTFSlowPeriod)+
        " | UseMACDGate="+(UseMACDGate?"true":"false")+" MACD("+IntegerToString(MACDFastPeriod)+","+IntegerToString(MACDSlowPeriod)+","+IntegerToString(MACDSignalPeriod)+")"+
+       " | UseSupplyZoneAnchor="+(UseSupplyZoneAnchor?"true":"false")+" SupplyZoneATR="+DoubleToString(SupplyZoneATR,2)+
+       " UseAsiaBoxZone="+(UseAsiaBoxZone?"true":"false")+" AsiaOpenHourKST="+IntegerToString(AsiaOpenHourKST)+
+       " UseNYBoxZone="+(UseNYBoxZone?"true":"false")+" NYOpenHourKST="+DoubleToString(NYOpenHourKST,2)+
+       " UseTodayHighLowZone="+(UseTodayHighLowZone?"true":"false")+" UsePrevDayHighLowZone="+(UsePrevDayHighLowZone?"true":"false")+
+       " UsePrevNYHighLowZone="+(UsePrevNYHighLowZone?"true":"false")+
+       " NYSessionWindow="+DoubleToString(NYSessionStartHourKST,2)+"-"+DoubleToString(NYSessionEndHourKST,2)+"KST"+
        " | Lots="+DoubleToString(Lots,2)+" | Magic="+IntegerToString((int)MagicNumber)+
        " | orders="+(EnableLiveOrders?"ENABLED":"DRY"));
    return INIT_SUCCEEDED;
