@@ -201,12 +201,26 @@ input bool   UsePrevNYHighLowZone  = true; // Include the previous day's NY-sess
 input double NYSessionStartHourKST = 20.0; // KST hour (decimal) the NY session window starts (wraps past midnight)
 input double NYSessionEndHourKST   = 6.0; // KST hour (decimal) the NY session window ends
 
+// -- v7 redesign, per the user's own re-think after UseTangleGate/Use17BreakConfirm/
+// UseSupplyZoneAnchor all failed to beat the baseline: question whether the FIXED
+// ATR-buffered stop + fixed TP_R target were the wrong shape to begin with, vs the
+// source material's own structural stop (pivot extreme, no padding) and dynamic
+// target (20-MA or the nearest 원비 band edge, whichever is CLOSER). Also adds a
+// 4-weighted/17-weighted MA "올라타기" confirmation at entry, per "4가중과 17선
+// 확인". Each independently toggleable, default OFF so the confirmed baseline
+// reproduces exactly.
+input bool   UseRawPivotStop      = false; // SL = the more extreme pivot exactly (no SLBufferATR, no MinStopATR floor) -- "손절은 피봇1/2 중 더 고점/저점인 봉"
+input bool   UseDynamicTP         = false; // TP = whichever is CLOSER of {20-SMA, nearest 원비(44/4 band) edge} in the favorable direction, instead of TP_R*R -- "익절은 20이평 또는 가까운 원비지점"
+input int    WMA4Period           = 4; // Period of the 4-weighted MA ("4가중")
+input bool   UseMA4_17EntryConfirm = false; // Also require the close beyond BOTH WMA4 and WMA17 (not just the neckline hold) before firing entry -- "진입시 4가중과 17선 확인"
+
 input ulong  MagicNumber          = 95016108; // Magic number
 input int    MaxDeviationPts      = 50; // Max price deviation (points)
 input bool   EnableLiveOrders     = false; // Enable live orders
 
 int hBB=INVALID_HANDLE, hStoch=INVALID_HANDLE, hATR=INVALID_HANDLE;
 int hWMA17=INVALID_HANDLE, hHTFFastMA=INVALID_HANDLE, hHTFSlowMA=INVALID_HANDLE, hMACD=INVALID_HANDLE;
+int hWMA4=INVALID_HANDLE, hBB4=INVALID_HANDLE;
 
 // -- supply-zone state (all in KST calendar-day terms), ported from 001 M2 --
 int    g_szLastDay=-1;
@@ -310,6 +324,40 @@ bool GetWMA17(double &outVal)
    if(CopyBuffer(hWMA17,0,1,1,buf)!=1) return false;
    outVal=buf[0];
    return true;
+}
+
+bool GetWMA4(double &outVal)
+{
+   double buf[1];
+   if(CopyBuffer(hWMA4,0,1,1,buf)!=1) return false;
+   outVal=buf[0];
+   return true;
+}
+
+// Dynamic TP (UseDynamicTP): whichever of {20-SMA (BB base line), nearest 원비
+// (44/4-band) edge} sits CLOSER to ref in the favorable direction. Falls back
+// to the caller's own TP_R*R value if neither candidate lies beyond ref.
+double ComputeDynamicTP(int dir,double ref,double fallbackTP)
+{
+   double sma20buf[1];
+   if(CopyBuffer(hBB,0,1,1,sma20buf)!=1) return fallbackTP;
+   double sma20=sma20buf[0];
+
+   double bb4up[1], bb4lo[1];
+   bool haveBB4=(CopyBuffer(hBB4,1,1,1,bb4up)==1 && CopyBuffer(hBB4,2,1,1,bb4lo)==1);
+
+   double best=0; bool haveBest=false;
+   if(dir==+1)
+   {
+      if(sma20>ref){ best=sma20; haveBest=true; }
+      if(haveBB4 && bb4up[0]>ref && (!haveBest || bb4up[0]<best)){ best=bb4up[0]; haveBest=true; }
+   }
+   else
+   {
+      if(sma20<ref){ best=sma20; haveBest=true; }
+      if(haveBB4 && bb4lo[0]<ref && (!haveBest || bb4lo[0]>best)){ best=bb4lo[0]; haveBest=true; }
+   }
+   return haveBest ? best : fallbackTP;
 }
 
 // "가단" = the 17-weighted/20-simple MA pair (BB base line = SMA(BBPeriod), reused
@@ -474,14 +522,14 @@ void OpenTrade(int dir,double sl,double atr,double gapATR,int barsP1toP2,int bar
    double ref=(dir==+1 ? q.ask : q.bid);
    double R=MathAbs(ref-sl);
    double rawR_ATR=(atr>0) ? R/atr : 0;
-   if(MinStopATR>0 && atr>0 && R<MinStopATR*atr)
+   if(!UseRawPivotStop && MinStopATR>0 && atr>0 && R<MinStopATR*atr)
    {
       double need=MinStopATR*atr-R;
       sl=sl-dir*need;
       R=MathAbs(ref-sl);
    }
    double flooredR_ATR=(atr>0) ? R/atr : 0;
-   double tp=ref+dir*TP_R*R;
+   double tp=UseDynamicTP ? ComputeDynamicTP(dir,ref,ref+dir*TP_R*R) : ref+dir*TP_R*R;
 
    double cushion=MinStopDistance()+_Point;
    if(dir==+1)
@@ -616,6 +664,11 @@ void CheckNewBar()
             double wma17;
             aboveNeck=aboveNeck && GetWMA17(wma17) && c>wma17;
          }
+         if(UseMA4_17EntryConfirm)
+         {
+            double wma4b,wma17b;
+            aboveNeck=aboveNeck && GetWMA4(wma4b) && GetWMA17(wma17b) && c>wma4b && c>wma17b;
+         }
          // CONSECUTIVE hold, not just "still above on whichever bar the wait
          // happens to end on" -- a dip back below the neckline resets the
          // streak, so a real whipsaw (break, pull back, break again) has to
@@ -633,7 +686,7 @@ void CheckNewBar()
                 " holdBars="+IntegerToString(g_buyNeckHoldBars));
             if(!haveOpenPos)
             {
-               double sl=MathMin(g_buyPivot1,g_buyPivot2)-SLBufferATR*atr;
+               double sl=UseRawPivotStop ? MathMin(g_buyPivot1,g_buyPivot2) : MathMin(g_buyPivot1,g_buyPivot2)-SLBufferATR*atr;
                OpenTrade(+1,sl,atr,gapATR,barsP1toP2,barsP2toConfirm,"SSANGBI_BUY");
             }
             else
@@ -696,6 +749,11 @@ void CheckNewBar()
          double wma17;
          belowNeck=belowNeck && GetWMA17(wma17) && c<wma17;
       }
+      if(UseMA4_17EntryConfirm)
+      {
+         double wma4s,wma17s;
+         belowNeck=belowNeck && GetWMA4(wma4s) && GetWMA17(wma17s) && c<wma4s && c<wma17s;
+      }
       if(belowNeck) g_sellNeckHoldBars++; else g_sellNeckHoldBars=0;
 
       if(g_sellNeckHoldBars>=MinBarsToConfirm)
@@ -708,7 +766,7 @@ void CheckNewBar()
              " holdBars="+IntegerToString(g_sellNeckHoldBars));
          if(!haveOpenPos)
          {
-            double sl=MathMax(g_sellPivot1,g_sellPivot2)+SLBufferATR*atr;
+            double sl=UseRawPivotStop ? MathMax(g_sellPivot1,g_sellPivot2) : MathMax(g_sellPivot1,g_sellPivot2)+SLBufferATR*atr;
             OpenTrade(-1,sl,atr,gapATR,barsP1toP2,barsP2toConfirm,"SSANGBI_SELL");
          }
          else
@@ -728,8 +786,11 @@ int OnInit()
    hHTFFastMA=iMA(_Symbol,HTFTimeframe,HTFFastPeriod,0,MODE_LWMA,PRICE_CLOSE);
    hHTFSlowMA=iMA(_Symbol,HTFTimeframe,HTFSlowPeriod,0,MODE_LWMA,PRICE_CLOSE);
    hMACD=iMACD(_Symbol,Timeframe,MACDFastPeriod,MACDSlowPeriod,MACDSignalPeriod,PRICE_CLOSE);
+   hWMA4=iMA(_Symbol,Timeframe,WMA4Period,0,MODE_LWMA,PRICE_CLOSE);
+   hBB4=iBands(_Symbol,Timeframe,4,0,4.0,PRICE_OPEN);
    if(hBB==INVALID_HANDLE || hStoch==INVALID_HANDLE || hATR==INVALID_HANDLE ||
-      hWMA17==INVALID_HANDLE || hHTFFastMA==INVALID_HANDLE || hHTFSlowMA==INVALID_HANDLE || hMACD==INVALID_HANDLE)
+      hWMA17==INVALID_HANDLE || hHTFFastMA==INVALID_HANDLE || hHTFSlowMA==INVALID_HANDLE || hMACD==INVALID_HANDLE ||
+      hWMA4==INVALID_HANDLE || hBB4==INVALID_HANDLE)
    { Print("Indicator handle creation failed"); return INIT_FAILED; }
 
    f_log=FileOpen("XAU_M2_BB_LIVE_008_SSANGBI_LOG.csv",FILE_READ|FILE_WRITE|FILE_CSV|FILE_ANSI|FILE_SHARE_READ,',');
@@ -762,6 +823,9 @@ int OnInit()
        " UseTodayHighLowZone="+(UseTodayHighLowZone?"true":"false")+" UsePrevDayHighLowZone="+(UsePrevDayHighLowZone?"true":"false")+
        " UsePrevNYHighLowZone="+(UsePrevNYHighLowZone?"true":"false")+
        " NYSessionWindow="+DoubleToString(NYSessionStartHourKST,2)+"-"+DoubleToString(NYSessionEndHourKST,2)+"KST"+
+       " | UseRawPivotStop="+(UseRawPivotStop?"true":"false")+
+       " UseDynamicTP="+(UseDynamicTP?"true":"false")+
+       " WMA4Period="+IntegerToString(WMA4Period)+" UseMA4_17EntryConfirm="+(UseMA4_17EntryConfirm?"true":"false")+
        " | Lots="+DoubleToString(Lots,2)+" | Magic="+IntegerToString((int)MagicNumber)+
        " | orders="+(EnableLiveOrders?"ENABLED":"DRY"));
    return INIT_SUCCEEDED;
@@ -777,6 +841,8 @@ void OnDeinit(const int reason)
    if(hHTFFastMA!=INVALID_HANDLE) IndicatorRelease(hHTFFastMA);
    if(hHTFSlowMA!=INVALID_HANDLE) IndicatorRelease(hHTFSlowMA);
    if(hMACD!=INVALID_HANDLE) IndicatorRelease(hMACD);
+   if(hWMA4!=INVALID_HANDLE) IndicatorRelease(hWMA4);
+   if(hBB4!=INVALID_HANDLE) IndicatorRelease(hBB4);
 }
 
 void OnTick()
