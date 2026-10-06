@@ -76,3 +76,4 @@ UsePrevDayHighLowZone=true
 UsePrevNYHighLowZone=true
 NYSessionStartHourKST=20.0
 NYSessionEndHourKST=6.0
+DIPeriod=20

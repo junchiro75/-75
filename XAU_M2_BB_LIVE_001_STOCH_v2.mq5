@@ -544,6 +544,15 @@
 //| UseSupplyZoneFilter's on/off state): distance from the signal close to   |
 //| the NEAREST enabled zone level, in ATR(Timeframe) units ("n/a" if no     |
 //| enabled zone has a value yet).                                          |
+//|                                                                        |
+//| DI= in MAE_OUTCOME (diagnostic, UNTESTED, no trading effect): DI        |
+//| (이격도/disparity index) = signal candle close / SMA(DIPeriod) * 100 --   |
+//| >100 means price is trading above its own MA by that many percent,      |
+//| <100 means below. Tests whether how far price has already run from its |
+//| MA predicts the signal's outcome (e.g. a FADE bought/sold deep into      |
+//| over-extension vs a TREND entry chasing an already-stretched move).     |
+//| Needs a backtest to read the DI crosstab vs TREND/FADE outcome before    |
+//| considering turning it into an active filter.                           |
 //+------------------------------------------------------------------+
 #property strict
 #include <Trade/Trade.mqh>
@@ -652,8 +661,17 @@ input bool   UsePrevNYHighLowZone  = true; // Include the previous day's NY-sess
 input double NYSessionStartHourKST = 20.0; // KST hour (decimal) the NY session window starts, for 전일 미장 고가/저가 tracking (wraps past midnight)
 input double NYSessionEndHourKST   = 6.0; // KST hour (decimal) the NY session window ends
 
+// -- DI (이격도/disparity index) diagnostic (UNTESTED, no trading effect):
+//    DI = signal candle close / SMA(DIPeriod) * 100. >100 = price trading
+//    above its own MA by that many percent, <100 = below. Tests whether
+//    how far price has already run from its MA predicts the signal's
+//    outcome (e.g. a FADE bought/sold deep into over-extension vs a TREND
+//    entry chasing an already-stretched move). Diagnostic only -- logged
+//    on every trade so it can be bucketed before considering a filter.
+input int    DIPeriod              = 20; // SMA period for the 이격도 baseline
+
 int hBB20=INVALID_HANDLE,hBB4=INVALID_HANDLE,hStoch=INVALID_HANDLE,hADX=INVALID_HANDLE,hADXM2=INVALID_HANDLE;
-int hBB20_HTF=INVALID_HANDLE,hBB4_HTF=INVALID_HANDLE,hATR_HTF=INVALID_HANDLE;
+int hBB20_HTF=INVALID_HANDLE,hBB4_HTF=INVALID_HANDLE,hATR_HTF=INVALID_HANDLE,hMA_DI=INVALID_HANDLE;
 int hATR_Sig=INVALID_HANDLE;
 datetime last_m2_bar=0;
 int f_log=INVALID_HANDLE;
@@ -790,6 +808,10 @@ bool   g_trackPrior5Same[TRACK_SLOTS];
 //    zone is the expected target, not an obstacle).
 double g_lastZoneDistATR=999.0; // transient handoff value, set right before OpenTrade()
 double g_trackZoneDistATR[TRACK_SLOTS];
+
+// -- DI (이격도) tracking (diagnostic only, no trading effect) --
+double g_lastDI=0; bool g_lastDIKnown=false; // transient handoff, set right before OpenTrade()
+double g_trackDI[TRACK_SLOTS]; bool g_trackDIKnown[TRACK_SLOTS];
 
 // -- pre-signal ADX rise tracking (diagnostic only, no trading effect):
 //    for a BEAR signal candle, compares the M2-timeframe ADX at the
@@ -960,6 +982,7 @@ void StartMAETracking(ulong ticket,double entry,double R,int dir,string tag)
    g_trackBodyTouch[i]=g_lastBodyTouch;
    g_trackPrior5Same[i]=g_lastPrior5Same;
    g_trackZoneDistATR[i]=g_lastZoneDistATR;
+   g_trackDI[i]=g_lastDI; g_trackDIKnown[i]=g_lastDIKnown;
    g_trackAdxRiseDiff[i]=g_lastAdxRiseDiff; g_trackAdxRiseKnown[i]=g_lastAdxRiseKnown;
    g_trackEffRatio[i]=g_lastEffRatio; g_trackEffRatioKnown[i]=g_lastEffRatioKnown;
    g_trackHtfAligned[i]=g_lastHtfAligned; g_trackHtfKnown[i]=g_lastHtfKnown;
@@ -1689,6 +1712,17 @@ void CheckNewM2Bar()
       }
    }
 
+   // DI (이격도): signal candle close vs its own SMA(DIPeriod), as a percent.
+   double di=0; bool diKnown=false;
+   {
+      double maBuf[1];
+      if(CopyBuffer(hMA_DI,0,1,1,maBuf)==1 && maBuf[0]>0)
+      {
+         di=c/maBuf[0]*100.0;
+         diKnown=true;
+      }
+   }
+
    // Higher-timeframe BB breakout alignment: is the most recently closed
    // HigherTFForTrend candle ITSELF a BB20/BB4 breakout in the same
    // direction as this M2 signal?
@@ -1858,6 +1892,7 @@ void CheckNewM2Bar()
       return;
    }
    g_lastPrior5Same=prior5Same;
+   g_lastDI=di; g_lastDIKnown=diKnown;
    g_lastAdxRiseDiff=adxRiseDiff; g_lastAdxRiseKnown=adxRiseKnown;
    g_lastEffRatio=effRatio; g_lastEffRatioKnown=effRatioKnown;
    g_lastHtfAligned=htfAligned; g_lastHtfKnown=htfKnown;
@@ -1882,8 +1917,9 @@ int OnInit()
    hBB4_HTF =iBands(_Symbol,HigherTFForTrend,4,0,4.0,PRICE_OPEN);
    hATR_HTF =iATR(_Symbol,HigherTFForTrend,ATRPeriod);
    hATR_Sig =iATR(_Symbol,Timeframe,ATRPeriod);
+   hMA_DI   =iMA(_Symbol,Timeframe,DIPeriod,0,MODE_SMA,PRICE_CLOSE);
    if(hBB20==INVALID_HANDLE || hBB4==INVALID_HANDLE || hStoch==INVALID_HANDLE || hADX==INVALID_HANDLE || hADXM2==INVALID_HANDLE ||
-      hBB20_HTF==INVALID_HANDLE || hBB4_HTF==INVALID_HANDLE || hATR_HTF==INVALID_HANDLE || hATR_Sig==INVALID_HANDLE) return INIT_FAILED;
+      hBB20_HTF==INVALID_HANDLE || hBB4_HTF==INVALID_HANDLE || hATR_HTF==INVALID_HANDLE || hATR_Sig==INVALID_HANDLE || hMA_DI==INVALID_HANDLE) return INIT_FAILED;
 
    f_log=FileOpen("XAU_M2_BB_LIVE_001_STOCH_v2_LOG.csv",FILE_READ|FILE_WRITE|FILE_CSV|FILE_ANSI|FILE_SHARE_READ,',');
    if(f_log!=INVALID_HANDLE)
@@ -1944,8 +1980,10 @@ int OnInit()
        " UseTodayHighLowZone="+(UseTodayHighLowZone?"true":"false")+" UsePrevDayHighLowZone="+(UsePrevDayHighLowZone?"true":"false")+
        " UsePrevNYHighLowZone="+(UsePrevNYHighLowZone?"true":"false")+
        " NYSessionWindow="+DoubleToString(NYSessionStartHourKST,2)+"-"+DoubleToString(NYSessionEndHourKST,2)+"KST"+
+       " | DIPeriod="+IntegerToString(DIPeriod)+
        " | Lots="+DoubleToString(Lots,2)+" | Magic="+IntegerToString((int)MagicNumber)+
        " | orders="+(EnableLiveOrders?"ENABLED":"DRY"));
+   Log("NOTE","DI diagnostic: DI=signal close/SMA(DIPeriod)*100, logged on every trade (MAE_OUTCOME). Diagnostic only, does not block entries.");
    return INIT_SUCCEEDED;
 }
 
@@ -1961,6 +1999,7 @@ void OnDeinit(const int reason)
    if(hBB4_HTF!=INVALID_HANDLE) IndicatorRelease(hBB4_HTF);
    if(hATR_HTF!=INVALID_HANDLE) IndicatorRelease(hATR_HTF);
    if(hATR_Sig!=INVALID_HANDLE) IndicatorRelease(hATR_Sig);
+   if(hMA_DI!=INVALID_HANDLE) IndicatorRelease(hMA_DI);
 }
 
 void OnTick()
@@ -2017,6 +2056,7 @@ void OnTradeTransaction(const MqlTradeTransaction &trans,const MqlTradeRequest &
        " htfAligned="+(!g_trackHtfKnown[i]?"n/a":(g_trackHtfAligned[i]?"true":"false"))+
        " atrExpansion="+(g_trackAtrKnown[i]?DoubleToString(g_trackAtrExpansion[i],3):"n/a")+
        " zoneDistATR="+(g_trackZoneDistATR[i]>=999.0?"n/a":DoubleToString(g_trackZoneDistATR[i],3))+
+       " DI="+(g_trackDIKnown[i]?DoubleToString(g_trackDI[i],2):"n/a")+
        " | "+g_trackTag[i]);
    g_trackTicket[i]=0; // free slot
    g_waitingFirstBar[i]=false;
