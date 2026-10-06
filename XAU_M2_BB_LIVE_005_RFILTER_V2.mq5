@@ -88,13 +88,21 @@
 //| and did NOT replicate once corrected.                               |
 //|                                                                     |
 //| ProtectTriggerR/ProtectR/UseProtectStop (ported from 001_STOCH_v2,  |
-//| UNTESTED here, default UseProtectStop=false): this EA already has  |
-//| a profit-lock stage at TP1_R=0.50 (moves SL to Lock_R=0.30) -- this |
-//| adds an EARLIER, smaller lock before that: once favorable R hits   |
-//| ProtectTriggerR (0.25), move SL to a small locked profit (ProtectR,|
-//| 0.05) rather than leaving the original InitialSL_R stop in place.  |
-//| Only takes effect if TP1 hasn't already fired (TP1's own Lock_R    |
-//| move supersedes it). Needs its own backtest before any verdict.    |
+//| REJECTED, default UseProtectStop=false): this EA already has a     |
+//| profit-lock stage at TP1_R=0.50 (moves SL to Lock_R=0.30) -- this   |
+//| added an EARLIER, smaller lock before that (ProtectTriggerR=0.25 -> |
+//| SL to ProtectR=0.05). Ground-truth backtest: OFF n=2,740/WR 90.44%/ |
+//| NET $27,811.95/PF 1.732/avg loss $144.99 -> ON n=2,887/WR 70.28%    |
+//| (-20.16pp)/NET $20,864.43 (-25.0%)/PF 1.840/avg loss $28.95 (-80%). |
+//| PF/avg-loss look good in isolation but the WR collapse gives it     |
+//| away: this EA's baseline WR is already ~90% because most trades     |
+//| eventually reach TP1/Lock_R -- arming a tighter lock at 0.25R        |
+//| intercepts many of those same trades on their way to TP1 and exits  |
+//| them at +0.05R, which nets to roughly breakeven or a small loss      |
+//| after commission/swap. A worse version of the "cut winners to save  |
+//| losers" trap seen throughout the 001 family -- here it's cutting    |
+//| winners that were headed for the EA's OWN already-confirmed TP1     |
+//| stage. Keep UseProtectStop=false.                                    |
 //+------------------------------------------------------------------+
 #property strict
 #include <Trade/Trade.mqh>
@@ -122,9 +130,9 @@ input int    SkipHourEndKST       = 22; // KST hour skip window end, exclusive (
 input bool   SkipEntryHourKST     = true; // Block entries in [SkipHourStartKST,SkipHourEndKST) KST (CONFIRMED, see header)
 input bool   UseFridayNarrowWindow = false; // On Friday, only allow entries 10:30-15:00 KST (ported from 001 M2_v2 where CONFIRMED; REJECTED here, see header)
 
-input double ProtectTriggerR      = 0.25; // Favorable R to arm an early protect-lock stop, before TP1 (ported from 001_STOCH_v2, UNTESTED here)
-input double ProtectR             = 0.05; // SL level once armed, in R (ported from 001_STOCH_v2, UNTESTED here)
-input bool   UseProtectStop       = false; // Move SL to ProtectR once armed, before TP1/Lock fires (ported from 001_STOCH_v2, UNTESTED here)
+input double ProtectTriggerR      = 0.25; // Favorable R to arm an early protect-lock stop, before TP1 (REJECTED, see header)
+input double ProtectR             = 0.05; // SL level once armed, in R (REJECTED, see header)
+input bool   UseProtectStop       = false; // Move SL to ProtectR once armed, before TP1/Lock fires (REJECTED, see header)
 
 // -- 매물대 (supply/demand zone) diagnostic (ported from 001 M2_v2): logs
 //    zoneDistATR (distance from the actual entry fill to the nearest
