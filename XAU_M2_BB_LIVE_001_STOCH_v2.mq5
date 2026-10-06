@@ -421,6 +421,24 @@
 //| and arming earlier, could behave differently -- needs its own           |
 //| backtest (PROTECT_TRIGGER logs every arm regardless of UseProtectStop,  |
 //| PROTECT_MOVED/PROTECT_MOVE_FAIL log the live SL modify outcome).        |
+//| Ground truth (PT=ProtectTriggerR, PR=ProtectR; confirmed baseline NET    |
+//| $28,579.18, WR 92.24%, PF 1.539, n=2,693, avg loss -$253.77): unlike      |
+//| the rejected breakeven stop, this DOES work as a loss-size dampener --   |
+//| PT=0.25/PR=0.05 gives NET $20,353.15 (-28.78%), WR 91.28%, PF 1.599       |
+//| (higher than baseline despite the NET drop), avg loss -$136.61 (-46%).   |
+//| A PT/PR grid sweep (PT 0.25-0.40, PR 0.05-0.20) confirmed the shape:      |
+//| lower PT shrinks avg loss size more but costs more NET; higher PT        |
+//| (0.40) keeps NET close to baseline (-7 to -9%) but barely dampens loss    |
+//| size any more. Within a fixed PT, raising PR improves WR/NET slightly     |
+//| but counter-intuitively makes the REMAINING losses' average size worse    |
+//| (not the total $ lost) -- a selection effect: a higher PR rescues more    |
+//| of the marginal/retracing trades into small wins, leaving only the        |
+//| fast/severe blow-through losses in the loss bucket, which skews that      |
+//| bucket's average up even as its total $ and count both fall. User         |
+//| explicitly chose PT=0.25/PR=0.05 (the most aggressive loss-size            |
+//| reduction) for live trading, trading -28.78% backtest NET for a much       |
+//| smaller/more consistent daily loss profile -- this is now the CONFIRMED   |
+//| default (UseProtectStop=true).                                            |
 //| timeMildMin/timeDangerMin (diagnostic only, no trading effect):         |
 //| minutes a position spends with adverse excursion below MildZoneR        |
 //| (default 2.0, half of SL_R=4.0) vs at/above it. Motivated by a real     |
@@ -675,9 +693,9 @@ input bool   UseCircuitBreaker  = false; // Actually pause entries after a losin
 input double BreakevenTriggerFrac = 0.5; // Fraction of TP_R to arm breakeven stop
 input bool   UseBreakevenStop   = false; // Move SL to breakeven once armed (REJECTED, see header)
 
-input double ProtectTriggerR    = 0.25; // Favorable R to arm protect-lock stop (UNTESTED, see header)
-input double ProtectR           = 0.05; // SL level once armed, in R (UNTESTED, see header)
-input bool   UseProtectStop     = false; // Move SL to ProtectR once armed (UNTESTED, see header)
+input double ProtectTriggerR    = 0.25; // Favorable R to arm protect-lock stop (CONFIRMED user-selected, see header)
+input double ProtectR           = 0.05; // SL level once armed, in R (CONFIRMED user-selected, see header)
+input bool   UseProtectStop     = true; // Move SL to ProtectR once armed (CONFIRMED user-selected, see header)
 input bool   ProtectStopEuropeOnly = false; // Restrict ProtectStop arming to Europe session (16-22 KST) only (REJECTED, see header)
 input bool   ProtectStopAsiaOnly = false; // Restrict ProtectStop arming to Asia session (AsiaSessionStartHour-AsiaSessionEndHour KST) only (REJECTED, see header)
 
