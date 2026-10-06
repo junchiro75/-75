@@ -553,6 +553,20 @@
 //| over-extension vs a TREND entry chasing an already-stretched move).     |
 //| Needs a backtest to read the DI crosstab vs TREND/FADE outcome before    |
 //| considering turning it into an active filter.                           |
+//|                                                                        |
+//| diBaseAgainst=/diCrossSeen=/diCrossR= in MAE_OUTCOME (diagnostic,       |
+//| UNTESTED, no trading effect): tests the user's "exit on DI reversal"     |
+//| proposal -- enter normally, but if the M2-timeframe +DI/-DI (hADXM2)     |
+//| crosses against the trade's direction before the hard SL, would exiting  |
+//| right there have been better? diBaseAgainst = was DI ALREADY against     |
+//| the trade's direction at entry (common for FADE, which buys/sells into  |
+//| a signal candle breaking the opposite way -- no "reversal" to detect,    |
+//| "n/a" skips those). diCrossSeen/diCrossR (only meaningful when            |
+//| diBaseAgainst=false) = did DI later flip against the trade, and what     |
+//| R-multiple price was at when that first happened (what an early exit     |
+//| there would have banked, vs the trade's actual MAE_OUTCOME profit/R).    |
+//| Needs a backtest to compare diCrossR against the trade's eventual         |
+//| outcome before considering wiring this up as an active exit.             |
 //+------------------------------------------------------------------+
 #property strict
 #include <Trade/Trade.mqh>
@@ -861,6 +875,21 @@ double g_trackAtrExpansion[TRACK_SLOTS]; bool g_trackAtrKnown[TRACK_SLOTS];
 // targets only the already-known 26%-win-rate danger zone instead.
 bool   g_trackOppSignalSeen[TRACK_SLOTS];
 
+// -- DI (+DI/-DI) reversal-exit diagnostic (UNTESTED, no trading effect):
+//    at entry, records whether the M2-timeframe +DI/-DI (hADXM2) ALREADY
+//    favors the OPPOSITE of the trade's direction (common for FADE, which
+//    buys/sells into a signal candle breaking the opposite way -- there's
+//    no "reversal" to detect there, DI was already against from the start).
+//    For trades where it was NOT against at entry, watches each later M2
+//    bar for the first time DI flips to favor the opposite side -- a
+//    genuine mid-trade DI reversal -- and records the R-multiple price was
+//    at that moment (what "exit on DI cross against" would have banked).
+//    Tests the user's proposal: enter normally, but if +DI/-DI crosses
+//    against the trade before the hard SL, exit early on that signal.
+bool   g_trackDIBaseKnown[TRACK_SLOTS], g_trackDIBaseAgainst[TRACK_SLOTS];
+bool   g_trackDICrossSeen[TRACK_SLOTS];
+double g_trackDICrossR[TRACK_SLOTS];
+
 // -- MFE (Maximum Favorable Excursion) tracking (diagnostic only, no
 //    trading effect) ---------------------------------------------------
 // Mirrors the MAE tracking above but for the FAVORABLE direction: tracks
@@ -987,6 +1016,15 @@ void StartMAETracking(ulong ticket,double entry,double R,int dir,string tag)
    g_trackEffRatio[i]=g_lastEffRatio; g_trackEffRatioKnown[i]=g_lastEffRatioKnown;
    g_trackHtfAligned[i]=g_lastHtfAligned; g_trackHtfKnown[i]=g_lastHtfKnown;
    g_trackAtrExpansion[i]=g_lastAtrExpansion; g_trackAtrKnown[i]=g_lastAtrKnown;
+
+   {
+      double diP[1],diM[1];
+      bool gotDI=(CopyBuffer(hADXM2,1,1,1,diP)==1 && CopyBuffer(hADXM2,2,1,1,diM)==1);
+      g_trackDIBaseKnown[i]=gotDI;
+      g_trackDIBaseAgainst[i]=gotDI ? ((dir==+1) ? (diM[0]>diP[0]) : (diP[0]>diM[0])) : false;
+      g_trackDICrossSeen[i]=false;
+      g_trackDICrossR[i]=0;
+   }
 }
 
 // Called from CheckNewM2Bar with the new bar's raw breakout direction
@@ -1024,6 +1062,37 @@ void CheckOppositeSignal(int sigdir)
              " | "+g_trackTag[i]);
       else
          Log("OPP_SIGNAL_EXIT_FAIL",IntegerToString((int)trade.ResultRetcode())+" | "+trade.ResultRetcodeDescription());
+   }
+}
+
+// Called once per new M2 bar (unconditionally, regardless of this bar's own
+// signal) -- scans all active TRACK_SLOTS for a +DI/-DI reversal against the
+// trade's own direction, on the M2-timeframe ADX (hADXM2). Diagnostic only:
+// records the R-multiple price was at when the cross was first detected,
+// does not close anything. See the g_trackDICrossSeen header comment.
+void CheckDICrossExit()
+{
+   bool anyActive=false;
+   for(int i=0;i<TRACK_SLOTS;i++) if(g_trackTicket[i]!=0){ anyActive=true; break; }
+   if(!anyActive) return;
+
+   double diP[1],diM[1];
+   if(CopyBuffer(hADXM2,1,1,1,diP)!=1 || CopyBuffer(hADXM2,2,1,1,diM)!=1) return;
+   MqlTick q; if(!SymbolInfoTick(_Symbol,q)) return;
+
+   for(int i=0;i<TRACK_SLOTS;i++)
+   {
+      if(g_trackTicket[i]==0) continue;
+      if(!g_trackDIBaseKnown[i] || g_trackDIBaseAgainst[i]) continue; // no clean baseline, or already against at entry (nothing to "cross")
+      if(g_trackDICrossSeen[i]) continue; // already recorded
+
+      bool nowAgainst=(g_trackDir[i]==+1) ? (diM[0]>diP[0]) : (diP[0]>diM[0]);
+      if(!nowAgainst) continue;
+
+      g_trackDICrossSeen[i]=true;
+      double px=(g_trackDir[i]==+1) ? q.bid : q.ask;
+      g_trackDICrossR[i]=(g_trackDir[i]==+1) ? (px-g_trackEntry[i])/g_trackR[i] : (g_trackEntry[i]-px)/g_trackR[i];
+      Log("MAE_MILESTONE","DI crossed against trade direction | wouldExitR="+DoubleToString(g_trackDICrossR[i],3)+" | "+g_trackTag[i]);
    }
 }
 
@@ -1762,6 +1831,7 @@ void CheckNewM2Bar()
    if(R<=minR){ Log("SIGNAL_SKIPPED","R too small"); return; }
 
    CheckOppositeSignal(sigdir);
+   CheckDICrossExit();
 
    // -- MA-slope hypothesis (diagnostic only, no trading effect) --------------
    // See header comment for the exact pseudo-angle definition and rationale.
@@ -1984,6 +2054,7 @@ int OnInit()
        " | Lots="+DoubleToString(Lots,2)+" | Magic="+IntegerToString((int)MagicNumber)+
        " | orders="+(EnableLiveOrders?"ENABLED":"DRY"));
    Log("NOTE","DI diagnostic: DI=signal close/SMA(DIPeriod)*100, logged on every trade (MAE_OUTCOME). Diagnostic only, does not block entries.");
+   Log("NOTE","DI-cross-exit diagnostic: diBaseAgainst/diCrossSeen/diCrossR in MAE_OUTCOME track +DI/-DI (hADXM2) reversals against the trade's direction, and the R-multiple price was at when that first happened. Diagnostic only, does not close anything.");
    return INIT_SUCCEEDED;
 }
 
@@ -2057,6 +2128,9 @@ void OnTradeTransaction(const MqlTradeTransaction &trans,const MqlTradeRequest &
        " atrExpansion="+(g_trackAtrKnown[i]?DoubleToString(g_trackAtrExpansion[i],3):"n/a")+
        " zoneDistATR="+(g_trackZoneDistATR[i]>=999.0?"n/a":DoubleToString(g_trackZoneDistATR[i],3))+
        " DI="+(g_trackDIKnown[i]?DoubleToString(g_trackDI[i],2):"n/a")+
+       " diBaseAgainst="+(!g_trackDIBaseKnown[i]?"n/a":(g_trackDIBaseAgainst[i]?"true":"false"))+
+       " diCrossSeen="+(g_trackDICrossSeen[i]?"true":"false")+
+       " diCrossR="+(g_trackDICrossSeen[i]?DoubleToString(g_trackDICrossR[i],3):"n/a")+
        " | "+g_trackTag[i]);
    g_trackTicket[i]=0; // free slot
    g_waitingFirstBar[i]=false;
