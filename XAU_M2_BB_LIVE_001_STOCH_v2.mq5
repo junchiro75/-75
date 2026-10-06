@@ -919,6 +919,21 @@ bool   g_trackDIBaseKnown[TRACK_SLOTS], g_trackDIBaseAgainst[TRACK_SLOTS];
 bool   g_trackDICrossSeen[TRACK_SLOTS];
 double g_trackDICrossR[TRACK_SLOTS];
 
+// -- Stochastic rollover-exit diagnostic (UNTESTED, no trading effect):
+//    TREND trades only (tag contains "TREND" -- a FADE entry already starts
+//    in the extreme zone by construction, so there's no "reaching the
+//    extreme" to detect there). Watches each later M2 bar for stochK first
+//    reaching the favorable extreme (>=StochOverbought for a BUY,
+//    <=StochOversold for a SELL -- i.e. the move is still accelerating),
+//    then rolling back out of that zone (a classic momentum-exhaustion
+//    signal) -- and records the R-multiple price was at when the rollover
+//    was first detected. Tests the user's proposal: enter on the breakout's
+//    own direction as usual, but exit early once Stochastic shows the move
+//    peaked and is turning back.
+bool   g_trackStochPeaked[TRACK_SLOTS];
+bool   g_trackStochRolloverSeen[TRACK_SLOTS];
+double g_trackStochRolloverR[TRACK_SLOTS];
+
 // -- MFE (Maximum Favorable Excursion) tracking (diagnostic only, no
 //    trading effect) ---------------------------------------------------
 // Mirrors the MAE tracking above but for the FAVORABLE direction: tracks
@@ -1056,6 +1071,10 @@ void StartMAETracking(ulong ticket,double entry,double R,int dir,string tag)
       g_trackDICrossSeen[i]=false;
       g_trackDICrossR[i]=0;
    }
+
+   g_trackStochPeaked[i]=false;
+   g_trackStochRolloverSeen[i]=false;
+   g_trackStochRolloverR[i]=0;
 }
 
 // Called from CheckNewM2Bar with the new bar's raw breakout direction
@@ -1124,6 +1143,45 @@ void CheckDICrossExit()
       double px=(g_trackDir[i]==+1) ? q.bid : q.ask;
       g_trackDICrossR[i]=(g_trackDir[i]==+1) ? (px-g_trackEntry[i])/g_trackR[i] : (g_trackEntry[i]-px)/g_trackR[i];
       Log("MAE_MILESTONE","DI crossed against trade direction | wouldExitR="+DoubleToString(g_trackDICrossR[i],3)+" | "+g_trackTag[i]);
+   }
+}
+
+// Called once per new M2 bar (unconditionally) -- scans active TRACK_SLOTS
+// for a Stochastic momentum-exhaustion rollover on TREND trades only (see
+// the g_trackStochRolloverSeen header comment). Diagnostic only: records
+// the R-multiple price was at when the rollover was first detected, does
+// not close anything.
+void CheckStochRolloverExit()
+{
+   bool anyActive=false;
+   for(int i=0;i<TRACK_SLOTS;i++) if(g_trackTicket[i]!=0){ anyActive=true; break; }
+   if(!anyActive) return;
+
+   double kbuf[1];
+   if(CopyBuffer(hStoch,0,1,1,kbuf)!=1) return;
+   double stochK=kbuf[0];
+   MqlTick q; if(!SymbolInfoTick(_Symbol,q)) return;
+
+   for(int i=0;i<TRACK_SLOTS;i++)
+   {
+      if(g_trackTicket[i]==0) continue;
+      if(StringFind(g_trackTag[i],"TREND")<0) continue; // TREND only, see header
+      if(g_trackStochRolloverSeen[i]) continue;
+
+      if(!g_trackStochPeaked[i])
+      {
+         bool peaked=(g_trackDir[i]==+1) ? (stochK>=StochOverbought) : (stochK<=StochOversold);
+         if(peaked) g_trackStochPeaked[i]=true;
+         continue; // can't roll over before reaching the extreme
+      }
+
+      bool rolledOver=(g_trackDir[i]==+1) ? (stochK<StochOverbought) : (stochK>StochOversold);
+      if(!rolledOver) continue;
+
+      g_trackStochRolloverSeen[i]=true;
+      double px=(g_trackDir[i]==+1) ? q.bid : q.ask;
+      g_trackStochRolloverR[i]=(g_trackDir[i]==+1) ? (px-g_trackEntry[i])/g_trackR[i] : (g_trackEntry[i]-px)/g_trackR[i];
+      Log("MAE_MILESTONE","Stochastic rolled over after reaching extreme | wouldExitR="+DoubleToString(g_trackStochRolloverR[i],3)+" | "+g_trackTag[i]);
    }
 }
 
@@ -1888,6 +1946,7 @@ void CheckNewM2Bar()
 
    CheckOppositeSignal(sigdir);
    CheckDICrossExit();
+   CheckStochRolloverExit();
 
    // -- MA-slope hypothesis (diagnostic only, no trading effect) --------------
    // See header comment for the exact pseudo-angle definition and rationale.
@@ -2114,6 +2173,7 @@ int OnInit()
    Log("NOTE","DI diagnostic: DI=signal close/SMA(DIPeriod)*100, logged on every trade (MAE_OUTCOME). Diagnostic only, does not block entries.");
    Log("NOTE","DI-cross-exit diagnostic: diBaseAgainst/diCrossSeen/diCrossR in MAE_OUTCOME track +DI/-DI (hADXM2) reversals against the trade's direction, and the R-multiple price was at when that first happened. Diagnostic only, does not close anything.");
    Log("NOTE","wickLenATR diagnostic: logs the signal candle's own rejection-wick length (opposite side from its close) in ATR units, on every trade (MAE_OUTCOME). Diagnostic only, does not block entries.");
+   Log("NOTE","Stochastic rollover-exit diagnostic (TREND trades only): stochPeaked/stochRolloverSeen/stochRolloverR in MAE_OUTCOME track whether stochK reached the favorable extreme then rolled back out of it, and the R-multiple price was at when that first happened. Diagnostic only, does not close anything.");
    return INIT_SUCCEEDED;
 }
 
@@ -2191,6 +2251,9 @@ void OnTradeTransaction(const MqlTradeTransaction &trans,const MqlTradeRequest &
        " diBaseAgainst="+(!g_trackDIBaseKnown[i]?"n/a":(g_trackDIBaseAgainst[i]?"true":"false"))+
        " diCrossSeen="+(g_trackDICrossSeen[i]?"true":"false")+
        " diCrossR="+(g_trackDICrossSeen[i]?DoubleToString(g_trackDICrossR[i],3):"n/a")+
+       " stochPeaked="+(g_trackStochPeaked[i]?"true":"false")+
+       " stochRolloverSeen="+(g_trackStochRolloverSeen[i]?"true":"false")+
+       " stochRolloverR="+(g_trackStochRolloverSeen[i]?DoubleToString(g_trackStochRolloverR[i],3):"n/a")+
        " | "+g_trackTag[i]);
    g_trackTicket[i]=0; // free slot
    g_waitingFirstBar[i]=false;
