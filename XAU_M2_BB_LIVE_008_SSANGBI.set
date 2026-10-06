@@ -49,6 +49,7 @@ UseRawPivotStop=false
 UseDynamicTP=false
 WMA4Period=4
 UseMA4_17EntryConfirm=false
+UseDoubleBAnchor=false
 MagicNumber=95016108
 MaxDeviationPts=50
 EnableLiveOrders=true

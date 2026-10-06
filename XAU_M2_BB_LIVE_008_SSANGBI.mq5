@@ -213,6 +213,7 @@ input bool   UseRawPivotStop      = false; // SL = the more extreme pivot exactl
 input bool   UseDynamicTP         = false; // TP = whichever is CLOSER of {20-SMA, nearest 원비(44/4 band) edge} in the favorable direction, instead of TP_R*R -- "익절은 20이평 또는 가까운 원비지점"
 input int    WMA4Period           = 4; // Period of the 4-weighted MA ("4가중")
 input bool   UseMA4_17EntryConfirm = false; // Also require the close beyond BOTH WMA4 and WMA17 (not just the neckline hold) before firing entry -- "진입시 4가중과 17선 확인"
+input bool   UseDoubleBAnchor     = false; // Also require pivot1 within BandAnchorATR of the BB4(44band) edge, not just BB20 -- genuine "더블비" anchor (001/005/007's own entry trigger is already this dual-band condition; 008 has only ever used BB20 alone). Neckline-break timing unchanged.
 
 input ulong  MagicNumber          = 95016108; // Magic number
 input int    MaxDeviationPts      = 50; // Max price deviation (points)
@@ -591,6 +592,13 @@ void CheckNewBar()
    if(CopyBuffer(hBB,1,1,1,upper)!=1 || CopyBuffer(hBB,2,1,1,lower)!=1)
    { Log("COPYBUFFER_FAIL","BB bands"); return; }
 
+   double bb4up[1],bb4lo[1]; bool haveBB4Now=false;
+   if(UseDoubleBAnchor)
+   {
+      haveBB4Now=(CopyBuffer(hBB4,1,1,1,bb4up)==1 && CopyBuffer(hBB4,2,1,1,bb4lo)==1);
+      if(!haveBB4Now){ Log("COPYBUFFER_FAIL","BB4 bands"); return; }
+   }
+
    double kbuf[1];
    if(CopyBuffer(hStoch,0,1,1,kbuf)!=1){ Log("STOCH_FAIL","no stochastic value"); return; }
    double stochK=kbuf[0];
@@ -613,7 +621,8 @@ void CheckNewBar()
    // ============================= BUY (W) =============================
    if(g_buyStage==0)
    {
-      if(gotPivotLow && pivLow<=lower[0]+BandAnchorATR*atr && TangleGateOk() && NearSupplyZone(pivLow,atr))
+      if(gotPivotLow && pivLow<=lower[0]+BandAnchorATR*atr && TangleGateOk() && NearSupplyZone(pivLow,atr) &&
+         (!UseDoubleBAnchor || pivLow<=bb4lo[0]+BandAnchorATR*atr))
       {
          g_buyStage=1; g_buyPivot1=pivLow; g_buyPivot1Bar=pivotBarIndex;
          g_buyNeckline=iHigh(_Symbol,Timeframe,1); g_buyBarsSincePivot1=0;
@@ -699,7 +708,8 @@ void CheckNewBar()
    // ============================= SELL (M) =============================
    if(g_sellStage==0)
    {
-      if(gotPivotHigh && pivHigh>=upper[0]-BandAnchorATR*atr && TangleGateOk() && NearSupplyZone(pivHigh,atr))
+      if(gotPivotHigh && pivHigh>=upper[0]-BandAnchorATR*atr && TangleGateOk() && NearSupplyZone(pivHigh,atr) &&
+         (!UseDoubleBAnchor || pivHigh>=bb4up[0]-BandAnchorATR*atr))
       {
          g_sellStage=1; g_sellPivot1=pivHigh; g_sellPivot1Bar=pivotBarIndex;
          g_sellNeckline=iLow(_Symbol,Timeframe,1); g_sellBarsSincePivot1=0;
@@ -826,6 +836,7 @@ int OnInit()
        " | UseRawPivotStop="+(UseRawPivotStop?"true":"false")+
        " UseDynamicTP="+(UseDynamicTP?"true":"false")+
        " WMA4Period="+IntegerToString(WMA4Period)+" UseMA4_17EntryConfirm="+(UseMA4_17EntryConfirm?"true":"false")+
+       " UseDoubleBAnchor="+(UseDoubleBAnchor?"true":"false")+
        " | Lots="+DoubleToString(Lots,2)+" | Magic="+IntegerToString((int)MagicNumber)+
        " | orders="+(EnableLiveOrders?"ENABLED":"DRY"));
    return INIT_SUCCEEDED;
