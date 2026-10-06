@@ -583,6 +583,21 @@
 //| there would have banked, vs the trade's actual MAE_OUTCOME profit/R).    |
 //| Needs a backtest to compare diCrossR against the trade's eventual         |
 //| outcome before considering wiring this up as an active exit.             |
+//|                                                                        |
+//| UseRSIInsteadOfStoch (default false, UNTESTED): swaps the entire         |
+//| TREND/FADE oscillator from Stochastic %K (StochOverbought/Oversold,      |
+//| 85/30) to RSI(RSIPeriod) against RSIOverbought/RSIOversold (default       |
+//| 70/30, RSIPeriod=8 to match StochK_Period) -- the BULL/FADE/TREND         |
+//| branch logic itself (AllowSellFade, SkipFadeBearOSWickTouch, Asia-        |
+//| session handling) is completely unchanged, only which oscillator and      |
+//| thresholds decide the OB/OS branch. User's question: does RSI classify    |
+//| overbought/oversold meaningfully differently from Stochastic on this      |
+//| M2 signal, given RSI is a pure momentum oscillator (no %K/%D smoothing     |
+//| over a lookback range) vs Stochastic's range-position measure? Trade        |
+//| comment tag suffix changes from K<value> to R<value> when this is on, so    |
+//| live/backtest trade history stays distinguishable either way. Needs its     |
+//| own ground-truth run against the StochOverbought=85/StochOversold=30        |
+//| confirmed baseline.                                                         |
 //+------------------------------------------------------------------+
 #property strict
 #include <Trade/Trade.mqh>
@@ -595,6 +610,17 @@ input int    StochD_Period      = 3; // Stoch %D period
 input int    StochSlowing       = 3; // Stoch slowing
 input double StochOverbought    = 85.0; // Stoch overbought level
 input double StochOversold      = 30.0; // Stoch oversold level
+
+// -- RSI-instead-of-Stochastic swap (UNTESTED, see header): when true, the
+//    TREND/FADE oscillator branch below reads RSI(RSIPeriod) against
+//    RSIOverbought/RSIOversold instead of Stochastic %K against
+//    StochOverbought/StochOversold -- the BULL/FADE/TREND branch logic
+//    itself (AllowSellFade, SkipFadeBearOSWickTouch, Asia-session handling)
+//    is unchanged, only which oscillator/thresholds decide the branch.
+input bool   UseRSIInsteadOfStoch = false; // Swap the TREND/FADE oscillator from Stochastic to RSI (UNTESTED, see header)
+input int    RSIPeriod            = 8; // RSI period (only used when UseRSIInsteadOfStoch=true)
+input double RSIOverbought        = 70.0; // RSI overbought level (only used when UseRSIInsteadOfStoch=true)
+input double RSIOversold          = 30.0; // RSI oversold level (only used when UseRSIInsteadOfStoch=true)
 input double SL_R               = 4.0;  // Stop loss (R)
 input double TP_R               = 0.45; // Take profit (R)
 input double MinR_Points        = 350;  // Min signal-candle body (points) to trade, 0=no filter
@@ -701,7 +727,7 @@ input double NYSessionEndHourKST   = 6.0; // KST hour (decimal) the NY session w
 //    on every trade so it can be bucketed before considering a filter.
 input int    DIPeriod              = 20; // SMA period for the 이격도 baseline
 
-int hBB20=INVALID_HANDLE,hBB4=INVALID_HANDLE,hStoch=INVALID_HANDLE,hADX=INVALID_HANDLE,hADXM2=INVALID_HANDLE;
+int hBB20=INVALID_HANDLE,hBB4=INVALID_HANDLE,hStoch=INVALID_HANDLE,hADX=INVALID_HANDLE,hADXM2=INVALID_HANDLE,hRSI=INVALID_HANDLE;
 int hBB20_HTF=INVALID_HANDLE,hBB4_HTF=INVALID_HANDLE,hATR_HTF=INVALID_HANDLE,hMA_DI=INVALID_HANDLE;
 int hATR_Sig=INVALID_HANDLE;
 datetime last_m2_bar=0;
@@ -1990,12 +2016,21 @@ void CheckNewM2Bar()
    else
       Log("SLOPE_CALC_FAIL","BB20 basis (now) CopyBuffer failed");
 
-   double stochK=0;
+   double stochK=0; double oscOB=StochOverbought, oscOS=StochOversold; string oscTagLetter="K";
    if(!IgnoreStochastic)
    {
-      double kbuf[1];
-      if(CopyBuffer(hStoch,0,1,1,kbuf)!=1){ Log("STOCH_FAIL","no stochastic value"); return; }
-      stochK=kbuf[0];
+      if(UseRSIInsteadOfStoch)
+      {
+         double rbuf[1];
+         if(CopyBuffer(hRSI,0,1,1,rbuf)!=1){ Log("RSI_FAIL","no RSI value"); return; }
+         stochK=rbuf[0]; oscOB=RSIOverbought; oscOS=RSIOversold; oscTagLetter="R";
+      }
+      else
+      {
+         double kbuf[1];
+         if(CopyBuffer(hStoch,0,1,1,kbuf)!=1){ Log("STOCH_FAIL","no stochastic value"); return; }
+         stochK=kbuf[0];
+      }
    }
 
    int dir=0; string tag="";
@@ -2020,7 +2055,7 @@ void CheckNewM2Bar()
    }
    else if(sigdir==+1) // bull signal candle
    {
-      if(stochK>=StochOverbought)
+      if(stochK>=oscOB)
       {
          if(!AllowSellFade){ Log("SIGNAL_SKIPPED","SELL-fade disabled by AllowSellFade=false"); return; }
          dir=-1; tag="STOCH_FADE_BULL_OB";
@@ -2034,7 +2069,7 @@ void CheckNewM2Bar()
    }
    else // bear signal candle
    {
-      if(stochK<StochOversold)
+      if(stochK<oscOS)
       {
          if(!bodyTouch && SkipFadeBearOSWickTouch)
          { Log("SIGNAL_SKIPPED","FADE_BEAR_OS disabled on WICK-only touch by SkipFadeBearOSWickTouch=true"); return; }
@@ -2084,7 +2119,7 @@ void CheckNewM2Bar()
    g_lastHtfAligned=htfAligned; g_lastHtfKnown=htfKnown;
    g_lastAtrExpansion=atrExpansion; g_lastAtrKnown=atrKnown;
 
-   if(!IgnoreStochastic) tag=tag+"K"+IntegerToString((int)MathRound(stochK)); // comment length: keep short, MT5 caps at 31 chars
+   if(!IgnoreStochastic) tag=tag+oscTagLetter+IntegerToString((int)MathRound(stochK)); // comment length: keep short, MT5 caps at 31 chars
 
    Log("SIGNAL",(sigdir==1?"BULL":"BEAR")+" candle | stochK="+DoubleToString(stochK,2)+
        " | R="+DoubleToString(R,_Digits)+" | touch="+(bodyTouch?"BODY":"WICK")+
@@ -2104,8 +2139,10 @@ int OnInit()
    hATR_HTF =iATR(_Symbol,HigherTFForTrend,ATRPeriod);
    hATR_Sig =iATR(_Symbol,Timeframe,ATRPeriod);
    hMA_DI   =iMA(_Symbol,Timeframe,DIPeriod,0,MODE_SMA,PRICE_CLOSE);
+   hRSI     =iRSI(_Symbol,Timeframe,RSIPeriod,PRICE_CLOSE);
    if(hBB20==INVALID_HANDLE || hBB4==INVALID_HANDLE || hStoch==INVALID_HANDLE || hADX==INVALID_HANDLE || hADXM2==INVALID_HANDLE ||
-      hBB20_HTF==INVALID_HANDLE || hBB4_HTF==INVALID_HANDLE || hATR_HTF==INVALID_HANDLE || hATR_Sig==INVALID_HANDLE || hMA_DI==INVALID_HANDLE) return INIT_FAILED;
+      hBB20_HTF==INVALID_HANDLE || hBB4_HTF==INVALID_HANDLE || hATR_HTF==INVALID_HANDLE || hATR_Sig==INVALID_HANDLE || hMA_DI==INVALID_HANDLE ||
+      hRSI==INVALID_HANDLE) return INIT_FAILED;
 
    f_log=FileOpen("XAU_M2_BB_LIVE_001_STOCH_v2_LOG.csv",FILE_READ|FILE_WRITE|FILE_CSV|FILE_ANSI|FILE_SHARE_READ,',');
    if(f_log!=INVALID_HANDLE)
@@ -2144,6 +2181,8 @@ int OnInit()
        " | EfficiencyRatioPeriod="+IntegerToString(EfficiencyRatioPeriod)+
        " | HigherTFForTrend="+EnumToString(HigherTFForTrend)+" ATRPeriod="+IntegerToString(ATRPeriod)+" ATRAvgPeriod="+IntegerToString(ATRAvgPeriod)+
        " | IgnoreStochastic="+(IgnoreStochastic?"true":"false")+
+       " | UseRSIInsteadOfStoch="+(UseRSIInsteadOfStoch?"true":"false")+" RSIPeriod="+IntegerToString(RSIPeriod)+
+       " RSIOverbought="+DoubleToString(RSIOverbought,1)+" RSIOversold="+DoubleToString(RSIOversold,1)+
        " | CircuitBreakerLossCount="+IntegerToString(CircuitBreakerLossCount)+
        " CircuitBreakerCooldownHours="+DoubleToString(CircuitBreakerCooldownHours,1)+
        " UseCircuitBreaker="+(UseCircuitBreaker?"true":"false")+
@@ -2190,6 +2229,7 @@ void OnDeinit(const int reason)
    if(hATR_HTF!=INVALID_HANDLE) IndicatorRelease(hATR_HTF);
    if(hATR_Sig!=INVALID_HANDLE) IndicatorRelease(hATR_Sig);
    if(hMA_DI!=INVALID_HANDLE) IndicatorRelease(hMA_DI);
+   if(hRSI!=INVALID_HANDLE) IndicatorRelease(hRSI);
 }
 
 void OnTick()
