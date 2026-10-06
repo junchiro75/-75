@@ -78,6 +78,15 @@
 //| (-23.8% vs this file's own baseline), WR 93.73%, PF 1.939, MaxDD        |
 //| unchanged at $1,751.49, n=415. Same conclusion -- neither M2_v2        |
 //| finding generalizes to the M3 signal.                                   |
+//|                                                                        |
+//| ProtectTriggerR/ProtectR/UseProtectStop (ported from M2_v2, UNTESTED   |
+//| here, default UseProtectStop=false): same mechanism as M2_v2 -- once   |
+//| favorable excursion reaches ProtectTriggerR (0.25R), move SL to a      |
+//| small LOCKED PROFIT (ProtectR, 0.05R) rather than breakeven. On M2_v2  |
+//| this shrank average loss size ~46% at a NET cost (essentially flat    |
+//| PF). Needs its own backtest against this file's own confirmed         |
+//| baseline (NET $17,292.99, WR 94.38%, PF 1.934, see above) before any   |
+//| verdict here.                                                          |
 //+------------------------------------------------------------------+
 #property strict
 #include <Trade/Trade.mqh>
@@ -106,6 +115,10 @@ input double MildZoneR          = 2.0;  // Adverse-R boundary for dwell-time dia
 input double ComboExitDangerMin = 10.0; // Danger-zone minutes required, combined with threeBarOneWay (UNTESTED, see header)
 input bool   UseComboExit       = false; // Close only when BOTH threeBarOneWay AND ComboExitDangerMin are met (REJECTED, see header)
 
+input double ProtectTriggerR    = 0.25; // Favorable R to arm protect-lock stop (ported from M2_v2 where CONFIRMED PT=0.25/PR=0.05, see that file's header; UNTESTED here)
+input double ProtectR           = 0.05; // SL level once armed, in R (ported from M2_v2, UNTESTED here)
+input bool   UseProtectStop     = false; // Move SL to ProtectR once armed (ported from M2_v2, UNTESTED here -- needs its own backtest before deployment)
+
 int hBB20=INVALID_HANDLE,hBB4=INVALID_HANDLE,hStoch=INVALID_HANDLE;
 datetime last_m3_bar=0;
 int f_log=INVALID_HANDLE;
@@ -127,6 +140,8 @@ bool     g_bar3Known[TRACK_SLOTS], g_bar3OneWay[TRACK_SLOTS];
 datetime g_trackLastSample[TRACK_SLOTS];
 double   g_timeMildMin[TRACK_SLOTS], g_timeDangerMin[TRACK_SLOTS];
 bool     g_comboExited[TRACK_SLOTS];
+bool     g_protectTriggered[TRACK_SLOTS]; // favR >= ProtectTriggerR reached at least once
+bool     g_protectMoved[TRACK_SLOTS];     // live SL was actually moved to the protect-lock level (UseProtectStop only)
 
 int FindTrackSlot(ulong ticket)
 {
@@ -148,6 +163,7 @@ void StartMAETracking(ulong ticket,double entry,double R,int dir,string tag)
    g_waitingBar3[i]=true; g_bar3Count[i]=0; g_bar3Extreme[i]=0; g_bar3Known[i]=false; g_bar3OneWay[i]=false;
    g_trackLastSample[i]=TimeCurrent(); g_timeMildMin[i]=0; g_timeDangerMin[i]=0;
    g_comboExited[i]=false;
+   g_protectTriggered[i]=false; g_protectMoved[i]=false;
 }
 
 void CheckMAEProgress()
@@ -184,6 +200,27 @@ void CheckMAEProgress()
                 " profit="+DoubleToString(profit,2)+" | "+g_trackTag[i]);
          else
             Log("COMBO_EXIT_FAIL",IntegerToString((int)trade.ResultRetcode())+" | "+trade.ResultRetcodeDescription());
+      }
+
+      double favR=(g_trackDir[i]==+1) ? (q.bid-g_trackEntry[i])/g_trackR[i] : (g_trackEntry[i]-q.ask)/g_trackR[i];
+      if(!g_protectTriggered[i] && favR>=ProtectTriggerR)
+      {
+         g_protectTriggered[i]=true;
+         Log("PROTECT_TRIGGER","favR="+DoubleToString(favR,3)+" | "+g_trackTag[i]);
+         if(UseProtectStop)
+         {
+            double curTP=PositionGetDouble(POSITION_TP);
+            double lock=NormalizeDouble(g_trackEntry[i]+g_trackDir[i]*ProtectR*g_trackR[i],_Digits);
+            if(!EnableLiveOrders)
+               Log("PROTECT_MOVE_DRY","would move SL->"+DoubleToString(lock,_Digits)+" (EnableLiveOrders=false) | "+g_trackTag[i]);
+            else if(trade.PositionModify(g_trackTicket[i],lock,curTP))
+            {
+               g_protectMoved[i]=true;
+               Log("PROTECT_MOVED","SL->"+DoubleToString(lock,_Digits)+" | "+g_trackTag[i]);
+            }
+            else
+               Log("PROTECT_MOVE_FAIL",IntegerToString((int)trade.ResultRetcode())+" | "+trade.ResultRetcodeDescription());
+         }
       }
    }
 }
@@ -470,6 +507,8 @@ int OnInit()
        " | MildZoneR="+DoubleToString(MildZoneR,2)+" ComboExitDangerMin="+DoubleToString(ComboExitDangerMin,1)+
        " UseComboExit="+(UseComboExit?"true":"false")+
        " | UseFridayNarrowWindow="+(UseFridayNarrowWindow?"true":"false")+
+       " | ProtectTriggerR="+DoubleToString(ProtectTriggerR,2)+" ProtectR="+DoubleToString(ProtectR,2)+
+       " UseProtectStop="+(UseProtectStop?"true":"false")+
        " | Lots="+DoubleToString(Lots,2)+" | Magic="+IntegerToString((int)MagicNumber)+
        " | orders="+(EnableLiveOrders?"ENABLED":"DRY"));
    return INIT_SUCCEEDED;
@@ -502,6 +541,8 @@ void OnTradeTransaction(const MqlTradeTransaction &trans,const MqlTradeRequest &
    Log("MAE_OUTCOME","outcome="+outcome+" profit="+DoubleToString(profit,2)+
        " threeBarOneWay="+bar3Str+
        " timeMildMin="+DoubleToString(g_timeMildMin[i],1)+" timeDangerMin="+DoubleToString(g_timeDangerMin[i],1)+
+       " protectTriggered="+(g_protectTriggered[i]?"true":"false")+
+       " protectMoved="+(g_protectMoved[i]?"true":"false")+
        " | "+g_trackTag[i]);
    g_trackTicket[i]=0; // free slot
    g_waitingBar3[i]=false;

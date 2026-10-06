@@ -19,3 +19,6 @@ UseFridayNarrowWindow=false
 MildZoneR=2.0
 ComboExitDangerMin=10.0
 UseComboExit=false
+ProtectTriggerR=0.25
+ProtectR=0.05
+UseProtectStop=false
