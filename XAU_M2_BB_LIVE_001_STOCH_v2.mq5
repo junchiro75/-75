@@ -828,6 +828,17 @@ bool   g_trackBodyTouch[TRACK_SLOTS];
 bool   g_lastPrior5Same=false; // transient handoff value, set right before OpenTrade()
 bool   g_trackPrior5Same[TRACK_SLOTS];
 
+// -- signal-candle rejection-wick length tracking (diagnostic only, no
+//    trading effect): the user's observation is that when the signal
+//    candle's own wick on the OPPOSITE side of its close (the "rejection"
+//    side -- e.g. a long upper wick on a bull breakout candle, showing
+//    price got rejected back down after poking higher) is long, the
+//    direction tends to reverse soon after rather than continue. Measured
+//    as that wick's length in ATR(Timeframe) units: for sigdir=+1,
+//    high-MAX(open,close); for sigdir=-1, MIN(open,close)-low.
+double g_lastWickLenATR=999.0; // transient handoff value, set right before OpenTrade()
+double g_trackWickLenATR[TRACK_SLOTS];
+
 // -- 매물대 proximity at entry (diagnostic only, no trading effect unless
 //    UseSupplyZoneFilter=true): distance from the signal close to the
 //    NEAREST enabled zone level, in ATR(Timeframe) units. Logged on every
@@ -1029,6 +1040,7 @@ void StartMAETracking(ulong ticket,double entry,double R,int dir,string tag)
    g_trackLastSample[i]=TimeCurrent(); g_timeMildMin[i]=0; g_timeDangerMin[i]=0;
    g_trackBodyTouch[i]=g_lastBodyTouch;
    g_trackPrior5Same[i]=g_lastPrior5Same;
+   g_trackWickLenATR[i]=g_lastWickLenATR;
    g_trackZoneDistATR[i]=g_lastZoneDistATR;
    g_trackDI[i]=g_lastDI; g_trackDIKnown[i]=g_lastDIKnown;
    g_trackAdxRiseDiff[i]=g_lastAdxRiseDiff; g_trackAdxRiseKnown[i]=g_lastAdxRiseKnown;
@@ -1774,6 +1786,16 @@ void CheckNewM2Bar()
    // wick that poked through and closed back inside.
    bool bodyTouch=(sigdir==+1) ? (c>=up20[0]) : (c<=lo20[0]);
 
+   // Rejection-wick length (diagnostic): the signal candle's wick on the
+   // side OPPOSITE its close, in ATR units -- tests whether a long
+   // rejection wick on the breakout candle itself predicts a reversal.
+   double wickLenATR=999.0;
+   {
+      double tail=(sigdir==+1) ? (h-MathMax(o,c)) : (MathMin(o,c)-l);
+      double atrDiag[1];
+      if(CopyBuffer(hATR_Sig,0,1,1,atrDiag)==1 && atrDiag[0]>0) wickLenATR=tail/atrDiag[0];
+   }
+
    // Prior-5-candle-same-direction (diagnostic): were the 5 candles right
    // before the signal candle (shifts 2-6) ALL in the breakout's own
    // direction (all bullish for sigdir=+1, all bearish for sigdir=-1)?
@@ -1996,6 +2018,7 @@ void CheckNewM2Bar()
       return;
    }
    g_lastPrior5Same=prior5Same;
+   g_lastWickLenATR=wickLenATR;
    g_lastDI=di; g_lastDIKnown=diKnown;
    g_lastAdxRiseDiff=adxRiseDiff; g_lastAdxRiseKnown=adxRiseKnown;
    g_lastEffRatio=effRatio; g_lastEffRatioKnown=effRatioKnown;
@@ -2090,6 +2113,7 @@ int OnInit()
        " | orders="+(EnableLiveOrders?"ENABLED":"DRY"));
    Log("NOTE","DI diagnostic: DI=signal close/SMA(DIPeriod)*100, logged on every trade (MAE_OUTCOME). Diagnostic only, does not block entries.");
    Log("NOTE","DI-cross-exit diagnostic: diBaseAgainst/diCrossSeen/diCrossR in MAE_OUTCOME track +DI/-DI (hADXM2) reversals against the trade's direction, and the R-multiple price was at when that first happened. Diagnostic only, does not close anything.");
+   Log("NOTE","wickLenATR diagnostic: logs the signal candle's own rejection-wick length (opposite side from its close) in ATR units, on every trade (MAE_OUTCOME). Diagnostic only, does not block entries.");
    return INIT_SUCCEEDED;
 }
 
@@ -2157,6 +2181,7 @@ void OnTradeTransaction(const MqlTradeTransaction &trans,const MqlTradeRequest &
        " timeDangerMin="+DoubleToString(g_timeDangerMin[i],1)+
        " touch="+(g_trackBodyTouch[i]?"BODY":"WICK")+
        " prior5Same="+(g_trackPrior5Same[i]?"true":"false")+
+       " wickLenATR="+(g_trackWickLenATR[i]>=999.0?"n/a":DoubleToString(g_trackWickLenATR[i],3))+
        " adxRiseDiff="+(g_trackAdxRiseKnown[i]?DoubleToString(g_trackAdxRiseDiff[i],2):"n/a")+
        " effRatio="+(g_trackEffRatioKnown[i]?DoubleToString(g_trackEffRatio[i],3):"n/a")+
        " htfAligned="+(!g_trackHtfKnown[i]?"n/a":(g_trackHtfAligned[i]?"true":"false"))+
