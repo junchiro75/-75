@@ -219,6 +219,18 @@
 //| and full removal -- it preserves this round-trip protection at a     |
 //| meaningful 24.8% partial rate, trading some raw NET upside (2.0:      |
 //| +3.8%, 999: +5.2% more) for that structural insurance.                |
+//| zoneDistATR diagnostic (ported from 001_STOCH_v2/005_RFILTER_V2,      |
+//| UNTESTED here): logs the distance (in ATR units) from the ACTUAL      |
+//| ENTRY FILL price (not the signal candle, since entry can fire up to   |
+//| MaxExtensionHours+MaxPullbackHours after the signal) to the nearest    |
+//| enabled 매물대 zone (Asia/NY opening-hour boxes, today/previous-day     |
+//| high-low, previous-NY-session high-low). Diagnostic only -- does NOT   |
+//| block or alter any entry. Logged on every trade close as MANAGED_EXIT  |
+//| (this EA had no outcome/profit log at all before this -- ManageOwn()'s |
+//| own-position-just-disappeared branch now looks up the closed deal via  |
+//| HistorySelectByPosition). Per the lesson learned on 001: do NOT turn   |
+//| this into an active filter until a bucketed analysis of logged         |
+//| zoneDistATR vs outcome shows a robust, replicating relationship.       |
 //+------------------------------------------------------------------+
 #property strict
 #include <Trade/Trade.mqh>
@@ -258,10 +270,41 @@ input int  SkipHourBEndKST=18; // Hour-dip B window end, KST, exclusive (see hea
 input bool SkipHourBEntry=true; // Block entries in [SkipHourBStartKST,SkipHourBEndKST) KST (CONFIRMED, see header)
 input bool UseFridayNarrowWindow=false; // On Friday, only allow entries 10:30-15:00 KST (ported from 001 M2_v2 where CONFIRMED; REJECTED here, see header)
 
-int h20=INVALID_HANDLE,h4=INVALID_HANDLE;
+// -- 매물대 (supply/demand zone) diagnostic (ported from 001 M2_v2 / 005
+//    RFILTER_V2): logs zoneDistATR on every trade close. Diagnostic
+//    ONLY -- does not block or alter any entry.
+input int    ATRPeriod             = 14; // ATR period used for zoneDistATR (does not affect SL/TP, those are R-based)
+input bool   UseAsiaBoxZone        = true; // Include the Asia-session opening-hour candle's high/low
+input int    AsiaOpenHourKST       = 8; // KST hour (integer) the Asia session opening candle starts
+input bool   UseNYBoxZone          = true; // Include the NY/US-session opening-hour candle's high/low
+input double NYOpenHourKST         = 22.5; // KST hour (decimal) the NY session opening candle starts
+input bool   UseTodayHighLowZone   = true; // Include today's running high/low (so far, KST calendar day)
+input bool   UsePrevDayHighLowZone = true; // Include the previous KST calendar day's high/low
+input bool   UsePrevNYHighLowZone  = true; // Include the previous day's NY-session-window high/low (미국장 전일 고가저가)
+input double NYSessionStartHourKST = 20.0; // KST hour (decimal) the NY session window starts, for 전일 미장 고가/저가 tracking (wraps past midnight)
+input double NYSessionEndHourKST   = 6.0; // KST hour (decimal) the NY session window ends
+
+int h20=INVALID_HANDLE,h4=INVALID_HANDLE,hATR_Sig=INVALID_HANDLE;
 datetime lastbar=0;
 int      g_consecSignalCount=0,g_lastSignalSd=0; // consecutive same-direction M10 signal streak
 int f_log=INVALID_HANDLE;
+
+// -- supply-zone state (all in KST calendar-day terms), ported from 001 M2_v2 --
+int    g_szLastDay=-1;          // KST day index of the last processed bar, -1=uninitialized
+bool   g_szAsiaBoxSet=false;    // today's Asia open-hour box already captured
+double g_szAsiaHigh=0, g_szAsiaLow=0;
+bool   g_szNYBoxSet=false;      // today's NY open-hour box already captured
+double g_szNYHigh=0, g_szNYLow=0;
+double g_szTodayHigh=0, g_szTodayLow=0;
+double g_szPrevDayHigh=0, g_szPrevDayLow=0;
+bool   g_szHavePrevDay=false;
+double g_szNYSessHigh=0, g_szNYSessLow=0;     // running NY-session-window high/low (in progress)
+double g_szPrevNYHigh=0, g_szPrevNYLow=0;     // finalized previous NY-session-window high/low
+bool   g_szHavePrevNY=false;
+bool   g_szInNYSessPrevBar=false;             // was the previously processed bar inside the NY session window
+
+double g_entryZoneDistATR=999.0; // zoneDistATR at the actual entry fill of the currently open trade
+ulong  tracked_ticket=0;         // kept fresh to the currently open own-Magic position's ticket
 
 string TS(datetime t){ return TimeToString(t,TIME_DATE|TIME_MINUTES|TIME_SECONDS); }
 void Log(string event,string detail="")
@@ -396,6 +439,7 @@ void NewBar(){
  datetime st=iTime(_Symbol,PERIOD_M10,1);
  double o=iOpen(_Symbol,PERIOD_M10,1),h=iHigh(_Symbol,PERIOD_M10,1),l=iLow(_Symbol,PERIOD_M10,1),c=iClose(_Symbol,PERIOD_M10,1);
  CheckLookaheads(st,o,c); // every bar, regardless of whether THIS bar is itself a new signal
+ UpdateSupplyZones(st,h,l);
  double u20[1],d20[1],u4[1],d4[1];
  if(CopyBuffer(h20,1,1,1,u20)!=1||CopyBuffer(h20,2,1,1,d20)!=1||
     CopyBuffer(h4,1,1,1,u4)!=1||CopyBuffer(h4,2,1,1,d4)!=1)return;
@@ -483,6 +527,124 @@ void KST_HourDow(datetime server_now,int &hour,int &dow)
    int offsetHours=IsEUDST(server_now)?6:7;
    MqlDateTime t; TimeToStruct(server_now+offsetHours*3600,t);
    hour=t.hour; dow=t.day_of_week; // 0=Sunday...6=Saturday
+}
+
+// -- 매물대 (supply/demand zone) tracking, ported verbatim from 001 M2_v2 --
+int KSTDayIndex(datetime server_now)
+{
+   int offsetHours=IsEUDST(server_now)?6:7;
+   datetime kst=server_now+offsetHours*3600;
+   return (int)(kst/86400);
+}
+
+bool InWindowKST(int minOfDay,double startHour,double endHour)
+{
+   int start=(int)MathRound(startHour*60);
+   int end=(int)MathRound(endHour*60);
+   if(start<=end) return (minOfDay>=start && minOfDay<end);
+   return (minOfDay>=start || minOfDay<end); // wraps past midnight
+}
+
+// Called once per new signal-timeframe bar with that bar's own high/low --
+// rolls today's running high/low into "previous day" at KST midnight,
+// captures the Asia/NY session opening-hour boxes the first time each
+// day's clock reaches them, and finalizes the previous NY-session-window
+// high/low the moment that window closes.
+void UpdateSupplyZones(datetime sig,double h,double l)
+{
+   int kstHour,kstDow; KST_HourDow(sig,kstHour,kstDow);
+   int day=KSTDayIndex(sig);
+   int offsetHours=IsEUDST(sig)?6:7;
+   MqlDateTime t; TimeToStruct(sig+offsetHours*3600,t);
+   int minOfDay=t.hour*60+t.min;
+
+   if(g_szLastDay<0)
+   {
+      g_szLastDay=day; g_szTodayHigh=h; g_szTodayLow=l;
+      g_szAsiaBoxSet=false; g_szNYBoxSet=false;
+   }
+   else if(day!=g_szLastDay)
+   {
+      g_szPrevDayHigh=g_szTodayHigh; g_szPrevDayLow=g_szTodayLow; g_szHavePrevDay=true;
+      g_szTodayHigh=h; g_szTodayLow=l;
+      g_szAsiaBoxSet=false; g_szNYBoxSet=false;
+      g_szLastDay=day;
+   }
+   else
+   {
+      if(h>g_szTodayHigh) g_szTodayHigh=h;
+      if(l<g_szTodayLow)  g_szTodayLow=l;
+   }
+
+   if(!g_szAsiaBoxSet && kstHour==AsiaOpenHourKST)
+   { g_szAsiaHigh=h; g_szAsiaLow=l; g_szAsiaBoxSet=true; }
+
+   int nyOpenMin=(int)MathRound(NYOpenHourKST*60);
+   if(!g_szNYBoxSet && minOfDay>=nyOpenMin && minOfDay<nyOpenMin+60)
+   { g_szNYHigh=h; g_szNYLow=l; g_szNYBoxSet=true; }
+
+   bool inNYSess=InWindowKST(minOfDay,NYSessionStartHourKST,NYSessionEndHourKST);
+   if(inNYSess)
+   {
+      if(!g_szInNYSessPrevBar){ g_szNYSessHigh=h; g_szNYSessLow=l; }
+      else { if(h>g_szNYSessHigh) g_szNYSessHigh=h; if(l<g_szNYSessLow) g_szNYSessLow=l; }
+   }
+   else if(g_szInNYSessPrevBar)
+   {
+      g_szPrevNYHigh=g_szNYSessHigh; g_szPrevNYLow=g_szNYSessLow; g_szHavePrevNY=true;
+   }
+   g_szInNYSessPrevBar=inNYSess;
+}
+
+// Distance from price to the NEAREST enabled zone level, in ATR units
+// (999.0 = no enabled zone has a value yet).
+double DistanceToNearestZone(double price,double atr)
+{
+   if(atr<=0) return 999.0;
+   double best=999.0;
+
+   if(UseAsiaBoxZone && g_szAsiaBoxSet)
+   {
+      best=MathMin(best,MathAbs(price-g_szAsiaHigh)/atr);
+      best=MathMin(best,MathAbs(price-g_szAsiaLow)/atr);
+   }
+   if(UseNYBoxZone && g_szNYBoxSet)
+   {
+      best=MathMin(best,MathAbs(price-g_szNYHigh)/atr);
+      best=MathMin(best,MathAbs(price-g_szNYLow)/atr);
+   }
+   if(UseTodayHighLowZone)
+   {
+      best=MathMin(best,MathAbs(price-g_szTodayHigh)/atr);
+      best=MathMin(best,MathAbs(price-g_szTodayLow)/atr);
+   }
+   if(UsePrevDayHighLowZone && g_szHavePrevDay)
+   {
+      best=MathMin(best,MathAbs(price-g_szPrevDayHigh)/atr);
+      best=MathMin(best,MathAbs(price-g_szPrevDayLow)/atr);
+   }
+   if(UsePrevNYHighLowZone && g_szHavePrevNY)
+   {
+      best=MathMin(best,MathAbs(price-g_szPrevNYHigh)/atr);
+      best=MathMin(best,MathAbs(price-g_szPrevNYLow)/atr);
+   }
+   return best;
+}
+
+// Looks up the realized profit (profit+swap+commission across all deals)
+// for a position ticket that has already closed, via deal history.
+double GetClosedPositionProfit(ulong posTicket)
+{
+   double profit=0;
+   if(!HistorySelectByPosition(posTicket)) return profit;
+   int total=HistoryDealsTotal();
+   for(int i=0;i<total;i++)
+   {
+      ulong dt=HistoryDealGetTicket(i);
+      if(dt==0) continue;
+      profit+=HistoryDealGetDouble(dt,DEAL_PROFIT)+HistoryDealGetDouble(dt,DEAL_SWAP)+HistoryDealGetDouble(dt,DEAL_COMMISSION);
+   }
+   return profit;
 }
 
 // -- Friday narrow-window filter, ported from XAU_M2_BB_LIVE_001_STOCH_v2
@@ -593,6 +755,10 @@ bool SendEntry(int i,MqlTick &tk){
  }
 
  double entry=(dir==1?tk.ask:tk.bid);
+ {
+    double atrDiag[1];
+    g_entryZoneDistATR=(CopyBuffer(hATR_Sig,0,1,1,atrDiag)==1) ? DistanceToNearestZone(entry,atrDiag[0]) : 999.0;
+ }
  double sl=entry-dir*InitialSL_R*R;
  double finaltp=S[i].c+dir*SignalOppositeTP_R*R;
  string tag="LIVE007_P05P10"+(S[i].bodyTouch?"_BODY":"_WICK")+(h1Against?"_H1AGAINST":"_H1OK");
@@ -612,11 +778,13 @@ bool SendEntry(int i,MqlTick &tk){
  if(OwnPosition(t)&&PositionSelectByTicket(t)){
   tracked_entry=PositionGetDouble(POSITION_PRICE_OPEN);
   tracked_entry_time=(datetime)PositionGetInteger(POSITION_TIME);
+  tracked_ticket=t;
  }else{tracked_entry=entry;tracked_entry_time=(datetime)(tk.time_msc/1000);}
  tracked_R=R;tracked_sigclose=S[i].c;tracked_dir=dir;protection_armed=false;managed_partial=false;
  SaveTrack();
  Log("ENTRY_OK",(dir==1?"BUY":"SELL")+" entry="+DoubleToString(tracked_entry,_Digits)+
-     " R="+DoubleToString(R,2)+" lots="+DoubleToString(Lots,2)+" sig="+TimeToString(S[i].sig));
+     " R="+DoubleToString(R,2)+" lots="+DoubleToString(Lots,2)+" sig="+TimeToString(S[i].sig)+
+     " zoneDistATR="+(g_entryZoneDistATR>=999.0?"n/a":DoubleToString(g_entryZoneDistATR,3)));
  DS(i);return true;
 }
 
@@ -642,9 +810,21 @@ void ManageSetups(MqlTick &tk){
 void ManageOwn(MqlTick &tk){
  ulong ticket;
  if(!OwnPosition(ticket)){
-  if(tracked_entry_time!=0){ClearTrack();ResetTrack();}
+  if(tracked_entry_time!=0){
+   // Position closed (SL/TP/manual) since the last tick -- log the matching
+   // zoneDistATR outcome line, same diagnostic as 001/005, before clearing
+   // the tracked state. No OnTradeTransaction hook in this EA, so this is
+   // the only point it fires.
+   double profit=GetClosedPositionProfit(tracked_ticket);
+   Log("MANAGED_EXIT",(tracked_dir==1?"BUY":"SELL")+" ticket="+IntegerToString((int)tracked_ticket)+
+       " entry="+DoubleToString(tracked_entry,_Digits)+" profit="+DoubleToString(profit,2)+
+       " zoneDistATR="+(g_entryZoneDistATR>=999.0?"n/a":DoubleToString(g_entryZoneDistATR,3)));
+   g_entryZoneDistATR=999.0; tracked_ticket=0;
+   ClearTrack();ResetTrack();
+  }
   return;
  }
+ tracked_ticket=ticket;
  if(!PositionSelectByTicket(ticket))return;
 
  int dir=(PositionGetInteger(POSITION_TYPE)==POSITION_TYPE_BUY)?1:-1;
@@ -788,7 +968,8 @@ int OnInit(){
  }
  h20=iBands(_Symbol,PERIOD_M10,20,0,2.0,PRICE_CLOSE);
  h4=iBands(_Symbol,PERIOD_M10,4,0,4.0,PRICE_OPEN);
- if(h20==INVALID_HANDLE||h4==INVALID_HANDLE)return INIT_FAILED;
+ hATR_Sig=iATR(_Symbol,PERIOD_M10,ATRPeriod);
+ if(h20==INVALID_HANDLE||h4==INVALID_HANDLE||hATR_Sig==INVALID_HANDLE)return INIT_FAILED;
  trade.SetExpertMagicNumber(MagicNumber);
 
  f_log=FileOpen("XAU_M10_LIVE_007_BUYONLY_V2_LOG.csv",FILE_READ|FILE_WRITE|FILE_CSV|FILE_ANSI|FILE_SHARE_READ,',');
@@ -815,8 +996,15 @@ int OnInit(){
      " | SkipHourBStartKST="+IntegerToString(SkipHourBStartKST)+" SkipHourBEndKST="+IntegerToString(SkipHourBEndKST)+
      " SkipHourBEntry="+(SkipHourBEntry?"true":"false")+
      " | UseFridayNarrowWindow="+(UseFridayNarrowWindow?"true":"false")+" | Lots="+DoubleToString(Lots,2)+
-     " | Magic="+IntegerToString((int)MagicNumber)+" | orders="+(EnableLiveOrders?"ENABLED":"DRY"));
+     " | Magic="+IntegerToString((int)MagicNumber)+" | orders="+(EnableLiveOrders?"ENABLED":"DRY")+
+     " | ATRPeriod="+IntegerToString(ATRPeriod)+
+     " UseAsiaBoxZone="+(UseAsiaBoxZone?"true":"false")+" AsiaOpenHourKST="+IntegerToString(AsiaOpenHourKST)+
+     " UseNYBoxZone="+(UseNYBoxZone?"true":"false")+" NYOpenHourKST="+DoubleToString(NYOpenHourKST,2)+
+     " UseTodayHighLowZone="+(UseTodayHighLowZone?"true":"false")+" UsePrevDayHighLowZone="+(UsePrevDayHighLowZone?"true":"false")+
+     " UsePrevNYHighLowZone="+(UsePrevNYHighLowZone?"true":"false")+
+     " NYSessionWindow="+DoubleToString(NYSessionStartHourKST,2)+"-"+DoubleToString(NYSessionEndHourKST,2)+"KST");
  Log("NOTE","EXIT: +0.5R whole-position SL -> +0.25R; +1.0R close half; runner +0.25R; final signal-close opposite 0.90R");
+ Log("NOTE","zoneDistATR diagnostic ported from 001/005: logs distance (ATR units) from the actual entry fill to the nearest enabled 매물대 zone on every trade close (MANAGED_EXIT). Diagnostic only, does not block entries.");
  return INIT_SUCCEEDED;
 }
 void OnTick(){
@@ -829,5 +1017,6 @@ void OnDeinit(const int reason){
  if(f_log!=INVALID_HANDLE){ FileFlush(f_log); FileClose(f_log); }
  if(h20!=INVALID_HANDLE)IndicatorRelease(h20);
  if(h4!=INVALID_HANDLE)IndicatorRelease(h4);
+ if(hATR_Sig!=INVALID_HANDLE)IndicatorRelease(hATR_Sig);
 }
 //+------------------------------------------------------------------+
