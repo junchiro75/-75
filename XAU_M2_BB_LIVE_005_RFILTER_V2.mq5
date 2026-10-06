@@ -86,6 +86,15 @@
 //| zoneDistATR vs outcome shows a robust, replicating relationship --  |
 //| 001's first such attempt looked clean on a settings-drifted log     |
 //| and did NOT replicate once corrected.                               |
+//|                                                                     |
+//| ProtectTriggerR/ProtectR/UseProtectStop (ported from 001_STOCH_v2,  |
+//| UNTESTED here, default UseProtectStop=false): this EA already has  |
+//| a profit-lock stage at TP1_R=0.50 (moves SL to Lock_R=0.30) -- this |
+//| adds an EARLIER, smaller lock before that: once favorable R hits   |
+//| ProtectTriggerR (0.25), move SL to a small locked profit (ProtectR,|
+//| 0.05) rather than leaving the original InitialSL_R stop in place.  |
+//| Only takes effect if TP1 hasn't already fired (TP1's own Lock_R    |
+//| move supersedes it). Needs its own backtest before any verdict.    |
 //+------------------------------------------------------------------+
 #property strict
 #include <Trade/Trade.mqh>
@@ -112,6 +121,10 @@ input int    SkipHourStartKST     = 20; // KST hour skip window start (see heade
 input int    SkipHourEndKST       = 22; // KST hour skip window end, exclusive (see header, SkipEntryHourKST)
 input bool   SkipEntryHourKST     = true; // Block entries in [SkipHourStartKST,SkipHourEndKST) KST (CONFIRMED, see header)
 input bool   UseFridayNarrowWindow = false; // On Friday, only allow entries 10:30-15:00 KST (ported from 001 M2_v2 where CONFIRMED; REJECTED here, see header)
+
+input double ProtectTriggerR      = 0.25; // Favorable R to arm an early protect-lock stop, before TP1 (ported from 001_STOCH_v2, UNTESTED here)
+input double ProtectR             = 0.05; // SL level once armed, in R (ported from 001_STOCH_v2, UNTESTED here)
+input bool   UseProtectStop       = false; // Move SL to ProtectR once armed, before TP1/Lock fires (ported from 001_STOCH_v2, UNTESTED here)
 
 // -- 매물대 (supply/demand zone) diagnostic (ported from 001 M2_v2): logs
 //    zoneDistATR (distance from the actual entry fill to the nearest
@@ -165,6 +178,7 @@ ulong managed_ticket=0;
 int managed_dir=0;          // +1 BUY, -1 SELL
 double managed_R=0,managed_entry=0,managed_sl=0,managed_tp1=0,managed_lock=0,managed_tp2=0;
 bool tp1_reached=false;
+bool protect_reached=false; // UseProtectStop: SL already moved to the early protect-lock level
 
 // DRY/tester virtual position: reproduces research MAX1 without sending orders.
 bool v_open=false,v_tp1=false;
@@ -427,10 +441,15 @@ bool FindOurPosition()
          double eps=2*_Point;
          tp1_reached=(managed_dir==+1 ? managed_sl>=managed_lock-eps
                                      : managed_sl<=managed_lock+eps && managed_sl>0);
+         double managed_protect=managed_entry+managed_dir*ProtectR*managed_R;
+         protect_reached=tp1_reached ||
+            (managed_dir==+1 ? managed_sl>=managed_protect-eps
+                             : managed_sl<=managed_protect+eps && managed_sl>0);
       }
       return true;
    }
    tp1_reached=false;
+   protect_reached=false;
    return false;
 }
 
@@ -732,7 +751,31 @@ void ManageVirtual(MqlTick &tick)
 void ManagePosition(MqlTick &tick)
 {
    if(!FindOurPosition()) return;
-   if(tp1_reached || managed_R<=0) return;
+   if(managed_R<=0) return;
+
+   if(UseProtectStop && !protect_reached && !tp1_reached)
+   {
+      double protectTriggerPx=managed_entry+managed_dir*ProtectTriggerR*managed_R;
+      double px0=(managed_dir==+1 ? tick.bid : tick.ask);
+      bool protectHit=(managed_dir==+1 ? px0>=protectTriggerPx : px0<=protectTriggerPx);
+      if(protectHit)
+      {
+         double protectLevel=managed_entry+managed_dir*ProtectR*managed_R;
+         Log("PROTECT_TRIGGER","favR="+DoubleToString(ProtectTriggerR,3));
+         if(!EnableLiveOrders)
+         {
+            protect_reached=true;
+            Log("DRY_PROTECT","would move SL to "+DoubleToString(protectLevel,_Digits));
+         }
+         else if(SafeModifyPosition(managed_ticket,managed_dir,protectLevel,managed_tp2,"PROTECT_MODIFY"))
+         {
+            protect_reached=true;
+            Log("PROTECT_MOVED","SL->"+DoubleToString(protectLevel,_Digits));
+         }
+      }
+   }
+
+   if(tp1_reached) return;
 
    double px=(managed_dir==+1 ? tick.bid : tick.ask); // executable close side
    bool hit=(managed_dir==+1 ? px>=managed_tp1 : px<=managed_tp1);
@@ -784,6 +827,8 @@ int OnInit()
        " | SkipHourStartKST="+IntegerToString(SkipHourStartKST)+" SkipHourEndKST="+IntegerToString(SkipHourEndKST)+
        " SkipEntryHourKST="+(SkipEntryHourKST?"true":"false")+
        " | UseFridayNarrowWindow="+(UseFridayNarrowWindow?"true":"false")+
+       " | ProtectTriggerR="+DoubleToString(ProtectTriggerR,2)+" ProtectR="+DoubleToString(ProtectR,2)+
+       " UseProtectStop="+(UseProtectStop?"true":"false")+
        " | orders="+(EnableLiveOrders?"ENABLED":"DRY")+
        " | ATRPeriod="+IntegerToString(ATRPeriod)+
        " UseAsiaBoxZone="+(UseAsiaBoxZone?"true":"false")+" AsiaOpenHourKST="+IntegerToString(AsiaOpenHourKST)+
@@ -815,6 +860,7 @@ void OnTick()
 
    bool wasManaged=managed; ulong wasTicket=managed_ticket;
    int wasDir=managed_dir; double wasEntry=managed_entry;
+   bool wasProtectReached=protect_reached; bool wasTp1Reached=tp1_reached;
 
    CheckNewM2Bar();
    CheckSetups(tick);
@@ -830,7 +876,9 @@ void OnTick()
       double profit=GetClosedPositionProfit(wasTicket);
       Log("MANAGED_EXIT",(wasDir==1?"BUY":"SELL")+" ticket="+IntegerToString((int)wasTicket)+
           " entry="+DoubleToString(wasEntry,_Digits)+" profit="+DoubleToString(profit,2)+
-          " zoneDistATR="+(g_entryZoneDistATR>=999.0?"n/a":DoubleToString(g_entryZoneDistATR,3)));
+          " zoneDistATR="+(g_entryZoneDistATR>=999.0?"n/a":DoubleToString(g_entryZoneDistATR,3))+
+          " protectTriggered="+(wasProtectReached?"true":"false")+
+          " tp1Reached="+(wasTp1Reached?"true":"false"));
       g_entryZoneDistATR=999.0;
    }
 }
