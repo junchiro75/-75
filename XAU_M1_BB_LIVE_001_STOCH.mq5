@@ -85,14 +85,17 @@
 //| $2,247.47 (+13.9%, WORSE), n=1,704. Same conclusion -- neither M2_v2   |
 //| finding generalizes to the M1 signal.                                  |
 //|                                                                        |
-//| ProtectTriggerR/ProtectR/UseProtectStop (ported from M2_v2, UNTESTED   |
-//| here, default UseProtectStop=false): same mechanism as M2_v2 -- once   |
-//| favorable excursion reaches ProtectTriggerR (0.25R), move SL to a      |
-//| small LOCKED PROFIT (ProtectR, 0.05R) rather than breakeven. On M2_v2  |
-//| this shrank average loss size ~46% at a NET cost (essentially flat    |
-//| PF). Needs its own backtest against this file's own confirmed         |
-//| baseline (NET $22,906.29, WR 93.92%, PF 1.509, n=2,008) before any     |
-//| verdict here.                                                          |
+//| ProtectTriggerR/ProtectR/UseProtectStop (ported from M2_v2, CONFIRMED  |
+//| user-selected, default UseProtectStop=true): once favorable excursion |
+//| reaches ProtectTriggerR (0.25R), move SL to a small LOCKED PROFIT      |
+//| (ProtectR, 0.05R) rather than breakeven. Ground-truth backtest        |
+//| against this file's own clean same-session baseline (OFF: NET         |
+//| $25,752.58, WR 93.84%, PF 1.598, n=2,045) -> ON: NET $20,399.97        |
+//| (-20.8%), WR 92.53% (-1.31pp), PF 1.712 (+0.114, improved), n=2,168    |
+//| (more trades since MAX1-position slot frees up sooner), avg loss       |
+//| $176.78 (-48.2% vs $341.64). Same NET-for-smaller-losses tradeoff as   |
+//| M2_v2; user explicitly chose to deploy live at PT=0.25/PR=0.05 anyway, |
+//| same as M2.                                                            |
 //+------------------------------------------------------------------+
 #property strict
 #include <Trade/Trade.mqh>
@@ -124,9 +127,9 @@ input double MildZoneR          = 2.0;  // Adverse-R boundary for dwell-time dia
 input double ComboExitDangerMin = 10.0; // Danger-zone minutes required, combined with threeBarOneWay (UNTESTED, see header)
 input bool   UseComboExit       = false; // Close only when BOTH threeBarOneWay AND ComboExitDangerMin are met (REJECTED, see header)
 
-input double ProtectTriggerR    = 0.25; // Favorable R to arm protect-lock stop (ported from M2_v2 where CONFIRMED PT=0.25/PR=0.05, see that file's header; UNTESTED here)
-input double ProtectR           = 0.05; // SL level once armed, in R (ported from M2_v2, UNTESTED here)
-input bool   UseProtectStop     = false; // Move SL to ProtectR once armed (ported from M2_v2, UNTESTED here -- needs its own backtest before deployment)
+input double ProtectTriggerR    = 0.25; // Favorable R to arm protect-lock stop (CONFIRMED user-selected, see header)
+input double ProtectR           = 0.05; // SL level once armed, in R (CONFIRMED user-selected, see header)
+input bool   UseProtectStop     = true; // Move SL to ProtectR once armed (CONFIRMED user-selected, see header)
 
 int hBB20=INVALID_HANDLE,hBB4=INVALID_HANDLE,hStoch=INVALID_HANDLE;
 datetime last_m1_bar=0;

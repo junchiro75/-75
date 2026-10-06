@@ -21,4 +21,4 @@ ComboExitDangerMin=10.0
 UseComboExit=false
 ProtectTriggerR=0.25
 ProtectR=0.05
-UseProtectStop=false
+UseProtectStop=true
