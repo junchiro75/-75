@@ -64,6 +64,7 @@ Trend10LookbackBars=10
 UseEntryTrend10OpposeExit=false
 ComboExitDangerMin=10.0
 UseComboExit=true
+UseTrend10ComboExit=true
 SkipFadeBearOSWickTouch=true
 UseSupplyZoneFilter=true
 SupplyZoneATR=0.15

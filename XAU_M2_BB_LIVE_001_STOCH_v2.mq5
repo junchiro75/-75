@@ -235,6 +235,22 @@
 //| 92.01%) -- unlike UseProtectStop/UseDangerTimeStop/UseThreeBarExit    |
 //| above (all individually REJECTED), this surgical AND-combination is   |
 //| the one idea from this whole early-exit investigation that works.     |
+//| UseTrend10ComboExit (default false, UNTESTED): tries the same         |
+//| AND-with-danger-time recipe that made UseComboExit work, but swaps    |
+//| in trend10Oppose instead of threeBarOneWay -- closes when BOTH        |
+//| trend10Oppose=true AND timeDangerMin>=ComboExitDangerMin. A DIFFERENT |
+//| version of trend10Oppose as an exit (UseEntryTrend10OpposeExit, gated |
+//| on a fixed ~20min/11-bar delay instead of actual danger-zone dwell    |
+//| time) was already REJECTED despite the diagnostic cohort being         |
+//| genuinely bad (nextBarOppose=true AND trend10Oppose=true, n=389, 32.4% |
+//| natural loss rate vs ~8% baseline) -- forcing the close there realized |
+//| a loss on the 67.6% that would have eventually won, outweighing the    |
+//| shortened losses on the 32.4% that would have hit SL anyway. This      |
+//| swaps the fixed-delay gate for ComboExit's own danger-time gate (and   |
+//| drops the extra nextBarOppose AND-condition) to see if that same       |
+//| "only act once the position has actually dwelled in danger, not just  |
+//| waited out a fixed bar count" distinction that saved threeBarOneWay    |
+//| also rescues this signal. Needs its own ground-truth run.              |
 //| UseTrendFilter (default false, REJECTED): skips an entry when a      |
 //| strong opposing trend is already established on TrendFilterTimeframe |
 //| (default M15) -- ADX >= ADXThreshold and the dominant DI points      |
@@ -654,6 +670,7 @@ input bool   UseEntryTrend10OpposeExit = false; // Close position if entry bar A
 
 input double ComboExitDangerMin = 10.0; // Danger-zone minutes required, combined with threeBarOneWay (CONFIRMED, see header)
 input bool   UseComboExit       = true; // Close only when BOTH threeBarOneWay AND ComboExitDangerMin are met (CONFIRMED, see header)
+input bool   UseTrend10ComboExit = false; // Close when BOTH trend10Oppose=true AND ComboExitDangerMin dwell time are met (UNTESTED, see header -- a fixed bar-count-delay version of this signal, UseEntryTrend10OpposeExit, was REJECTED; this swaps in ComboExit's own danger-time gate instead)
 
 input bool   SkipFadeBearOSWickTouch = true; // Skip FADE_BEAR_OS wick-only touches (CONFIRMED, see header)
 
@@ -777,6 +794,7 @@ int    g_bar3Count[TRACK_SLOTS];
 double g_bar3Extreme[TRACK_SLOTS];
 bool   g_bar3Known[TRACK_SLOTS], g_bar3OneWay[TRACK_SLOTS];
 bool   g_comboExited[TRACK_SLOTS]; // UseComboExit already force-closed this slot (prevents a double-close attempt)
+bool   g_trend10ComboExited[TRACK_SLOTS]; // UseTrend10ComboExit already force-closed this slot (prevents a double-close attempt)
 
 // -- band-reentry tracking (diagnostic only) ---------------------------------
 // The entry signal is a BB20 breakout; this checks whether price later
@@ -1002,6 +1020,7 @@ void StartMAETracking(ulong ticket,double entry,double R,int dir,string tag)
    g_trend10Known[i]=false; g_trend10Oppose[i]=false;
    g_waitingBar3[i]=true; g_bar3Count[i]=0; g_bar3Extreme[i]=0; g_bar3Known[i]=false; g_bar3OneWay[i]=false;
    g_comboExited[i]=false;
+   g_trend10ComboExited[i]=false;
    g_trackBandLevel[i]=g_lastBandLevel; g_bandReentered[i]=false;
    g_trackOppSignalSeen[i]=false;
    g_reachedFav50[i]=false; g_reachedFav75[i]=false; g_reachedFav90[i]=false;
@@ -1133,6 +1152,21 @@ void CheckMAEProgress()
                 " profit="+DoubleToString(profit,2)+" | "+g_trackTag[i]);
          else
             Log("COMBO_EXIT_FAIL",IntegerToString((int)trade.ResultRetcode())+" | "+trade.ResultRetcodeDescription());
+         continue;
+      }
+
+      if(UseTrend10ComboExit && !g_trend10ComboExited[i] && g_trend10Known[i] && g_trend10Oppose[i] && g_timeDangerMin[i]>=ComboExitDangerMin)
+      {
+         g_trend10ComboExited[i]=true;
+         double profit=PositionGetDouble(POSITION_PROFIT);
+         if(!EnableLiveOrders)
+            Log("TREND10_COMBO_EXIT_DRY","ticket="+IntegerToString((int)g_trackTicket[i])+" timeDangerMin="+DoubleToString(g_timeDangerMin[i],1)+
+                " profit="+DoubleToString(profit,2)+" (would close, EnableLiveOrders=false) | "+g_trackTag[i]);
+         else if(trade.PositionClose(g_trackTicket[i]))
+            Log("TREND10_COMBO_EXIT_CLOSE","ticket="+IntegerToString((int)g_trackTicket[i])+" timeDangerMin="+DoubleToString(g_timeDangerMin[i],1)+
+                " profit="+DoubleToString(profit,2)+" | "+g_trackTag[i]);
+         else
+            Log("TREND10_COMBO_EXIT_FAIL",IntegerToString((int)trade.ResultRetcode())+" | "+trade.ResultRetcodeDescription());
          continue;
       }
 
@@ -2043,6 +2077,7 @@ int OnInit()
        " | UseNextBarOpposeExit="+(UseNextBarOpposeExit?"true":"false")+
        " | Trend10LookbackBars="+IntegerToString(Trend10LookbackBars)+" UseEntryTrend10OpposeExit="+(UseEntryTrend10OpposeExit?"true":"false")+
        " | ComboExitDangerMin="+DoubleToString(ComboExitDangerMin,1)+" UseComboExit="+(UseComboExit?"true":"false")+
+       " UseTrend10ComboExit="+(UseTrend10ComboExit?"true":"false")+
        " | SkipFadeBearOSWickTouch="+(SkipFadeBearOSWickTouch?"true":"false")+
        " | UseSupplyZoneFilter="+(UseSupplyZoneFilter?"true":"false")+" SupplyZoneATR="+DoubleToString(SupplyZoneATR,2)+
        " UseAsiaBoxZone="+(UseAsiaBoxZone?"true":"false")+" AsiaOpenHourKST="+IntegerToString(AsiaOpenHourKST)+
