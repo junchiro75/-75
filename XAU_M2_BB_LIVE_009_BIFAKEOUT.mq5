@@ -78,6 +78,17 @@
 //| code default stays EnableLiveOrders=false (safe default), live .set         |
 //| ships with EnableLiveOrders=true, same convention as 001/005/008.           |
 //|                                                                             |
+//| BUY RE-TESTED under this same optimized combo (AllowBuyEntry=true/          |
+//| AllowSellEntry=false, all other inputs identical to the confirmed           |
+//| combo above): still REJECTED. NET -$2,313.86, PF 0.578, WR 51.43%           |
+//| (90W/85L), n=175, avg win $35.16/avg loss -$61.36 (losses almost 2x         |
+//| the size of wins), MaxDD 2.50% ($2,501.86, >7x SELL's). Consistent          |
+//| with every earlier full (BUY+SELL) test this file saw -- BUY (fading        |
+//| a bear-bi back up) is structurally the weaker direction here, same          |
+//| pattern as gold's persistent uptrend-bias finding noted elsewhere in        |
+//| this project (005/007's own AllowSellFade=false convention). Keep           |
+//| AllowBuyEntry=false.                                                        |
+//|                                                                             |
 //| SL: SLBar2RangeMult times bar 2's FULL range (high-low, body+wick --       |
 //|   a different R from bar1's body-only R used for the bar2/bar3 trigger     |
 //|   checks above), measured as a price distance from the entry fill.         |
