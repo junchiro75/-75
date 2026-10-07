@@ -1,0 +1,14 @@
+Timeframe=2
+Lots=0.1
+Bar2FractionR=0.5
+Bar3FractionR=0.5
+UseDelayedBar2Scan=false
+DelayedBar2StartOffset=5
+MaxBar2ScanBars=20
+SL_R=2.0
+TP_R=1.0
+AllowBuyEntry=true
+AllowSellEntry=true
+MagicNumber=95016109
+MaxDeviationPts=50
+EnableLiveOrders=false
