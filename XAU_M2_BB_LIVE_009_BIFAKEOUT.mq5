@@ -74,8 +74,9 @@
 //| DelayedBar2StartOffset=5, MaxBar2ScanBars=15, UseDelayedBar2Scan=true,      |
 //| AllowBuyEntry=false, AllowSellEntry=true -- NET $1,467.80, PF 1.771,        |
 //| WR 63.16% (84W/49L), n=133, avg win $40.13/avg loss -$34.77, MaxDD          |
-//| 0.34% ($342.60), Sharpe 71.03. EnableLiveOrders left at false (dry)         |
-//| pending the user's go-ahead to deploy live.                                 |
+//| 0.34% ($342.60), Sharpe 71.03. User approved live deployment; .mq5          |
+//| code default stays EnableLiveOrders=false (safe default), live .set         |
+//| ships with EnableLiveOrders=true, same convention as 001/005/008.           |
 //|                                                                             |
 //| SL: SLBar2RangeMult times bar 2's FULL range (high-low, body+wick --       |
 //|   a different R from bar1's body-only R used for the bar2/bar3 trigger     |

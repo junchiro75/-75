@@ -11,4 +11,4 @@ AllowBuyEntry=false
 AllowSellEntry=true
 MagicNumber=95016109
 MaxDeviationPts=50
-EnableLiveOrders=false
+EnableLiveOrders=true
