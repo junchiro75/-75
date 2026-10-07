@@ -1,12 +1,12 @@
 Timeframe=2
 Lots=0.1
-Bar2FractionR=0.5
-Bar3FractionR=0.5
-UseDelayedBar2Scan=false
+Bar2FractionR=1.00
+Bar3FractionR=0.50
+UseDelayedBar2Scan=true
 DelayedBar2StartOffset=5
 MaxBar2ScanBars=15
 SLBar2RangeMult=1.0
-MinR_Points=300
+MinR_Points=350
 AllowBuyEntry=false
 AllowSellEntry=true
 MagicNumber=95016109
