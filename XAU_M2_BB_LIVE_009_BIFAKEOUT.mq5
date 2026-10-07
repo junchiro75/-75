@@ -45,9 +45,10 @@
 //| TP: the current 20-SMA (BB20 basis line) value at entry time, read    |
 //|   once and set as a static target -- "20이평 터치". If the 20-SMA     |
 //|   isn't on the favorable side of entry (can happen since this is a    |
-//|   mean-reversion entry right after a sharp move), the entry is        |
-//|   skipped (TP_TARGET_INVALID) rather than firing with an invalid or   |
-//|   backwards target.                                                   |
+//|   mean-reversion entry right after a sharp move), falls back to the   |
+//|   near BB4 (원비/44band) edge in the favorable direction instead      |
+//|   ("원비 터치"), also a static one-time read. If even THAT isn't      |
+//|   favorable (rare), the entry is skipped (TP_TARGET_INVALID).         |
 //| MinR_Points: minimum bar1 (더블비) body size, in points, to even start |
 //|   tracking a pattern -- same convention as 001/005/007/008.           |
 //| No pivot/neckline/ATR machinery from 008 is used here at all.         |
@@ -140,15 +141,33 @@ void OpenTrade(int dir,double biR,double slRange,string tag)
    double sma20buf[1];
    if(CopyBuffer(hBB20,0,1,1,sma20buf)!=1){ Log("ORDER_FAIL","no 20-SMA value | "+tag); return; }
    double sma20=sma20buf[0];
-   bool tpValid=(dir==+1) ? (sma20>ref) : (sma20<ref);
-   if(!tpValid)
+   bool sma20Valid=(dir==+1) ? (sma20>ref) : (sma20<ref);
+
+   double tp=0; string tpSource="";
+   if(sma20Valid)
    {
-      Log("TP_TARGET_INVALID","sma20="+DoubleToString(sma20,_Digits)+" ref="+DoubleToString(ref,_Digits)+" | "+tag);
-      return;
+      tp=sma20; tpSource="20SMA";
+   }
+   else
+   {
+      // 20-SMA isn't on the favorable side (can happen right after a sharp
+      // reversal move) -- fall back to the near BB4 (원비/44band) edge in
+      // the favorable direction instead.
+      double bb4up[1],bb4lo[1];
+      if(CopyBuffer(hBB4,1,1,1,bb4up)!=1 || CopyBuffer(hBB4,2,1,1,bb4lo)!=1)
+      { Log("ORDER_FAIL","no BB4 value | "+tag); return; }
+      double bb4edge=(dir==+1) ? bb4up[0] : bb4lo[0];
+      bool bb4Valid=(dir==+1) ? (bb4edge>ref) : (bb4edge<ref);
+      if(!bb4Valid)
+      {
+         Log("TP_TARGET_INVALID","sma20="+DoubleToString(sma20,_Digits)+" bb4edge="+DoubleToString(bb4edge,_Digits)+
+             " ref="+DoubleToString(ref,_Digits)+" | "+tag);
+         return;
+      }
+      tp=bb4edge; tpSource="BB4";
    }
 
    double sl=ref-dir*SLBar2RangeMult*slRange;
-   double tp=sma20;
 
    double cushion=MinStopDistance()+_Point;
    if(dir==+1)
@@ -166,7 +185,8 @@ void OpenTrade(int dir,double biR,double slRange,string tag)
    if(!EnableLiveOrders)
    {
       Log("DRY_ENTRY",(dir==1?"BUY":"SELL")+string(" @~")+DoubleToString(ref,_Digits)+
-          " slRange="+DoubleToString(slRange,_Digits)+" SL="+DoubleToString(sl,_Digits)+" TP="+DoubleToString(tp,_Digits)+" | "+tag);
+          " slRange="+DoubleToString(slRange,_Digits)+" SL="+DoubleToString(sl,_Digits)+
+          " TP="+DoubleToString(tp,_Digits)+" tpSource="+tpSource+" | "+tag);
       return;
    }
 
@@ -181,7 +201,7 @@ void OpenTrade(int dir,double biR,double slRange,string tag)
    else
    {
       Log("ENTRY_OK",(dir==1?"BUY":"SELL")+" slRange="+DoubleToString(slRange,_Digits)+
-          " SL="+DoubleToString(sl,_Digits)+" TP="+DoubleToString(tp,_Digits)+" | "+tag);
+          " SL="+DoubleToString(sl,_Digits)+" TP="+DoubleToString(tp,_Digits)+" tpSource="+tpSource+" | "+tag);
       for(int i=PositionsTotal()-1;i>=0;i--)
       {
          ulong tk=PositionGetTicket(i);
