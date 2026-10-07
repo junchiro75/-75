@@ -37,10 +37,20 @@
 //|    entry). Once a match is found, bar 3 is checked exactly the same  |
 //|    way as in 1안 (the very next candle after the matched bar 2).      |
 //|                                                                       |
-//| Both variants are UNTESTED. SL/TP use this project's standard fixed  |
-//| R-multiple bracket (SL_R/TP_R against R = bar 1's body) -- the       |
-//| SL_R=2.0/TP_R=1.0 defaults are placeholders, not yet backtested/     |
-//| swept. No pivot/neckline/ATR machinery from 008 is used here at all. |
+//| Both variants are UNTESTED.                                          |
+//| SL: SLBar2RangeMult (default 1.0) times bar 2's FULL range (high-low, |
+//|   body+wick -- a different R from bar1's body-only R used for the     |
+//|   bar2/bar3 trigger checks above), measured as a price distance from  |
+//|   the entry fill.                                                     |
+//| TP: the current 20-SMA (BB20 basis line) value at entry time, read    |
+//|   once and set as a static target -- "20이평 터치". If the 20-SMA     |
+//|   isn't on the favorable side of entry (can happen since this is a    |
+//|   mean-reversion entry right after a sharp move), the entry is        |
+//|   skipped (TP_TARGET_INVALID) rather than firing with an invalid or   |
+//|   backwards target.                                                   |
+//| MinR_Points: minimum bar1 (더블비) body size, in points, to even start |
+//|   tracking a pattern -- same convention as 001/005/007/008.           |
+//| No pivot/neckline/ATR machinery from 008 is used here at all.         |
 //| Single in-flight position (own Magic, MAX1). A new 더블비 is only     |
 //| detected while idle (stage 0) -- one found mid-pattern is ignored    |
 //| until the current bi resolves or times out (kept simple; a bi that   |
@@ -57,9 +67,9 @@ input double Bar2FractionR        = 0.5; // Max favorable continuation from bar1
 input double Bar3FractionR        = 0.5; // Min reversal move from bar2's close, as R multiple (bar3 entry trigger, UNTESTED)
 input bool   UseDelayedBar2Scan   = false; // false=1안 (bar2 must be the very next candle), true=2안 (scan for bar2 starting DelayedBar2StartOffset bars after bar1)
 input int    DelayedBar2StartOffset = 5; // 2안 only: bars after bar1 before bar2-matching starts (default 5 = scanning begins at the 6th candle counting bar1 as the 1st)
-input int    MaxBar2ScanBars      = 20; // 2안 only: give up if no matching bar2 found within this many bars after bar1
-input double SL_R                 = 2.0; // Stop loss as a multiple of R (UNTESTED placeholder, see header)
-input double TP_R                 = 1.0; // Take profit as a multiple of R (UNTESTED placeholder, see header)
+input int    MaxBar2ScanBars      = 15; // 2안 only: give up if no matching bar2 found within this many bars after bar1
+input double SLBar2RangeMult      = 1.0; // SL distance as a multiple of bar2's FULL range (high-low, body+wick), from entry (UNTESTED)
+input int    MinR_Points          = 300; // Min bar1 (더블비) body (points) to track a pattern, 0=no filter
 input bool   AllowBuyEntry        = true; // Allow entries reversing a bear-더블비 (BUY)
 input bool   AllowSellEntry       = true; // Allow entries reversing a bull-더블비 (SELL)
 input ulong  MagicNumber          = 95016109; // Magic number
@@ -76,12 +86,12 @@ int    g_biStage=0;
 int    g_biDir=0;          // original 더블비 direction, +1 bull-bi / -1 bear-bi (entry dir = -g_biDir)
 double g_biClose1=0,g_biR=0;
 int    g_biBar1Index=0;
-double g_biClose2=0;
+double g_biClose2=0,g_biHigh2=0,g_biLow2=0;
 int    g_biBar2Index=0;
 
 // -- outcome tracking (one in-flight position at a time, own-Magic MAX1) --
 ulong  g_trackTicket=0;
-double g_trackEntry=0,g_trackR=0;
+double g_trackEntry=0,g_trackR=0,g_trackSLRange=0;
 int    g_trackDir=0;
 string g_trackTag="";
 
@@ -114,16 +124,31 @@ bool HasOurPosition()
    return false;
 }
 
-void ResetBi(){ g_biStage=0; g_biDir=0; g_biClose1=0; g_biR=0; g_biBar1Index=0; g_biClose2=0; g_biBar2Index=0; }
+void ResetBi()
+{
+   g_biStage=0; g_biDir=0; g_biClose1=0; g_biR=0; g_biBar1Index=0;
+   g_biClose2=0; g_biHigh2=0; g_biLow2=0; g_biBar2Index=0;
+}
 
-void OpenTrade(int dir,double R,string tag)
+void OpenTrade(int dir,double biR,double slRange,string tag)
 {
    if(HasOurPosition()){ Log("ENTRY_SKIPPED","own-Magic position already exists | "+tag); return; }
 
    MqlTick q; if(!SymbolInfoTick(_Symbol,q)){ Log("ORDER_FAIL","no current tick"); return; }
    double ref=(dir==+1 ? q.ask : q.bid);
-   double sl=ref-dir*SL_R*R;
-   double tp=ref+dir*TP_R*R;
+
+   double sma20buf[1];
+   if(CopyBuffer(hBB20,0,1,1,sma20buf)!=1){ Log("ORDER_FAIL","no 20-SMA value | "+tag); return; }
+   double sma20=sma20buf[0];
+   bool tpValid=(dir==+1) ? (sma20>ref) : (sma20<ref);
+   if(!tpValid)
+   {
+      Log("TP_TARGET_INVALID","sma20="+DoubleToString(sma20,_Digits)+" ref="+DoubleToString(ref,_Digits)+" | "+tag);
+      return;
+   }
+
+   double sl=ref-dir*SLBar2RangeMult*slRange;
+   double tp=sma20;
 
    double cushion=MinStopDistance()+_Point;
    if(dir==+1)
@@ -141,7 +166,7 @@ void OpenTrade(int dir,double R,string tag)
    if(!EnableLiveOrders)
    {
       Log("DRY_ENTRY",(dir==1?"BUY":"SELL")+string(" @~")+DoubleToString(ref,_Digits)+
-          " R="+DoubleToString(R,_Digits)+" SL="+DoubleToString(sl,_Digits)+" TP="+DoubleToString(tp,_Digits)+" | "+tag);
+          " slRange="+DoubleToString(slRange,_Digits)+" SL="+DoubleToString(sl,_Digits)+" TP="+DoubleToString(tp,_Digits)+" | "+tag);
       return;
    }
 
@@ -155,7 +180,7 @@ void OpenTrade(int dir,double R,string tag)
       Log("ORDER_FAIL",IntegerToString((int)trade.ResultRetcode())+" | "+trade.ResultRetcodeDescription());
    else
    {
-      Log("ENTRY_OK",(dir==1?"BUY":"SELL")+" R="+DoubleToString(R,_Digits)+
+      Log("ENTRY_OK",(dir==1?"BUY":"SELL")+" slRange="+DoubleToString(slRange,_Digits)+
           " SL="+DoubleToString(sl,_Digits)+" TP="+DoubleToString(tp,_Digits)+" | "+tag);
       for(int i=PositionsTotal()-1;i>=0;i--)
       {
@@ -163,7 +188,7 @@ void OpenTrade(int dir,double R,string tag)
          if(tk==0 || !PositionSelectByTicket(tk)) continue;
          if(PositionGetString(POSITION_SYMBOL)!=_Symbol) continue;
          if((ulong)PositionGetInteger(POSITION_MAGIC)!=MagicNumber) continue;
-         g_trackTicket=tk; g_trackEntry=ref; g_trackR=R; g_trackDir=dir; g_trackTag=tag;
+         g_trackTicket=tk; g_trackEntry=ref; g_trackR=biR; g_trackSLRange=slRange; g_trackDir=dir; g_trackTag=tag;
          break;
       }
    }
@@ -192,7 +217,11 @@ void CheckNewBar()
       else if(c<o && l<=lo20[0] && l<=lo4[0]) sigdir=-1;  // bear 더블비
       if(sigdir==0) return;
 
-      g_biStage=1; g_biDir=sigdir; g_biClose1=c; g_biR=MathAbs(c-o); g_biBar1Index=g_barCounter;
+      double r1=MathAbs(c-o);
+      if(MinR_Points>0 && r1<MinR_Points*_Point)
+      { Log("SIGNAL_SKIPPED","R too small | R="+DoubleToString(r1,_Digits)); return; }
+
+      g_biStage=1; g_biDir=sigdir; g_biClose1=c; g_biR=r1; g_biBar1Index=g_barCounter;
       Log("BI_PIVOT1",(sigdir==1?"BULL":"BEAR")+" close1="+DoubleToString(c,_Digits)+" R="+DoubleToString(g_biR,_Digits));
       return;
    }
@@ -225,9 +254,9 @@ void CheckNewBar()
 
          if(sameColor && withinCap)
          {
-            g_biStage=2; g_biClose2=c; g_biBar2Index=g_barCounter;
+            g_biStage=2; g_biClose2=c; g_biHigh2=h; g_biLow2=l; g_biBar2Index=g_barCounter;
             Log("BI_BAR2_OK","close2="+DoubleToString(c,_Digits)+" distFavR="+DoubleToString(distFav/g_biR,3)+
-                " barsSinceBar1="+IntegerToString(barsSinceBar1));
+                " range2="+DoubleToString(h-l,_Digits)+" barsSinceBar1="+IntegerToString(barsSinceBar1));
          }
          else if(!UseDelayedBar2Scan)
          {
@@ -254,7 +283,7 @@ void CheckNewBar()
          string tag=(g_biDir==1 ? "FAKEOUT_BULLBI_SELL" : "FAKEOUT_BEARBI_BUY");
          Log("BI_BAR3_TRIGGER","close3="+DoubleToString(c,_Digits)+" distRevR="+DoubleToString(distRev/g_biR,3)+" | "+tag);
          bool allowed=(entryDir==+1 ? AllowBuyEntry : AllowSellEntry);
-         if(allowed) OpenTrade(entryDir,g_biR,tag);
+         if(allowed) OpenTrade(entryDir,g_biR,g_biHigh2-g_biLow2,tag);
          else        Log("ENTRY_SKIPPED","direction disabled by Allow*Entry input | "+tag);
       }
       else
@@ -286,7 +315,7 @@ int OnInit()
        " | Bar2FractionR="+DoubleToString(Bar2FractionR,2)+" Bar3FractionR="+DoubleToString(Bar3FractionR,2)+
        " | UseDelayedBar2Scan="+(UseDelayedBar2Scan?"true(2안)":"false(1안)")+
        " DelayedBar2StartOffset="+IntegerToString(DelayedBar2StartOffset)+" MaxBar2ScanBars="+IntegerToString(MaxBar2ScanBars)+
-       " | SL_R="+DoubleToString(SL_R,2)+" TP_R="+DoubleToString(TP_R,2)+
+       " | SLBar2RangeMult="+DoubleToString(SLBar2RangeMult,2)+" TP=20SMA MinR_Points="+DoubleToString(MinR_Points,1)+
        " | AllowBuyEntry="+(AllowBuyEntry?"true":"false")+" AllowSellEntry="+(AllowSellEntry?"true":"false")+
        " | Lots="+DoubleToString(Lots,2)+" | Magic="+IntegerToString((int)MagicNumber)+
        " | orders="+(EnableLiveOrders?"ENABLED":"DRY"));
@@ -319,8 +348,8 @@ void OnTradeTransaction(const MqlTradeTransaction &trans,const MqlTradeRequest &
    double profit=HistoryDealGetDouble(trans.deal,DEAL_PROFIT)+HistoryDealGetDouble(trans.deal,DEAL_SWAP)+
                  HistoryDealGetDouble(trans.deal,DEAL_COMMISSION);
    string outcome=(profit>0?"WIN":"LOSS");
-   Log("MAE_OUTCOME","outcome="+outcome+" profit="+DoubleToString(profit,2)+" R="+DoubleToString(g_trackR,_Digits)+
-       " | "+g_trackTag);
+   Log("MAE_OUTCOME","outcome="+outcome+" profit="+DoubleToString(profit,2)+" biR="+DoubleToString(g_trackR,_Digits)+
+       " slRange="+DoubleToString(g_trackSLRange,_Digits)+" | "+g_trackTag);
    g_trackTicket=0;
 }
 //+------------------------------------------------------------------+
