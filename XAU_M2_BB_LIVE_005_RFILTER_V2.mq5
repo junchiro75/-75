@@ -103,6 +103,18 @@
 //| losers" trap seen throughout the 001 family -- here it's cutting    |
 //| winners that were headed for the EA's OWN already-confirmed TP1     |
 //| stage. Keep UseProtectStop=false.                                    |
+//|                                                                       |
+//| UseStochFadeConfirm (ported from 001_STOCH_v2's FADE_BEAR_OS/         |
+//| STOCH_FADE_BULL_OB logic, UNTESTED here, default false): this EA      |
+//| currently fades EVERY qualifying signal candle unconditionally (the   |
+//| whole extension+pullback mechanism IS the fade, there's no            |
+//| trend-following branch to compare against like 001 has). This adds    |
+//| an optional gate at the signal candle itself: only start tracking a   |
+//| setup if Stochastic ALSO confirms the fade direction at that bar      |
+//| (oversold for a bear signal -> BUY fade, overbought for a bull        |
+//| signal -> SELL fade) -- same idea as 001's "does the oscillator       |
+//| agree with the fade, or is this just a breakout that happens to       |
+//| touch the bands." Needs its own ground-truth run before any verdict.  |
 //+------------------------------------------------------------------+
 #property strict
 #include <Trade/Trade.mqh>
@@ -125,6 +137,13 @@ input ulong  MagicNumber          = 95012101; // Magic number
 input int    MaxDeviationPts      = 50; // Max price deviation (points)
 input bool   EnableLiveOrders     = false; // Enable live orders
 input bool   AllowShort           = false; // Allow SELL entries (default BUY-only, see header)
+
+input bool   UseStochFadeConfirm  = false; // Require Stochastic to confirm the fade direction at the signal candle (UNTESTED, see header)
+input int    StochK_Period        = 8; // Stoch %K period (only used when UseStochFadeConfirm=true)
+input int    StochD_Period        = 3; // Stoch %D period (only used when UseStochFadeConfirm=true)
+input int    StochSlowing         = 3; // Stoch slowing (only used when UseStochFadeConfirm=true)
+input double StochOverbought      = 85.0; // Stoch overbought level, confirms a bull-signal SELL fade (only used when UseStochFadeConfirm=true)
+input double StochOversold        = 30.0; // Stoch oversold level, confirms a bear-signal BUY fade (only used when UseStochFadeConfirm=true)
 input int    SkipHourStartKST     = 20; // KST hour skip window start (see header, SkipEntryHourKST)
 input int    SkipHourEndKST       = 22; // KST hour skip window end, exclusive (see header, SkipEntryHourKST)
 input bool   SkipEntryHourKST     = true; // Block entries in [SkipHourStartKST,SkipHourEndKST) KST (CONFIRMED, see header)
@@ -151,7 +170,7 @@ input bool   UsePrevNYHighLowZone  = true; // Include the previous day's NY-sess
 input double NYSessionStartHourKST = 20.0; // KST hour (decimal) the NY session window starts, for 전일 미장 고가/저가 tracking (wraps past midnight)
 input double NYSessionEndHourKST   = 6.0; // KST hour (decimal) the NY session window ends
 
-int hBB20=INVALID_HANDLE,hBB4=INVALID_HANDLE,hATR_Sig=INVALID_HANDLE;
+int hBB20=INVALID_HANDLE,hBB4=INVALID_HANDLE,hATR_Sig=INVALID_HANDLE,hStoch=INVALID_HANDLE;
 datetime last_m2_bar=0;
 int f_log=INVALID_HANDLE;
 
@@ -535,6 +554,20 @@ void CheckNewM2Bar()
    else if(c<o && l<=lo20[0] && l<=lo4[0]) dir=-1;
    if(dir==0) return;
 
+   if(UseStochFadeConfirm)
+   {
+      double kbuf[1];
+      if(CopyBuffer(hStoch,0,1,1,kbuf)!=1){ Log("STOCH_FAIL","no stochastic value"); return; }
+      double stochK=kbuf[0];
+      bool fadeConfirmed=(dir==+1) ? (stochK>=StochOverbought) : (stochK<StochOversold);
+      if(!fadeConfirmed)
+      {
+         Log("SIGNAL_SKIPPED","fade not confirmed by Stochastic: stochK="+DoubleToString(stochK,2)+
+             " dir="+(dir==1?"BULL":"BEAR"));
+         return;
+      }
+   }
+
    double R=MathAbs(c-o);
    double minR=MathMax(_Point,MinR_Points*_Point);
    if(R<=minR) return;
@@ -811,7 +844,8 @@ int OnInit()
    hBB20=iBands(_Symbol,Timeframe,20,0,2.0,PRICE_CLOSE);
    hBB4 =iBands(_Symbol,Timeframe,4,0,4.0,PRICE_OPEN);
    hATR_Sig=iATR(_Symbol,Timeframe,ATRPeriod);
-   if(hBB20==INVALID_HANDLE || hBB4==INVALID_HANDLE || hATR_Sig==INVALID_HANDLE) return INIT_FAILED;
+   hStoch=iStochastic(_Symbol,Timeframe,StochK_Period,StochD_Period,StochSlowing,MODE_LWMA,STO_LOWHIGH);
+   if(hBB20==INVALID_HANDLE || hBB4==INVALID_HANDLE || hATR_Sig==INVALID_HANDLE || hStoch==INVALID_HANDLE) return INIT_FAILED;
 
    f_log=FileOpen("XAU_"+TFPrefix()+"LIVE_005_RFILTER2_LOG.csv",FILE_READ|FILE_WRITE|FILE_CSV|FILE_ANSI|FILE_SHARE_READ,',');
    if(f_log!=INVALID_HANDLE)
@@ -829,6 +863,9 @@ int OnInit()
        IntegerToString((int)MagicNumber)+" | Lots="+DoubleToString(Lots,2)+
        " | LatestSignalOnly="+(LatestSignalOnly?"true":"false")+
        " | AllowShort="+(AllowShort?"true":"false")+" | MinR_Points="+DoubleToString(MinR_Points,1)+
+       " | UseStochFadeConfirm="+(UseStochFadeConfirm?"true":"false")+" Stoch("+IntegerToString(StochK_Period)+","+
+       IntegerToString(StochD_Period)+","+IntegerToString(StochSlowing)+") OB="+DoubleToString(StochOverbought,1)+
+       " OS="+DoubleToString(StochOversold,1)+
        " | ExtensionR="+DoubleToString(ExtensionR,2)+" PullbackR="+DoubleToString(PullbackR,2)+
        " InitialSL_R="+DoubleToString(InitialSL_R,2)+" TP1_R="+DoubleToString(TP1_R,2)+
        " Lock_R="+DoubleToString(Lock_R,2)+" TP2_R="+DoubleToString(TP2_R,2)+
@@ -860,6 +897,7 @@ void OnDeinit(const int reason)
    if(hBB20!=INVALID_HANDLE) IndicatorRelease(hBB20);
    if(hBB4!=INVALID_HANDLE) IndicatorRelease(hBB4);
    if(hATR_Sig!=INVALID_HANDLE) IndicatorRelease(hATR_Sig);
+   if(hStoch!=INVALID_HANDLE) IndicatorRelease(hStoch);
 }
 
 void OnTick()
