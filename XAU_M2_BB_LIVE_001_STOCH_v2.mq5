@@ -456,15 +456,39 @@
 //| sibling files (never contaminated by UseSupplyZoneFilter, which doesn't   |
 //| exist there) and also now CONFIRMED/live on both.                         |
 //|                                                                            |
-//| UseTrailingStop (UNTESTED, default false): unlike ProtectStop's ONE-TIME   |
-//| move to a fixed small-profit level, this continuously re-checks every     |
-//| tick once favorable R reaches TrailStopTriggerR -- the SL keeps following  |
-//| price at a constant distance (TrailStopDistanceR*R) behind it, tightening  |
-//| every time price advances further, never loosening. Can be combined with  |
-//| UseProtectStop (whichever SL is currently tighter/more favorable simply    |
-//| wins on the next tick, since both only ever move the SL in the favorable   |
-//| direction) or tested alone. Logged as TRAIL_STOP_MOVED/TRAIL_STOP_DRY/     |
-//| TRAIL_STOP_MOVE_FAIL.                                                      |
+//| UseTrailingStop (CONFIRMED, default true, PT=TrailStopTriggerR=0.15/       |
+//| TrailStopDistanceR=0.03): unlike ProtectStop's ONE-TIME move to a fixed    |
+//| small-profit level, this continuously re-checks every tick once favorable  |
+//| R reaches TrailStopTriggerR -- the SL keeps following price at a constant  |
+//| distance (TrailStopDistanceR*R) behind it, tightening every time price     |
+//| advances further, never loosening. Runs alongside UseProtectStop           |
+//| (whichever SL is currently tighter/more favorable simply wins on the next  |
+//| tick, since both only ever move the SL in the favorable direction).        |
+//| Logged as TRAIL_STOP_MOVED/TRAIL_STOP_DRY/TRAIL_STOP_MOVE_FAIL.            |
+//| Ground truth (2025.01-2026.10, against this file's own current live        |
+//| baseline: UseProtectStop=true, UseSupplyZoneFilter=false, UseComboExit=    |
+//| true, UseRSIFilter=false -- OFF: NET $20,170.85/WR 91.12%/PF 1.548/        |
+//| n=3,007/avg loss $137.92): first untuned pass at the default 0.25/0.15     |
+//| ON: NET $22,505.06 (+11.6%)/WR 94.49%/PF 1.614/n=3,011/avg loss $220.64 -- |
+//| already an all-around improvement (first feature in this file's whole      |
+//| history to improve WR, NET, and PF simultaneously). Sequential 1-at-a-     |
+//| time MT5 Optimizer grid (Recovery Factor max) then tuned it further:       |
+//| TrailStopTriggerR swept 0.15-0.50 -> lower is monotonically better (0.15   |
+//| best in that range); a finer 0.01-0.05 re-sweep under TrailStopTriggerR    |
+//| itself (not yet re-run under the tuned distance) suggested 0.15 is a       |
+//| reasonable floor. TrailStopDistanceR swept 0.05-0.30 -> also monotonically |
+//| better the tighter it gets; a finer 0.01-0.05 re-sweep found a genuine     |
+//| INTERIOR peak at 0.03 (not the tightest extreme) -- 0.01: NET $22,646.99/  |
+//| PF 1.832; 0.02: $23,440.89/1.862; 0.03: $23,735.69/1.873 (peak); 0.04:     |
+//| $23,635.99/1.869; 0.05: $22,982.69/1.845. Single-run confirmation of       |
+//| TrailStopTriggerR=0.15/TrailStopDistanceR=0.03 (matches the Optimizer's    |
+//| own n=3,103 exactly, though -- consistent with every other Optimizer-vs-   |
+//| single-run comparison in this file -- the single-run NET/PF came in        |
+//| noticeably higher than the Optimizer pass, likely MT5 tick-synthesis       |
+//| variance rather than a real difference): NET $28,390.19 (+40.8% vs OFF     |
+//| baseline), WR 96.20%, PF 2.259, n=3,103, avg loss $191.03. Best result of  |
+//| any feature tested in this file to date -- CONFIRMED, user-selected for    |
+//| live deployment.                                                           |
 //| UseTrailingTP (UNTESTED, default false): a different idea -- once          |
 //| favorable R first reaches the ORIGINAL TP_R target, instead of letting     |
 //| the broker auto-close there, the position's TP is REMOVED (set to 0) and   |
@@ -787,9 +811,9 @@ input bool   UseProtectStop     = true; // Move SL to ProtectR once armed (CONFI
 input bool   ProtectStopEuropeOnly = false; // Restrict ProtectStop arming to Europe session (16-22 KST) only (REJECTED, see header)
 input bool   ProtectStopAsiaOnly = false; // Restrict ProtectStop arming to Asia session (AsiaSessionStartHour-AsiaSessionEndHour KST) only (REJECTED, see header)
 
-input bool   UseTrailingStop    = false; // Continuously trail SL behind price once armed, instead of ProtectStop's one-time move (UNTESTED, see header)
-input double TrailStopTriggerR  = 0.25; // Favorable R to arm the trailing stop (only used when UseTrailingStop=true)
-input double TrailStopDistanceR = 0.15; // Distance maintained between price and the trailing SL, in R (only used when UseTrailingStop=true)
+input bool   UseTrailingStop    = true; // Continuously trail SL behind price once armed, instead of ProtectStop's one-time move (CONFIRMED, see header)
+input double TrailStopTriggerR  = 0.15; // Favorable R to arm the trailing stop (CONFIRMED, see header)
+input double TrailStopDistanceR = 0.03; // Distance maintained between price and the trailing SL, in R (CONFIRMED, see header)
 input bool   UseTrailingTP      = false; // Once price reaches TP_R, widen the broker TP and trail SL behind price instead of closing there (UNTESTED, see header)
 input double TrailTPDistanceR   = 0.15; // Distance maintained between price and the trailing SL once UseTrailingTP arms, in R (only used when UseTrailingTP=true)
 
