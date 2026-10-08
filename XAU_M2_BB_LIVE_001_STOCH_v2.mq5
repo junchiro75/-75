@@ -617,11 +617,11 @@
 //| own ground-truth run against the StochOverbought=85/StochOversold=30        |
 //| confirmed baseline.                                                         |
 //|                                                                              |
-//| UseRSIFilter (default false, UNTESTED): user's own idea, separate from      |
-//| UseRSIInsteadOfStoch above -- this does NOT replace Stochastic, it adds     |
-//| RSI(RSIFilterPeriod) as a SECOND, independent confirmation on top of        |
+//| UseRSIFilter (default false, REJECTED both variants): user's own idea,      |
+//| separate from UseRSIInsteadOfStoch above -- does NOT replace Stochastic,    |
+//| adds RSI(RSIFilterPeriod) as a SECOND, independent confirmation on top of   |
 //| whatever Stochastic already decided (TREND vs FADE, BUY vs SELL). For       |
-//| each of the 4 sigdir/stochK branches, RSI must point the same way          |
+//| each of the 4 sigdir/stochK branches, RSI had to point the same way        |
 //| (example from the user: a bull signal candle with stochK=80 decides         |
 //| STOCH_TREND_BULL/BUY since 80<85, but if RSI(14)=75 -- RSI's own            |
 //| overbought reading -- that conflicts with the trend call):                  |
@@ -629,12 +629,22 @@
 //|   TREND_BEAR (dir==sigdir==-1): require RSI > RSIFilterOversold             |
 //|   FADE_BULL_OB (dir=-1,sigdir=+1): require RSI >= RSIFilterOverbought       |
 //|   FADE_BEAR_OS (dir=+1,sigdir=-1): require RSI <= RSIFilterOversold         |
-//| On conflict, two variants to test (RSIFilterReverseOnConflict):             |
-//|   false (default): skip the entry entirely (SIGNAL_SKIPPED).                |
-//|   true: trade the OPPOSITE direction instead (follow RSI's own read,        |
-//|     tag suffix _RSIREV) rather than passing on the setup.                   |
-//| Needs its own ground-truth run (both variants) against the confirmed         |
-//| baseline before any verdict.                                                 |
+//| Ground-truth backtest (2025.01-2026.10, against this file's own current     |
+//| live baseline: UseProtectStop=true, UseSupplyZoneFilter=false, UseComboExit |
+//| =true -- OFF: NET $20,170.85/WR 91.12%/PF 1.548/n=3,007) REJECTED both      |
+//| conflict-handling variants:                                                 |
+//|   RSIFilterReverseOnConflict=false (skip the entry): NET $11,670.31         |
+//|     (-42.1%), WR 90.89% (-0.23pp), PF 1.458, n=1,942 (-35.4% trades).        |
+//|   RSIFilterReverseOnConflict=true (trade the OPPOSITE direction instead):    |
+//|     NET $7,719.86 (-61.7%, worse than skip), WR 89.74%, PF 1.163, n=2,991.   |
+//| avg win/loss barely moved between OFF and either variant ($20.80/$137.92     |
+//| OFF vs ~$21/$144-154 both ON variants) -- the ~1,206 signals RSI calls a     |
+//| "conflict" were mostly WINNERS in Stochastic's own direction, not           |
+//| genuinely bad setups RSI was catching: skipping them just throws away NET   |
+//| for almost no WR/PF gain, and reversing them actively turns winners into    |
+//| losses (worse than skipping). RSI(14) on this M2 signal appears to mostly   |
+//| echo Stochastic(8) rather than add independent information. Keep           |
+//| UseRSIFilter=false.                                                          |
 //+------------------------------------------------------------------+
 #property strict
 #include <Trade/Trade.mqh>
@@ -669,7 +679,7 @@ input double RSIOversold          = 30.0; // RSI oversold level (only used when 
 //      FADE_BEAR_OS (dir=+1,sigdir=-1): require RSI <= RSIFilterOversold
 //    On conflict: RSIFilterReverseOnConflict=false skips the entry entirely;
 //    =true trades the OPPOSITE direction instead (RSI's own read). UNTESTED.
-input bool   UseRSIFilter           = false; // Require RSI to agree with Stochastic's TREND/FADE decision (UNTESTED, see header)
+input bool   UseRSIFilter           = false; // Require RSI to agree with Stochastic's TREND/FADE decision (REJECTED both variants, see header)
 input int    RSIFilterPeriod        = 14; // RSI period for the confirmation filter
 input double RSIFilterOverbought    = 70.0; // RSI overbought level for the confirmation filter
 input double RSIFilterOversold      = 30.0; // RSI oversold level for the confirmation filter
