@@ -642,6 +642,36 @@ void OnDeinit(const int reason)
    if(hStoch!=INVALID_HANDLE) IndicatorRelease(hStoch);
 }
 
+// Sums profit+swap+commission across EVERY deal belonging to a closed
+// position (entry AND exit), not just the exit deal that triggered this
+// transaction. BUG FOUND via ground-truth cross-check against MT5's own
+// xlsx tester report: this broker charges commission on the ENTRY deal
+// only (exit deal's own commission is always 0), so reading only
+// trans.deal (the exit/OUT deal) silently dropped the entry commission
+// (-$1.50/0.1 lot here) from every single logged trade -- across 2,330
+// trades on M1 alone this undercounted NET by exactly $3,495.00 (2,330 x
+// $1.50), confirmed by comparing this file's own CSV-log-derived NET
+// ($44,449.28) against MT5's xlsx report for the identical run
+// ($40,954.28, which reconciled exactly against the deal-by-deal
+// breakdown). Affected every CSV-log-derived ground-truth figure in this
+// project's history (all used the same trans.deal-only pattern).
+double SumPositionProfit(ulong posId)
+{
+   double sum=0;
+   if(HistorySelectByPosition(posId))
+   {
+      int total=HistoryDealsTotal();
+      for(int d=0;d<total;d++)
+      {
+         ulong dealTicket=HistoryDealGetTicket(d);
+         if(dealTicket==0) continue;
+         sum+=HistoryDealGetDouble(dealTicket,DEAL_PROFIT)+HistoryDealGetDouble(dealTicket,DEAL_SWAP)+
+              HistoryDealGetDouble(dealTicket,DEAL_COMMISSION);
+      }
+   }
+   return sum;
+}
+
 void OnTradeTransaction(const MqlTradeTransaction &trans,const MqlTradeRequest &request,const MqlTradeResult &result)
 {
    if(trans.type!=TRADE_TRANSACTION_DEAL_ADD) return;
@@ -654,8 +684,7 @@ void OnTradeTransaction(const MqlTradeTransaction &trans,const MqlTradeRequest &
    int i=FindTrackSlot(posId);
    if(i<0) return; // not a ticket we're tracking (or already logged)
 
-   double profit=HistoryDealGetDouble(trans.deal,DEAL_PROFIT)+HistoryDealGetDouble(trans.deal,DEAL_SWAP)+
-                 HistoryDealGetDouble(trans.deal,DEAL_COMMISSION);
+   double profit=SumPositionProfit(posId);
    string outcome=(profit>0?"WIN":"LOSS");
    string bar3Str=(!g_bar3Known[i] ? "unknown" : (g_bar3OneWay[i]?"true":"false"));
    Log("MAE_OUTCOME","outcome="+outcome+" profit="+DoubleToString(profit,2)+

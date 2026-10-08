@@ -2528,6 +2528,36 @@ void OnTick()
    CheckNewM2Bar();
 }
 
+// Sums profit+swap+commission across EVERY deal belonging to a closed
+// position (entry AND exit), not just the exit deal that triggered this
+// transaction. BUG FOUND via ground-truth cross-check (on the M1 sibling
+// file, same pattern here) against MT5's own xlsx tester report: this
+// broker charges commission on the ENTRY deal only (the exit deal's own
+// commission is always 0), so the earlier "fix" below (adding
+// DEAL_COMMISSION of trans.deal, the EXIT deal) added zero every time --
+// it never touched the actual $1.50/0.1-lot entry commission being
+// silently dropped. Confirmed by comparing this file's own CSV-log NET
+// against MT5's xlsx report for an identical run, which reconciled
+// exactly against the deal-by-deal breakdown once the entry commission
+// was included. Affected every CSV-log-derived ground-truth figure in
+// this project's history that used the old trans.deal-only pattern.
+double SumPositionProfit(ulong posId)
+{
+   double sum=0;
+   if(HistorySelectByPosition(posId))
+   {
+      int total=HistoryDealsTotal();
+      for(int d=0;d<total;d++)
+      {
+         ulong dealTicket=HistoryDealGetTicket(d);
+         if(dealTicket==0) continue;
+         sum+=HistoryDealGetDouble(dealTicket,DEAL_PROFIT)+HistoryDealGetDouble(dealTicket,DEAL_SWAP)+
+              HistoryDealGetDouble(dealTicket,DEAL_COMMISSION);
+      }
+   }
+   return sum;
+}
+
 void OnTradeTransaction(const MqlTradeTransaction &trans,const MqlTradeRequest &request,const MqlTradeResult &result)
 {
    if(trans.type!=TRADE_TRANSACTION_DEAL_ADD) return;
@@ -2540,11 +2570,7 @@ void OnTradeTransaction(const MqlTradeTransaction &trans,const MqlTradeRequest &
    int i=FindTrackSlot(posId);
    if(i<0) return; // not a ticket we're tracking (or already logged)
 
-   // Includes DEAL_COMMISSION -- an earlier version omitted it, so a CSV-summed
-   // NET was off from the official xlsx by ~$1.50/trade (the round-turn
-   // commission on a 0.1-lot XAUUSD position on this broker).
-   double profit=HistoryDealGetDouble(trans.deal,DEAL_PROFIT)+HistoryDealGetDouble(trans.deal,DEAL_SWAP)+
-                 HistoryDealGetDouble(trans.deal,DEAL_COMMISSION);
+   double profit=SumPositionProfit(posId);
    string outcome=(profit>0?"WIN":"LOSS");
    string firstBarStr=(!g_firstBarKnown[i] ? "unknown" : (g_firstBarOneWay[i]?"true":"false"));
    string nextBarStr=(!g_nextBarKnown[i] ? "unknown" : (g_nextBarOppose[i]?"true":"false"));

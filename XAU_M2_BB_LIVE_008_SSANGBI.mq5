@@ -861,6 +861,33 @@ void OnTick()
    CheckNewBar();
 }
 
+// Sums profit+swap+commission across EVERY deal belonging to a closed
+// position (entry AND exit), not just the exit deal that triggered this
+// transaction. BUG FOUND via ground-truth cross-check (on the M1 001
+// sibling file, same pattern here) against MT5's own xlsx tester report:
+// this broker charges commission on the ENTRY deal only (the exit deal's
+// own commission is always 0), so reading only trans.deal (the exit/OUT
+// deal) silently dropped the entry commission ($1.50/0.1 lot here) from
+// every single logged trade. Affected every CSV-log-derived ground-truth
+// figure in this project's history that used the old trans.deal-only
+// pattern.
+double SumPositionProfit(ulong posId)
+{
+   double sum=0;
+   if(HistorySelectByPosition(posId))
+   {
+      int total=HistoryDealsTotal();
+      for(int d=0;d<total;d++)
+      {
+         ulong dealTicket=HistoryDealGetTicket(d);
+         if(dealTicket==0) continue;
+         sum+=HistoryDealGetDouble(dealTicket,DEAL_PROFIT)+HistoryDealGetDouble(dealTicket,DEAL_SWAP)+
+              HistoryDealGetDouble(dealTicket,DEAL_COMMISSION);
+      }
+   }
+   return sum;
+}
+
 void OnTradeTransaction(const MqlTradeTransaction &trans,const MqlTradeRequest &request,const MqlTradeResult &result)
 {
    if(trans.type!=TRADE_TRANSACTION_DEAL_ADD) return;
@@ -872,8 +899,7 @@ void OnTradeTransaction(const MqlTradeTransaction &trans,const MqlTradeRequest &
    ulong posId=(ulong)HistoryDealGetInteger(trans.deal,DEAL_POSITION_ID);
    if(g_trackTicket==0 || posId!=g_trackTicket) return;
 
-   double profit=HistoryDealGetDouble(trans.deal,DEAL_PROFIT)+HistoryDealGetDouble(trans.deal,DEAL_SWAP)+
-                 HistoryDealGetDouble(trans.deal,DEAL_COMMISSION);
+   double profit=SumPositionProfit(posId);
    string outcome=(profit>0?"WIN":"LOSS");
    Log("MAE_OUTCOME","outcome="+outcome+" profit="+DoubleToString(profit,2)+" R="+DoubleToString(g_trackR,_Digits)+
        " gapATR="+DoubleToString(g_trackGapATR,2)+" rawR_ATR="+DoubleToString(g_trackRawR_ATR,2)+
