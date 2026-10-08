@@ -142,11 +142,34 @@
 //| generally declining through 0.30. FINAL single-run confirmation (NET     |
 //| reconciles exactly with the Optimizer grid's own number for the same     |
 //| config) at TrailStopDistanceR=0.03/TrailTPDistanceR=0.09: NET $38,434.69 |
-//| (+38.2% vs OFF baseline), WR 81.84%, PF 1.913, n=2,742 -- CONFIRMED,      |
-//| live. First successful trailing-feature transfer onto a non-001-family   |
-//| EA in this project, by gating on the EA's own existing safe trigger      |
-//| (TP1) instead of repeating the earlier-trigger approach that was         |
-//| REJECTED here.                                                           |
+//| (+38.2% vs OFF baseline), WR 81.84%, PF 1.913, n=2,742. First successful  |
+//| trailing-feature transfer onto a non-001-family EA in this project, by   |
+//| gating on the EA's own existing safe trigger (TP1) instead of repeating  |
+//| the earlier-trigger approach that was REJECTED here.                     |
+//|                                                                          |
+//| UseTrailingStop ISOLATED (UseTrailingTP=false, to see its own effect     |
+//| since UseTrailingTP otherwise arms instantly at TP1 and dominates):       |
+//| untuned default TrailStopDistanceR=0.03: NET $36,663.55 (+31.8% vs OFF),  |
+//| WR 91.06% (actually HIGHER than OFF's 90.44%, unlike every "early        |
+//| intervention" test in this project), PF 1.966, avg loss $154.90 (worse    |
+//| than OFF's $144.99). TrailStopDistanceR swept 0.01-0.10 (Optimizer): a    |
+//| flat interior peak at 0.04 (Recovery Factor 12.77). Single-run            |
+//| confirmation at 0.04: NET $36,707.04, WR 91.06%, PF 1.967 (best PF of     |
+//| any config tested here) -- genuinely different character from            |
+//| UseTrailingTP: WR holds or improves because the TP2 cap stays in place,   |
+//| so winners that were already headed to TP2 mostly still get there; it     |
+//| just tightens the floor underneath them after TP1 instead of leaving a    |
+//| static Lock_R=0.30.                                                      |
+//|                                                                          |
+//| FINAL CHOICE (user-selected): UseTrailingTP (NET $38,434.69/WR 81.84%/   |
+//| PF 1.913) over UseTrailingStop alone (NET $36,707.04/WR 91.06%/PF        |
+//| 1.967) -- higher NET was preferred over UseTrailingStop's better WR/PF.  |
+//| Live defaults: UseTrailingStop=false, UseTrailingTP=true,                |
+//| TrailTPDistanceR=0.09. TrailStopDistanceR stays at its own CONFIRMED      |
+//| value (0.04) for the record even though UseTrailingStop=false means it   |
+//| isn't actually used while UseTrailingTP is live -- re-enable             |
+//| UseTrailingStop (and flip UseTrailingTP off) to run that alternative      |
+//| instead.                                                                 |
 //|                                                                        |
 //| UseStochFadeConfirm (ported from 001_STOCH_v2's FADE_BEAR_OS/         |
 //| STOCH_FADE_BULL_OB logic, UNTESTED here, default false): this EA      |
@@ -197,9 +220,9 @@ input double ProtectTriggerR      = 0.25; // Favorable R to arm an early protect
 input double ProtectR             = 0.05; // SL level once armed, in R (REJECTED, see header)
 input bool   UseProtectStop       = false; // Move SL to ProtectR once armed, before TP1/Lock fires (REJECTED, see header)
 
-input bool   UseTrailingStop      = true; // After TP1 reached, continuously trail SL instead of the one-time move to Lock_R (CONFIRMED, see header)
-input double TrailStopDistanceR   = 0.03; // Distance maintained between price and the trailing SL after TP1, in R (only used when UseTrailingStop=true AND UseTrailingTP hasn't armed -- see header)
-input bool   UseTrailingTP        = true; // After TP1 reached, remove the TP2 cap and trail SL instead of closing at TP2 (CONFIRMED, see header)
+input bool   UseTrailingStop      = false; // After TP1 reached, continuously trail SL instead of the one-time move to Lock_R (TESTED, user-selected OFF in favor of UseTrailingTP, see header)
+input double TrailStopDistanceR   = 0.04; // Distance maintained between price and the trailing SL after TP1, in R (CONFIRMED-but-unused value, see header; only used when UseTrailingStop=true AND UseTrailingTP hasn't armed)
+input bool   UseTrailingTP        = true; // After TP1 reached, remove the TP2 cap and trail SL instead of closing at TP2 (CONFIRMED, user-selected, see header)
 input double TrailTPDistanceR     = 0.09; // Distance maintained between price and the trailing SL once TP2 cap removed, in R (CONFIRMED, see header; only used when UseTrailingTP=true)
 
 // -- 매물대 (supply/demand zone) diagnostic (ported from 001 M2_v2): logs
