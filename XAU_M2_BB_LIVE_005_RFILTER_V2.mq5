@@ -104,6 +104,27 @@
 //| winners that were headed for the EA's OWN already-confirmed TP1     |
 //| stage. Keep UseProtectStop=false.                                    |
 //|                                                                       |
+//| UseTrailingStop/TrailStopDistanceR and UseTrailingTP/TrailTPDistanceR |
+//| (new, UNTESTED, both default false): NOT a repeat of the REJECTED     |
+//| ProtectTriggerR experiment above -- that one intercepted trades       |
+//| BEFORE TP1 and was rejected for cutting off trades headed to this     |
+//| EA's own TP1/Lock stage. These two instead change what happens        |
+//| AFTER TP1_R is reached (the same, already-safe trigger point the      |
+//| existing Lock_R mechanism uses). UseTrailingStop: once TP1 fires,      |
+//| instead of moving the whole-position SL to a fixed Lock_R=0.30 ONE     |
+//| TIME, continuously re-trail it at TrailStopDistanceR*R behind price    |
+//| every tick (only ever tightening), same "never loosen" pattern as the  |
+//| 001 family's own UseTrailingStop. UseTrailingTP: once TP1 fires, ALSO  |
+//| remove the TP2_R=0.90 cap (set broker TP to 0) so a trade that would   |
+//| have closed at TP2 can instead ride further if the move continues,     |
+//| trailing SL at TrailTPDistanceR*R behind price from that point on. If  |
+//| both are enabled, UseTrailingTP's own distance/TP-removal takes over   |
+//| once armed (mirrors how the two interact on 001 M1/M2/M3). Ported      |
+//| architecture directly from 001_STOCH_v2 (SumPositionProfit's deal-     |
+//| summed commission handling was already correct here before this       |
+//| port -- see GetClosedPositionProfit, uses the same pattern). Needs     |
+//| its own ground-truth grid search before either can be CONFIRMED.       |
+//|                                                                        |
 //| UseStochFadeConfirm (ported from 001_STOCH_v2's FADE_BEAR_OS/         |
 //| STOCH_FADE_BULL_OB logic, UNTESTED here, default false): this EA      |
 //| currently fades EVERY qualifying signal candle unconditionally (the   |
@@ -152,6 +173,11 @@ input bool   UseFridayNarrowWindow = false; // On Friday, only allow entries 10:
 input double ProtectTriggerR      = 0.25; // Favorable R to arm an early protect-lock stop, before TP1 (REJECTED, see header)
 input double ProtectR             = 0.05; // SL level once armed, in R (REJECTED, see header)
 input bool   UseProtectStop       = false; // Move SL to ProtectR once armed, before TP1/Lock fires (REJECTED, see header)
+
+input bool   UseTrailingStop      = false; // After TP1 reached, continuously trail SL instead of the one-time move to Lock_R (UNTESTED, see header)
+input double TrailStopDistanceR   = 0.03; // Distance maintained between price and the trailing SL after TP1, in R (only used when UseTrailingStop=true)
+input bool   UseTrailingTP        = false; // After TP1 reached, remove the TP2 cap and trail SL instead of closing at TP2 (UNTESTED, see header)
+input double TrailTPDistanceR     = 0.15; // Distance maintained between price and the trailing SL once TP2 cap removed, in R (only used when UseTrailingTP=true)
 
 // -- 매물대 (supply/demand zone) diagnostic (ported from 001 M2_v2): logs
 //    zoneDistATR (distance from the actual entry fill to the nearest
@@ -206,6 +232,9 @@ int managed_dir=0;          // +1 BUY, -1 SELL
 double managed_R=0,managed_entry=0,managed_sl=0,managed_tp1=0,managed_lock=0,managed_tp2=0;
 bool tp1_reached=false;
 bool protect_reached=false; // UseProtectStop: SL already moved to the early protect-lock level
+double trail_stop_level=0;    // UseTrailingStop: current trailing SL level post-TP1 (0 = not yet moved)
+bool   trail_tp_armed=false;  // UseTrailingTP: TP2 cap removed, now trailing via SL
+double trail_tp_stop_level=0; // UseTrailingTP: current trailing SL level once armed (0 = not yet moved)
 
 // DRY/tester virtual position: reproduces research MAX1 without sending orders.
 bool v_open=false,v_tp1=false;
@@ -477,6 +506,7 @@ bool FindOurPosition()
    }
    tp1_reached=false;
    protect_reached=false;
+   trail_stop_level=0; trail_tp_armed=false; trail_tp_stop_level=0;
    return false;
 }
 
@@ -816,27 +846,81 @@ void ManagePosition(MqlTick &tick)
       }
    }
 
-   if(tp1_reached) return;
+   if(!tp1_reached)
+   {
+      double px=(managed_dir==+1 ? tick.bid : tick.ask); // executable close side
+      bool hit=(managed_dir==+1 ? px>=managed_tp1 : px<=managed_tp1);
+      if(!hit) return;
 
-   double px=(managed_dir==+1 ? tick.bid : tick.ask); // executable close side
-   bool hit=(managed_dir==+1 ? px>=managed_tp1 : px<=managed_tp1);
-   if(!hit) return;
+      if(!EnableLiveOrders)
+      {
+         tp1_reached=true;
+         Log("DRY_TP1","would move whole-position SL to +0.25R");
+         return;
+      }
 
+      if(!UseTrailingStop && !UseTrailingTP)
+      {
+         trade.SetExpertMagicNumber(MagicNumber);
+         if(SafeModifyPosition(managed_ticket,managed_dir,managed_lock,managed_tp2,"LOCK_MODIFY"))
+         {
+            tp1_reached=true;
+            Log("TP1_LOCK","TP1 reached; 0.01 lot cannot partial-close 30%, whole SL moved to "+
+                DoubleToString(managed_lock,_Digits));
+         }
+         // If temporarily invalid because price is too close, retry on later ticks.
+         return;
+      }
+
+      // TP1 reached with trailing enabled: arm continuous trailing instead
+      // of the static one-time Lock_R move. Falls through to the trailing
+      // logic below on this same tick.
+      tp1_reached=true;
+      trade.SetExpertMagicNumber(MagicNumber);
+      Log("TP1_TRAIL_ARM","TP1 reached, switching to continuous trailing instead of static Lock_R");
+   }
+
+   // -- post-TP1 continuous trailing (only reached once tp1_reached=true
+   //    AND at least one trailing mode is enabled -- otherwise the static
+   //    Lock_R branch above already handled this position) --
+   if(!UseTrailingStop && !UseTrailingTP) return;
+
+   if(UseTrailingTP && !trail_tp_armed)
+   {
+      if(!EnableLiveOrders)
+      {
+         trail_tp_armed=true;
+         Log("TRAIL_TP_ARM_DRY","would remove TP2 cap and start trailing (EnableLiveOrders=false)");
+      }
+      else if(SafeModifyPosition(managed_ticket,managed_dir,managed_sl,0.0,"TRAIL_TP_ARM"))
+      {
+         trail_tp_armed=true;
+         Log("TRAIL_TP_ARMED","TP2 cap removed, now trailing");
+      }
+   }
+
+   bool tpRemoved=trail_tp_armed;
+   if(!UseTrailingStop && !tpRemoved) return; // TrailingTP not armed yet, TrailingStop off: nothing to do this tick
+
+   double curPrice=(managed_dir==+1 ? tick.bid : tick.ask);
+   double distanceR=(tpRemoved ? TrailTPDistanceR : TrailStopDistanceR);
+   double candidateSL=NormalizeDouble(curPrice-managed_dir*distanceR*managed_R,_Digits);
+   double curSL=PositionGetDouble(POSITION_SL);
+   bool improves=(curSL==0) || (managed_dir==+1 ? candidateSL>curSL : candidateSL<curSL);
+   if(!improves) return;
+
+   double desiredTP=(tpRemoved ? 0.0 : managed_tp2);
    if(!EnableLiveOrders)
    {
-      tp1_reached=true;
-      Log("DRY_TP1","would move whole-position SL to +0.25R");
+      Log(tpRemoved?"TRAIL_TP_STOP_DRY":"TRAIL_STOP_DRY","would move SL->"+DoubleToString(candidateSL,_Digits)+
+          " (EnableLiveOrders=false)");
       return;
    }
-
-   trade.SetExpertMagicNumber(MagicNumber);
-   if(SafeModifyPosition(managed_ticket,managed_dir,managed_lock,managed_tp2,"LOCK_MODIFY"))
+   if(SafeModifyPosition(managed_ticket,managed_dir,candidateSL,desiredTP,tpRemoved?"TRAIL_TP_STOP_MODIFY":"TRAIL_STOP_MODIFY"))
    {
-      tp1_reached=true;
-      Log("TP1_LOCK","TP1 reached; 0.01 lot cannot partial-close 30%, whole SL moved to "+
-          DoubleToString(managed_lock,_Digits));
+      if(tpRemoved) trail_tp_stop_level=candidateSL; else trail_stop_level=candidateSL;
+      Log(tpRemoved?"TRAIL_TP_STOP_MOVED":"TRAIL_STOP_MOVED","SL->"+DoubleToString(candidateSL,_Digits));
    }
-   // If temporarily invalid because price is too close, retry on later ticks.
 }
 
 int OnInit()
@@ -874,6 +958,8 @@ int OnInit()
        " | UseFridayNarrowWindow="+(UseFridayNarrowWindow?"true":"false")+
        " | ProtectTriggerR="+DoubleToString(ProtectTriggerR,2)+" ProtectR="+DoubleToString(ProtectR,2)+
        " UseProtectStop="+(UseProtectStop?"true":"false")+
+       " | UseTrailingStop="+(UseTrailingStop?"true":"false")+" TrailStopDistanceR="+DoubleToString(TrailStopDistanceR,2)+
+       " | UseTrailingTP="+(UseTrailingTP?"true":"false")+" TrailTPDistanceR="+DoubleToString(TrailTPDistanceR,2)+
        " | orders="+(EnableLiveOrders?"ENABLED":"DRY")+
        " | ATRPeriod="+IntegerToString(ATRPeriod)+
        " UseAsiaBoxZone="+(UseAsiaBoxZone?"true":"false")+" AsiaOpenHourKST="+IntegerToString(AsiaOpenHourKST)+
@@ -907,6 +993,8 @@ void OnTick()
    bool wasManaged=managed; ulong wasTicket=managed_ticket;
    int wasDir=managed_dir; double wasEntry=managed_entry;
    bool wasProtectReached=protect_reached; bool wasTp1Reached=tp1_reached;
+   double wasTrailStopLevel=trail_stop_level; bool wasTrailTPArmed=trail_tp_armed;
+   double wasTrailTPStopLevel=trail_tp_stop_level;
 
    CheckNewM2Bar();
    CheckSetups(tick);
@@ -924,7 +1012,10 @@ void OnTick()
           " entry="+DoubleToString(wasEntry,_Digits)+" profit="+DoubleToString(profit,2)+
           " zoneDistATR="+(g_entryZoneDistATR>=999.0?"n/a":DoubleToString(g_entryZoneDistATR,3))+
           " protectTriggered="+(wasProtectReached?"true":"false")+
-          " tp1Reached="+(wasTp1Reached?"true":"false"));
+          " tp1Reached="+(wasTp1Reached?"true":"false")+
+          " trailStopLevel="+DoubleToString(wasTrailStopLevel,_Digits)+
+          " trailTPArmed="+(wasTrailTPArmed?"true":"false")+
+          " trailTPStopLevel="+DoubleToString(wasTrailTPStopLevel,_Digits));
       g_entryZoneDistATR=999.0;
    }
 }
