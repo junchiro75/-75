@@ -232,6 +232,28 @@
 //| this into an active filter until a bucketed analysis of logged         |
 //| zoneDistATR vs outcome shows a robust, replicating relationship.       |
 //|                                                                        |
+//| UseTrailingStop/TrailStopDistanceR and UseTrailingTP/TrailTPDistanceR |
+//| (new, UNTESTED, both default false): same idea already CONFIRMED on   |
+//| 005_RFILTER_V2 -- gate on the EA's own LATEST already-proven safe      |
+//| trigger instead of an earlier one. Here that's PartialTriggerR=1.5R    |
+//| (the partial-close stage, extensively tuned already -- see its own     |
+//| header section), not ProtectTriggerR=0.50R (the earlier whole-         |
+//| position lock stage). Once the partial close completes, the "runner"   |
+//| half currently just sits at a static +ProtectR=0.25R lock until it     |
+//| either hits that lock or the final signal-close-relative TP            |
+//| (SignalOppositeTP_R=0.90R beyond signal close). UseTrailingStop:        |
+//| instead of the static lock, continuously re-trail the runner's SL at   |
+//| TrailStopDistanceR*R behind price every tick (only ever tightening).   |
+//| UseTrailingTP: ALSO remove the final TP cap so the runner can ride      |
+//| further if the move continues, trailing SL at TrailTPDistanceR*R       |
+//| behind price from that point on. If both are enabled, UseTrailingTP's  |
+//| own distance/TP-removal takes over once armed (same interaction as     |
+//| 001/005). On 005, the isolated-UseTrailingStop version held/improved   |
+//| WR while UseTrailingTP traded WR for bigger NET -- expect a similar     |
+//| split here, needs its own ground-truth grid search before either can   |
+//| be CONFIRMED. Entry-commission handling (GetClosedPositionProfit) was   |
+//| already correct in this file before this port.                         |
+//|                                                                        |
 //| UseStochFadeConfirm (ported from 001_STOCH_v2's FADE_BEAR_OS/          |
 //| STOCH_FADE_BULL_OB logic, UNTESTED here, default false): this EA       |
 //| currently fades EVERY qualifying signal candle unconditionally (the    |
@@ -287,6 +309,11 @@ input int  SkipHourBStartKST=16; // Hour-dip B window start, KST (see header, Sk
 input int  SkipHourBEndKST=18; // Hour-dip B window end, KST, exclusive (see header, SkipHourBEntry)
 input bool SkipHourBEntry=true; // Block entries in [SkipHourBStartKST,SkipHourBEndKST) KST (CONFIRMED, see header)
 input bool UseFridayNarrowWindow=false; // On Friday, only allow entries 10:30-15:00 KST (ported from 001 M2_v2 where CONFIRMED; REJECTED here, see header)
+
+input bool   UseTrailingStop     = false; // After the partial close (PartialTriggerR), continuously trail the runner's SL instead of the static +ProtectR lock (UNTESTED, see header)
+input double TrailStopDistanceR  = 0.03; // Distance maintained between price and the trailing SL after the partial close, in R (only used when UseTrailingStop=true AND UseTrailingTP hasn't armed)
+input bool   UseTrailingTP       = false; // After the partial close (PartialTriggerR), remove the final TP cap and trail SL on the runner instead of closing at SignalOppositeTP_R (UNTESTED, see header)
+input double TrailTPDistanceR    = 0.15; // Distance maintained between price and the trailing SL once the final TP cap is removed, in R (only used when UseTrailingTP=true)
 
 // -- 매물대 (supply/demand zone) diagnostic (ported from 001 M2_v2 / 005
 //    RFILTER_V2): logs zoneDistATR on every trade close. Diagnostic
@@ -404,6 +431,9 @@ bool managed_partial=false;
 datetime tracked_entry_time=0;
 double tracked_entry=0,tracked_R=0,tracked_sigclose=0;
 int tracked_dir=0;
+double trail_stop_level=0;    // UseTrailingStop: current trailing SL level post-partial (0 = not yet moved)
+bool   trail_tp_armed=false;  // UseTrailingTP: final TP cap removed, now trailing via SL
+double trail_tp_stop_level=0; // UseTrailingTP: current trailing SL level once armed (0 = not yet moved)
 
 string GVKey(string name){
  return "LIVE007_"+IntegerToString((int)AccountInfoInteger(ACCOUNT_LOGIN))+"_"+_Symbol+"_"+
@@ -417,6 +447,7 @@ void SaveTrack(){
  GlobalVariableSet(GVKey("DIR"),(double)tracked_dir);
  GlobalVariableSet(GVKey("PROTECTED"),protection_armed?1.0:0.0);
  GlobalVariableSet(GVKey("PARTIAL"),managed_partial?1.0:0.0);
+ GlobalVariableSet(GVKey("TRAILTPARMED"),trail_tp_armed?1.0:0.0);
  GlobalVariablesFlush();
 }
 bool LoadTrack(){
@@ -428,10 +459,11 @@ bool LoadTrack(){
  tracked_dir=(int)GlobalVariableGet(GVKey("DIR"));
  protection_armed=GlobalVariableGet(GVKey("PROTECTED"))>0.5;
  managed_partial=GlobalVariableGet(GVKey("PARTIAL"))>0.5;
+ trail_tp_armed=GlobalVariableCheck(GVKey("TRAILTPARMED")) && GlobalVariableGet(GVKey("TRAILTPARMED"))>0.5;
  return tracked_entry_time>0 && tracked_entry>0 && tracked_R>0 && (tracked_dir==1||tracked_dir==-1);
 }
 void ClearTrack(){
- string names[]={"ENTRY_TIME","ENTRY","R","SIGCLOSE","DIR","PROTECTED","PARTIAL"};
+ string names[]={"ENTRY_TIME","ENTRY","R","SIGCLOSE","DIR","PROTECTED","PARTIAL","TRAILTPARMED"};
  for(int i=0;i<ArraySize(names);i++)GlobalVariableDel(GVKey(names[i]));
 }
 bool TradeResultOK(){
@@ -450,7 +482,8 @@ bool OwnPosition(ulong &ticket){
  }
  return false;
 }
-void ResetTrack(){protection_armed=false;managed_partial=false;tracked_entry_time=0;tracked_entry=tracked_R=tracked_sigclose=0;tracked_dir=0;}
+void ResetTrack(){protection_armed=false;managed_partial=false;tracked_entry_time=0;tracked_entry=tracked_R=tracked_sigclose=0;tracked_dir=0;
+ trail_stop_level=0;trail_tp_armed=false;trail_tp_stop_level=0;}
 
 void NewBar(){
  datetime q=iTime(_Symbol,PERIOD_M10,0); if(!q||q==lastbar)return; lastbar=q;
@@ -811,6 +844,7 @@ bool SendEntry(int i,MqlTick &tk){
   tracked_ticket=t;
  }else{tracked_entry=entry;tracked_entry_time=(datetime)(tk.time_msc/1000);}
  tracked_R=R;tracked_sigclose=S[i].c;tracked_dir=dir;protection_armed=false;managed_partial=false;
+ trail_stop_level=0;trail_tp_armed=false;trail_tp_stop_level=0;
  SaveTrack();
  Log("ENTRY_OK",(dir==1?"BUY":"SELL")+" entry="+DoubleToString(tracked_entry,_Digits)+
      " R="+DoubleToString(R,2)+" lots="+DoubleToString(Lots,2)+" sig="+TimeToString(S[i].sig)+
@@ -848,7 +882,10 @@ void ManageOwn(MqlTick &tk){
    double profit=GetClosedPositionProfit(tracked_ticket);
    Log("MANAGED_EXIT",(tracked_dir==1?"BUY":"SELL")+" ticket="+IntegerToString((int)tracked_ticket)+
        " entry="+DoubleToString(tracked_entry,_Digits)+" profit="+DoubleToString(profit,2)+
-       " zoneDistATR="+(g_entryZoneDistATR>=999.0?"n/a":DoubleToString(g_entryZoneDistATR,3)));
+       " zoneDistATR="+(g_entryZoneDistATR>=999.0?"n/a":DoubleToString(g_entryZoneDistATR,3))+
+       " trailStopLevel="+DoubleToString(trail_stop_level,_Digits)+
+       " trailTPArmed="+(trail_tp_armed?"true":"false")+
+       " trailTPStopLevel="+DoubleToString(trail_tp_stop_level,_Digits));
    g_entryZoneDistATR=999.0; tracked_ticket=0;
    ClearTrack();ResetTrack();
   }
@@ -924,73 +961,118 @@ void ManageOwn(MqlTick &tk){
   }
  }
 
- // Stage 2: at +1.0R, close half (0.01 from 0.02). Runner keeps +0.25R SL.
- if(managed_partial)return;
- bool reached10=dir==1?px>=partial_trigger:px<=partial_trigger;
- if(!reached10)return;
+ // Stage 2: at +1.0R, close half (0.01 from 0.02). Runner keeps +0.25R SL
+ // (or continuous trailing instead, if UseTrailingStop/UseTrailingTP enabled).
+ if(!managed_partial){
+  bool reached10=dir==1?px>=partial_trigger:px<=partial_trigger;
+  if(!reached10)return;
 
- double vmin=SymbolInfoDouble(_Symbol,SYMBOL_VOLUME_MIN);
- double vstep=SymbolInfoDouble(_Symbol,SYMBOL_VOLUME_STEP);
- double half=MathFloor((vol/2.0)/vstep+1e-8)*vstep;
- if(half<vmin)half=vmin;
- double remain=vol-half;
- if(remain+1e-8<vmin){
-  Log("PARTIAL_IMPOSSIBLE","volume="+DoubleToString(vol,2));
-  return;
- }
+  double vmin=SymbolInfoDouble(_Symbol,SYMBOL_VOLUME_MIN);
+  double vstep=SymbolInfoDouble(_Symbol,SYMBOL_VOLUME_STEP);
+  double half=MathFloor((vol/2.0)/vstep+1e-8)*vstep;
+  if(half<vmin)half=vmin;
+  double remain=vol-half;
+  if(remain+1e-8<vmin){
+   Log("PARTIAL_IMPOSSIBLE","volume="+DoubleToString(vol,2));
+   return;
+  }
 
- if(!EnableLiveOrders){
-  Log("DRY_PARTIAL","+1.0R reached; would close "+DoubleToString(half,2)+
-      " and keep runner SL +0.25R");
+  if(!EnableLiveOrders){
+   Log("DRY_PARTIAL","+1.0R reached; would close "+DoubleToString(half,2)+
+       " and keep runner SL +0.25R");
+   managed_partial=true;
+   return;
+  }
+
+  trade.SetExpertMagicNumber(MagicNumber);
+  double before_vol=vol;
+  if(!trade.PositionClosePartial(ticket,half) || !TradeResultOK()){
+   Log("PARTIAL_FAILED",IntegerToString((int)trade.ResultRetcode())+" "+trade.ResultRetcodeDescription());
+   return;
+  }
+
+  // IMPORTANT: on a hedging account the remaining position may no longer be
+  // selectable by the original ticket immediately after a partial close.
+  // Mark the partial as completed FIRST, before any verification lookup, so a
+  // flaky/delayed re-select on this tick can never let this block re-fire on
+  // the next tick and send a second, unintended close against the runner.
   managed_partial=true;
+  SaveTrack();
+
+  // Re-find the surviving own-Magic position instead of assuming the old ticket survives.
+  ulong runner_ticket=0;
+  if(!OwnPosition(runner_ticket) || !PositionSelectByTicket(runner_ticket)){
+   Log("PARTIAL_VERIFY_FAILED","close request accepted but runner not found; check account history.");
+   return;
+  }
+
+  double tp=PositionGetDouble(POSITION_TP);
+  double runner_vol=PositionGetDouble(POSITION_VOLUME);
+  if(runner_vol>=before_vol-vstep/2.0){
+   Log("PARTIAL_VERIFY_FAILED","volume unchanged at "+DoubleToString(runner_vol,2)+
+       " | retcode="+IntegerToString((int)trade.ResultRetcode())+" "+trade.ResultRetcodeDescription());
+   return;
+  }
+
+  // A partial close inherits the position's existing SL/TP. Re-sending the same
+  // stops can be rejected as INVALID_STOPS when price is close to TP, so verify
+  // the inherited protection instead of submitting a redundant modification.
+  double runner_sl=PositionGetDouble(POSITION_SL);
+  bool lock_kept=(runner_sl>0 && (dir==1?runner_sl>=lock-_Point:runner_sl<=lock+_Point));
+  if(!lock_kept){
+   Log("RUNNER_PROTECTION_WARNING","inherited SL="+DoubleToString(runner_sl,_Digits)+
+       " expected="+DoubleToString(lock,_Digits)+" | manual check required");
+   return;
+  }
+
+  Log("PARTIAL_OK","closed="+DoubleToString(half,2)+
+      " runner="+DoubleToString(runner_vol,2)+
+      " inherited_lock="+DoubleToString(runner_sl,_Digits)+
+      " finalTP="+DoubleToString(tp,_Digits));
   return;
  }
 
- trade.SetExpertMagicNumber(MagicNumber);
- double before_vol=vol;
- if(!trade.PositionClosePartial(ticket,half) || !TradeResultOK()){
-  Log("PARTIAL_FAILED",IntegerToString((int)trade.ResultRetcode())+" "+trade.ResultRetcodeDescription());
-  return;
+ // -- post-partial continuous trailing on the runner (only reached once
+ //    managed_partial=true, i.e. the partial close already completed) --
+ if(!UseTrailingStop && !UseTrailingTP) return;
+
+ if(UseTrailingTP && !trail_tp_armed)
+ {
+    double curSLforArm=PositionGetDouble(POSITION_SL);
+    if(!EnableLiveOrders)
+    {
+       trail_tp_armed=true;
+       Log("TRAIL_TP_ARM_DRY","would remove final TP cap and start trailing (EnableLiveOrders=false)");
+    }
+    else if(trade.PositionModify(ticket,curSLforArm,0.0) && TradeResultOK())
+    {
+       trail_tp_armed=true;
+       SaveTrack();
+       Log("TRAIL_TP_ARMED","final TP cap removed, now trailing");
+    }
  }
 
- // IMPORTANT: on a hedging account the remaining position may no longer be
- // selectable by the original ticket immediately after a partial close.
- // Mark the partial as completed FIRST, before any verification lookup, so a
- // flaky/delayed re-select on this tick can never let this block re-fire on
- // the next tick and send a second, unintended close against the runner.
- managed_partial=true;
- SaveTrack();
+ bool tpRemoved=trail_tp_armed;
+ if(!UseTrailingStop && !tpRemoved) return; // TrailingTP not armed yet, TrailingStop off: nothing to do this tick
 
- // Re-find the surviving own-Magic position instead of assuming the old ticket survives.
- ulong runner_ticket=0;
- if(!OwnPosition(runner_ticket) || !PositionSelectByTicket(runner_ticket)){
-  Log("PARTIAL_VERIFY_FAILED","close request accepted but runner not found; check account history.");
-  return;
+ double distanceR=(tpRemoved ? TrailTPDistanceR : TrailStopDistanceR);
+ double candidateSL=NormalizeDouble(px-dir*distanceR*tracked_R,_Digits);
+ double curSL=PositionGetDouble(POSITION_SL);
+ bool improves=(curSL==0) || (dir==1 ? candidateSL>curSL : candidateSL<curSL);
+ if(!improves) return;
+
+ double desiredTP=(tpRemoved ? 0.0 : PositionGetDouble(POSITION_TP));
+ if(!EnableLiveOrders)
+ {
+    Log(tpRemoved?"TRAIL_TP_STOP_DRY":"TRAIL_STOP_DRY","would move SL->"+DoubleToString(candidateSL,_Digits)+
+        " (EnableLiveOrders=false)");
+    return;
  }
-
- double tp=PositionGetDouble(POSITION_TP);
- double runner_vol=PositionGetDouble(POSITION_VOLUME);
- if(runner_vol>=before_vol-vstep/2.0){
-  Log("PARTIAL_VERIFY_FAILED","volume unchanged at "+DoubleToString(runner_vol,2)+
-      " | retcode="+IntegerToString((int)trade.ResultRetcode())+" "+trade.ResultRetcodeDescription());
-  return;
+ if(trade.PositionModify(ticket,candidateSL,desiredTP) && TradeResultOK())
+ {
+    if(tpRemoved) trail_tp_stop_level=candidateSL; else trail_stop_level=candidateSL;
+    Log(tpRemoved?"TRAIL_TP_STOP_MOVED":"TRAIL_STOP_MOVED","SL->"+DoubleToString(candidateSL,_Digits));
  }
-
- // A partial close inherits the position's existing SL/TP. Re-sending the same
- // stops can be rejected as INVALID_STOPS when price is close to TP, so verify
- // the inherited protection instead of submitting a redundant modification.
- double runner_sl=PositionGetDouble(POSITION_SL);
- bool lock_kept=(runner_sl>0 && (dir==1?runner_sl>=lock-_Point:runner_sl<=lock+_Point));
- if(!lock_kept){
-  Log("RUNNER_PROTECTION_WARNING","inherited SL="+DoubleToString(runner_sl,_Digits)+
-      " expected="+DoubleToString(lock,_Digits)+" | manual check required");
-  return;
- }
-
- Log("PARTIAL_OK","closed="+DoubleToString(half,2)+
-     " runner="+DoubleToString(runner_vol,2)+
-     " inherited_lock="+DoubleToString(runner_sl,_Digits)+
-     " finalTP="+DoubleToString(tp,_Digits));
 }
 int OnInit(){
  if(AccountInfoInteger(ACCOUNT_MARGIN_MODE)!=ACCOUNT_MARGIN_MODE_RETAIL_HEDGING){
@@ -1029,7 +1111,10 @@ int OnInit(){
      " SkipHourAEntry="+(SkipHourAEntry?"true":"false")+
      " | SkipHourBStartKST="+IntegerToString(SkipHourBStartKST)+" SkipHourBEndKST="+IntegerToString(SkipHourBEndKST)+
      " SkipHourBEntry="+(SkipHourBEntry?"true":"false")+
-     " | UseFridayNarrowWindow="+(UseFridayNarrowWindow?"true":"false")+" | Lots="+DoubleToString(Lots,2)+
+     " | UseFridayNarrowWindow="+(UseFridayNarrowWindow?"true":"false")+
+     " | UseTrailingStop="+(UseTrailingStop?"true":"false")+" TrailStopDistanceR="+DoubleToString(TrailStopDistanceR,2)+
+     " | UseTrailingTP="+(UseTrailingTP?"true":"false")+" TrailTPDistanceR="+DoubleToString(TrailTPDistanceR,2)+
+     " | Lots="+DoubleToString(Lots,2)+
      " | Magic="+IntegerToString((int)MagicNumber)+" | orders="+(EnableLiveOrders?"ENABLED":"DRY")+
      " | ATRPeriod="+IntegerToString(ATRPeriod)+
      " UseAsiaBoxZone="+(UseAsiaBoxZone?"true":"false")+" AsiaOpenHourKST="+IntegerToString(AsiaOpenHourKST)+
