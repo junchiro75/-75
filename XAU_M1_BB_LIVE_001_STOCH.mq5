@@ -103,14 +103,67 @@
 //| TrailTPTriggerR=0.15/TrailTPDistanceR=0.04, BOTH run together live on   |
 //| M2 -- see that file's header for the full ground truth, grid searches, |
 //| and the TrailTPTriggerR-vs-real-TP_R race-condition bug found and      |
-//| fixed there). Ported here with those same CONFIRMED values as          |
-//| defaults (both default true) to test whether they transfer to the M1    |
-//| signal, same porting pattern as ProtectStop above. UNTESTED on this    |
-//| M1 signal -- needs its own ground-truth backtest here before either    |
-//| can be called CONFIRMED. M1's own TP_R (0.45) is the same as M2's, so   |
-//| TrailTPTriggerR=0.15 is still safely below it; M1's SL_R=5.0 differs    |
-//| from M2's 4.0 but that only affects SL_R-based moves (ProtectStop,      |
-//| the original bracket SL), not these two R-relative trailing features.  |
+//| fixed there). Ported here with those same CONFIRMED M2 values as the   |
+//| initial defaults (both true) -- OFF/OFF baseline here: NET $20,399.97, |
+//| WR 92.53%, PF 1.712, n=2,168, avg loss $176.78. Untuned M2 defaults ON: |
+//| NET $40,400.79 (+98.0%), WR 96.60%, PF 2.968, n=2,235, avg loss         |
+//| $270.07 -- transferred even more strongly than on M2 itself. Re-tested  |
+//| SL_R at 4.0 (matching M2/M3) given the new continuous trailing manages  |
+//| risk differently than a static bracket: REJECTED, worse on every        |
+//| metric (NET $37,649.10/PF 2.615/WR 95.58% vs SL_R=5.0's own numbers     |
+//| above) -- M1's own SL_R=5.0 confirmation from before trailing was added |
+//| still holds.                                                            |
+//| Sequential 1-at-a-time Optimizer grid (Recovery Factor max), SL_R=5.0:  |
+//| TrailStopTriggerR swept 0.05-0.30 -> monotonically worse the higher it   |
+//| goes (0.05 best in that range, unlike M2 where 0.15 was the floor); a   |
+//| finer 0.01-0.05 re-sweep found 0.05 is a genuine INTERIOR peak (NET      |
+//| peaks at 0.05, not the lowest tested value 0.01) -- M1's optimal         |
+//| trigger is notably lower than M2's 0.15, confirming the M2 values       |
+//| don't transfer exactly and needed their own search. TrailStopDistanceR  |
+//| swept 0.01-0.10 at TrailStopTriggerR=0.05 -> genuine INTERIOR peak at    |
+//| 0.04 (Recovery Factor 38.04, narrowly ahead of 0.05's 37.46).            |
+//| TrailTPTriggerR swept 0.05-0.40 at the above values -> essentially FLAT  |
+//| (Recovery Factor 37.48-38.04 across the whole range, no real signal --   |
+//| likely because TrailStopTriggerR=0.05 already trails so tightly that    |
+//| few trades ever reach favR this high before being stopped out first);    |
+//| 0.15 narrowly best by the criterion, coincidentally matching M2's own    |
+//| CONFIRMED value. TrailTPDistanceR swept 0.01-0.10 at the above values -> |
+//| genuine INTERIOR peak at 0.03 (Recovery Factor 38.07, narrowly ahead of  |
+//| 0.04's 38.04).                                                           |
+//| BUG FOUND AND FIXED mid-grid-search (see OnTradeTransaction/             |
+//| SumPositionProfit): comparing this file's own CSV-log-derived single-run |
+//| NET against MT5's own xlsx tester report for an IDENTICAL run (same      |
+//| TrailStopTriggerR=0.05/TrailStopDistanceR=0.04/TrailTPTriggerR=0.15/     |
+//| TrailTPDistanceR=0.04, n=2,330 both ways) found a $3,495.00 gap --        |
+//| exactly 2,330 x $1.50, the entry-side commission this broker charges on  |
+//| a 0.1-lot XAUUSD position. OnTradeTransaction was reading                |
+//| profit+swap+commission from only the EXIT deal (trans.deal); this        |
+//| broker charges commission on the ENTRY deal only (exit deal's own        |
+//| commission is always 0), so every logged trade's true cost was           |
+//| understated by the missing entry commission. Fixed by summing            |
+//| profit+swap+commission across EVERY deal belonging to the closed         |
+//| position via HistorySelectByPosition (see SumPositionProfit). Also       |
+//| explains the "Optimizer vs single-run" gap repeatedly observed and       |
+//| attributed to MT5 tick-synthesis noise throughout this project's         |
+//| history up to this point: Optimizer result tables come from MT5's own    |
+//| native calc (always correct, unaffected by this bug), while every        |
+//| CSV-log-derived "single-run confirmation" number before this fix was     |
+//| systematically overstated by ~$1.50 x trade count. Relative/directional  |
+//| grid conclusions throughout this project are essentially unaffected      |
+//| (the Optimizer tables used for them were always accurate); only final    |
+//| single-run-confirmed absolute NET/WR figures before this fix should be   |
+//| read with that overstatement in mind.                                    |
+//| FINAL single-run confirmation (post-fix, NET now reconciles exactly      |
+//| with MT5's own xlsx report and the Optimizer grid's own number for the    |
+//| same config) at TrailStopTriggerR=0.05/TrailStopDistanceR=0.04/          |
+//| TrailTPTriggerR=0.15/TrailTPDistanceR=0.03: NET $41,304.47 (+102.5% vs    |
+//| OFF/OFF baseline, more than double), WR 78.87%, PF 5.738, n=2,324, avg    |
+//| win $27.29, avg loss $17.75 -- CONFIRMED, live. M1's own optimal values   |
+//| (TrailStopTriggerR=0.05/TrailStopDistanceR=0.04) differ meaningfully      |
+//| from M2's (0.15/0.03), while TrailTPTriggerR=0.15/TrailTPDistanceR=0.03   |
+//| landed very close to M2's own confirmed 0.15/0.04 -- a mixed transfer,    |
+//| underscoring why each timeframe needed its own ground-truth grid rather  |
+//| than just reusing M2's porting defaults.                                 |
 //+------------------------------------------------------------------+
 #property strict
 #include <Trade/Trade.mqh>
@@ -146,12 +199,12 @@ input double ProtectTriggerR    = 0.25; // Favorable R to arm protect-lock stop 
 input double ProtectR           = 0.05; // SL level once armed, in R (CONFIRMED user-selected, see header)
 input bool   UseProtectStop     = true; // Move SL to ProtectR once armed (CONFIRMED user-selected, see header)
 
-input bool   UseTrailingStop    = true; // Continuously trail SL behind price once armed, instead of ProtectStop's one-time move (ported from M2_v2, CONFIRMED there -- UNTESTED here, see header)
-input double TrailStopTriggerR  = 0.15; // Favorable R to arm the trailing stop (ported from M2_v2, see header)
-input double TrailStopDistanceR = 0.03; // Distance maintained between price and the trailing SL, in R (ported from M2_v2, see header)
-input bool   UseTrailingTP      = true; // Once price reaches TrailTPTriggerR, widen the broker TP and trail SL behind price instead of closing there (ported from M2_v2, CONFIRMED there -- UNTESTED here, see header)
-input double TrailTPTriggerR    = 0.15; // Favorable R to arm the trailing TP -- must be strictly less than TP_R or the broker's own TP fires first (ported from M2_v2, see header; only used when UseTrailingTP=true)
-input double TrailTPDistanceR   = 0.04; // Distance maintained between price and the trailing SL once UseTrailingTP arms, in R (ported from M2_v2, see header; only used when UseTrailingTP=true)
+input bool   UseTrailingStop    = true; // Continuously trail SL behind price once armed, instead of ProtectStop's one-time move (CONFIRMED, M1-specific value, see header)
+input double TrailStopTriggerR  = 0.05; // Favorable R to arm the trailing stop (CONFIRMED, M1-specific value, see header)
+input double TrailStopDistanceR = 0.04; // Distance maintained between price and the trailing SL, in R (CONFIRMED, M1-specific value, see header)
+input bool   UseTrailingTP      = true; // Once price reaches TrailTPTriggerR, widen the broker TP and trail SL behind price instead of closing there (CONFIRMED, see header)
+input double TrailTPTriggerR    = 0.15; // Favorable R to arm the trailing TP -- must be strictly less than TP_R or the broker's own TP fires first (CONFIRMED, see header; only used when UseTrailingTP=true)
+input double TrailTPDistanceR   = 0.03; // Distance maintained between price and the trailing SL once UseTrailingTP arms, in R (CONFIRMED, M1-specific value, see header; only used when UseTrailingTP=true)
 
 int hBB20=INVALID_HANDLE,hBB4=INVALID_HANDLE,hStoch=INVALID_HANDLE;
 datetime last_m1_bar=0;
