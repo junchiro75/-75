@@ -105,7 +105,7 @@
 //| stage. Keep UseProtectStop=false.                                    |
 //|                                                                       |
 //| UseTrailingStop/TrailStopDistanceR and UseTrailingTP/TrailTPDistanceR |
-//| (new, UNTESTED, both default false): NOT a repeat of the REJECTED     |
+//| (CONFIRMED, both default true): NOT a repeat of the REJECTED          |
 //| ProtectTriggerR experiment above -- that one intercepted trades       |
 //| BEFORE TP1 and was rejected for cutting off trades headed to this     |
 //| EA's own TP1/Lock stage. These two instead change what happens        |
@@ -119,11 +119,34 @@
 //| have closed at TP2 can instead ride further if the move continues,     |
 //| trailing SL at TrailTPDistanceR*R behind price from that point on. If  |
 //| both are enabled, UseTrailingTP's own distance/TP-removal takes over   |
-//| once armed (mirrors how the two interact on 001 M1/M2/M3). Ported      |
-//| architecture directly from 001_STOCH_v2 (SumPositionProfit's deal-     |
-//| summed commission handling was already correct here before this       |
-//| port -- see GetClosedPositionProfit, uses the same pattern). Needs     |
-//| its own ground-truth grid search before either can be CONFIRMED.       |
+//| once armed (mirrors how the two interact on 001 M1/M2/M3) -- in        |
+//| practice TrailingTP arms the instant TP1 fires, so TrailStopDistanceR  |
+//| never actually gets used while UseTrailingTP=true. Ported architecture |
+//| directly from 001_STOCH_v2 (SumPositionProfit's deal-summed commission |
+//| handling was already correct here before this port -- see              |
+//| GetClosedPositionProfit, uses the same pattern).                        |
+//| Ground truth (2025.01-2026.10, clean re-run confirming settings         |
+//| drift-free after an initial contaminated upload had UseStochFadeConfirm |
+//| stuck at true from an earlier test): OFF baseline NET $27,811.95, WR     |
+//| 90.44%, PF 1.732, n=2,740, avg loss $144.99 (matches this file's own     |
+//| existing CONFIRMED-defaults record exactly). Untuned ON (both true,      |
+//| TrailStopDistanceR=0.03/TrailTPDistanceR=0.15 defaults): NET $37,986.59  |
+//| (+36.6%), WR 84.68%, PF 1.988, n=2,742, avg loss $91.55 -- WR drops (same |
+//| shape as every other "cut trades at a small favorable point" test in     |
+//| this project) but NET/PF both improve substantially, unlike the REJECTED |
+//| pre-TP1 experiment where NET also fell. trailTPArmed=true on 2,488/2,742 |
+//| trades (90.7%) -- essentially every trade that reaches TP1 arms          |
+//| TrailingTP immediately. TrailTPDistanceR swept 0.01-0.30 (MT5 Optimizer, |
+//| Recovery Factor max): genuine INTERIOR peak at 0.09 (Recovery Factor     |
+//| 13.37, NET $38,434.69) -- climbs steadily 0.01->0.09, then noisy but      |
+//| generally declining through 0.30. FINAL single-run confirmation (NET     |
+//| reconciles exactly with the Optimizer grid's own number for the same     |
+//| config) at TrailStopDistanceR=0.03/TrailTPDistanceR=0.09: NET $38,434.69 |
+//| (+38.2% vs OFF baseline), WR 81.84%, PF 1.913, n=2,742 -- CONFIRMED,      |
+//| live. First successful trailing-feature transfer onto a non-001-family   |
+//| EA in this project, by gating on the EA's own existing safe trigger      |
+//| (TP1) instead of repeating the earlier-trigger approach that was         |
+//| REJECTED here.                                                           |
 //|                                                                        |
 //| UseStochFadeConfirm (ported from 001_STOCH_v2's FADE_BEAR_OS/         |
 //| STOCH_FADE_BULL_OB logic, UNTESTED here, default false): this EA      |
@@ -174,10 +197,10 @@ input double ProtectTriggerR      = 0.25; // Favorable R to arm an early protect
 input double ProtectR             = 0.05; // SL level once armed, in R (REJECTED, see header)
 input bool   UseProtectStop       = false; // Move SL to ProtectR once armed, before TP1/Lock fires (REJECTED, see header)
 
-input bool   UseTrailingStop      = false; // After TP1 reached, continuously trail SL instead of the one-time move to Lock_R (UNTESTED, see header)
-input double TrailStopDistanceR   = 0.03; // Distance maintained between price and the trailing SL after TP1, in R (only used when UseTrailingStop=true)
-input bool   UseTrailingTP        = false; // After TP1 reached, remove the TP2 cap and trail SL instead of closing at TP2 (UNTESTED, see header)
-input double TrailTPDistanceR     = 0.15; // Distance maintained between price and the trailing SL once TP2 cap removed, in R (only used when UseTrailingTP=true)
+input bool   UseTrailingStop      = true; // After TP1 reached, continuously trail SL instead of the one-time move to Lock_R (CONFIRMED, see header)
+input double TrailStopDistanceR   = 0.03; // Distance maintained between price and the trailing SL after TP1, in R (only used when UseTrailingStop=true AND UseTrailingTP hasn't armed -- see header)
+input bool   UseTrailingTP        = true; // After TP1 reached, remove the TP2 cap and trail SL instead of closing at TP2 (CONFIRMED, see header)
+input double TrailTPDistanceR     = 0.09; // Distance maintained between price and the trailing SL once TP2 cap removed, in R (CONFIRMED, see header; only used when UseTrailingTP=true)
 
 // -- 매물대 (supply/demand zone) diagnostic (ported from 001 M2_v2): logs
 //    zoneDistATR (distance from the actual entry fill to the nearest
