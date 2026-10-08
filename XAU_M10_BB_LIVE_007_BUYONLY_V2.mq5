@@ -259,26 +259,49 @@
 //| zoneDistATR vs outcome shows a robust, replicating relationship.       |
 //|                                                                        |
 //| UseTrailingStop/TrailStopDistanceR and UseTrailingTP/TrailTPDistanceR |
-//| (new, UNTESTED, both default false): same idea already CONFIRMED on   |
+//| (CONFIRMED, both true live): same idea already CONFIRMED on            |
 //| 005_RFILTER_V2 -- gate on the EA's own LATEST already-proven safe      |
 //| trigger instead of an earlier one. Here that's PartialTriggerR=1.5R    |
 //| (the partial-close stage, extensively tuned already -- see its own     |
 //| header section), not ProtectTriggerR=0.50R (the earlier whole-         |
 //| position lock stage). Once the partial close completes, the "runner"   |
-//| half currently just sits at a static +ProtectR=0.25R lock until it     |
-//| either hits that lock or the final signal-close-relative TP            |
-//| (SignalOppositeTP_R=0.90R beyond signal close). UseTrailingStop:        |
-//| instead of the static lock, continuously re-trail the runner's SL at   |
+//| half, instead of sitting at a static +ProtectR=0.25R lock until it     |
+//| either hits that lock or the final entry-relative TP                   |
+//| (SignalOppositeTP_R=1.75R beyond entry), now continuously re-trails.    |
+//| UseTrailingStop alone would trail the runner's SL at                   |
 //| TrailStopDistanceR*R behind price every tick (only ever tightening).   |
-//| UseTrailingTP: ALSO remove the final TP cap so the runner can ride      |
+//| UseTrailingTP ALSO removes the final TP cap so the runner can ride      |
 //| further if the move continues, trailing SL at TrailTPDistanceR*R       |
-//| behind price from that point on. If both are enabled, UseTrailingTP's  |
+//| behind price from that point on; with both enabled, UseTrailingTP's    |
 //| own distance/TP-removal takes over once armed (same interaction as     |
-//| 001/005). On 005, the isolated-UseTrailingStop version held/improved   |
-//| WR while UseTrailingTP traded WR for bigger NET -- expect a similar     |
-//| split here, needs its own ground-truth grid search before either can   |
-//| be CONFIRMED. Entry-commission handling (GetClosedPositionProfit) was   |
-//| already correct in this file before this port.                         |
+//| 001/005) -- TrailStopDistanceR=0.03 stays live but is effectively      |
+//| superseded on any trade where UseTrailingTP arms.                      |
+//|                                                                        |
+//| Discovered mid-port: the final TP (finaltp) was anchored to the         |
+//| SIGNAL CANDLE'S CLOSE rather than the actual entry price, unlike every  |
+//| other R-level in this EA (InitialSL_R/ProtectTriggerR/ProtectR/         |
+//| PartialTriggerR, all entry-anchored) and unlike 005's equivalent. Fixed |
+//| to anchor on entry; SignalOppositeTP_R widened 0.90->1.75 to preserve   |
+//| the old effective target distance for zero-overshoot trades (not an     |
+//| exact reproduction for all trades -- see commit history). Post-fix      |
+//| clean OFF/ON baselines re-run and confirmed consistent with pre-fix     |
+//| findings (trailing still mildly net-negative UNTUNED).                  |
+//|                                                                        |
+//| TrailTPDistanceR grid search (0.01-0.10, UseTrailingStop=true/          |
+//| UseTrailingTP=true/SignalOppositeTP_R=1.75 fixed, 2025.01.01-           |
+//| 2026.10.03): clear interior peak at 0.02 (NET $21,999.88, PF 3.279,     |
+//| RF 12.14, n=550 deals/442 positions) -- 0.01 close second ($20,710.59), |
+//| 0.03 drops off sharply ($18,027.36), 0.04-0.10 plateau ~$16,100-16,400. |
+//| CONFIRMED at TrailTPDistanceR=0.02, single run reconciled exactly to    |
+//| the optimizer (NET $21,999.88 to the penny; WR 89.14%, avg_win $78.63,  |
+//| avg_loss -$187.11, PF 3.45 position-level -- optimizer's 3.279 is deal- |
+//| level, splits each partial-close's own P&L into a separate win/loss     |
+//| bucket, not a discrepancy). This beats the pre-grid OFF baseline (NET   |
+//| $16,618.21) by +32%. Isolated UseTrailingStop-alone (like 005's own      |
+//| isolated test) not yet run here -- optional follow-up if a different    |
+//| WR/NET tradeoff is wanted later. Entry-commission handling              |
+//| (GetClosedPositionProfit) was already correct in this file before this  |
+//| port.                                                                   |
 //|                                                                        |
 //| UseStochFadeConfirm (ported from 001_STOCH_v2's FADE_BEAR_OS/          |
 //| STOCH_FADE_BULL_OB logic, UNTESTED here, default false): this EA       |
@@ -336,10 +359,10 @@ input int  SkipHourBEndKST=18; // Hour-dip B window end, KST, exclusive (see hea
 input bool SkipHourBEntry=true; // Block entries in [SkipHourBStartKST,SkipHourBEndKST) KST (CONFIRMED, see header)
 input bool UseFridayNarrowWindow=false; // On Friday, only allow entries 10:30-15:00 KST (ported from 001 M2_v2 where CONFIRMED; REJECTED here, see header)
 
-input bool   UseTrailingStop     = false; // After the partial close (PartialTriggerR), continuously trail the runner's SL instead of the static +ProtectR lock (UNTESTED, see header)
+input bool   UseTrailingStop     = true; // After the partial close (PartialTriggerR), continuously trail the runner's SL instead of the static +ProtectR lock (CONFIRMED true live, see header; superseded on any trade where UseTrailingTP arms)
 input double TrailStopDistanceR  = 0.03; // Distance maintained between price and the trailing SL after the partial close, in R (only used when UseTrailingStop=true AND UseTrailingTP hasn't armed)
-input bool   UseTrailingTP       = false; // After the partial close (PartialTriggerR), remove the final TP cap and trail SL on the runner instead of closing at SignalOppositeTP_R (UNTESTED, see header)
-input double TrailTPDistanceR    = 0.15; // Distance maintained between price and the trailing SL once the final TP cap is removed, in R (only used when UseTrailingTP=true)
+input bool   UseTrailingTP       = true; // After the partial close (PartialTriggerR), remove the final TP cap and trail SL on the runner instead of closing at SignalOppositeTP_R (CONFIRMED true live, see header)
+input double TrailTPDistanceR    = 0.02; // Distance maintained between price and the trailing SL once the final TP cap is removed, in R (CONFIRMED, see header; only used when UseTrailingTP=true)
 
 // -- 매물대 (supply/demand zone) diagnostic (ported from 001 M2_v2 / 005
 //    RFILTER_V2): logs zoneDistATR on every trade close. Diagnostic
