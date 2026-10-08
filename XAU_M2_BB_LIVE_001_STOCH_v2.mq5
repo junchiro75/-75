@@ -421,24 +421,40 @@
 //| and arming earlier, could behave differently -- needs its own           |
 //| backtest (PROTECT_TRIGGER logs every arm regardless of UseProtectStop,  |
 //| PROTECT_MOVED/PROTECT_MOVE_FAIL log the live SL modify outcome).        |
-//| Ground truth (PT=ProtectTriggerR, PR=ProtectR; confirmed baseline NET    |
-//| $28,579.18, WR 92.24%, PF 1.539, n=2,693, avg loss -$253.77): unlike      |
-//| the rejected breakeven stop, this DOES work as a loss-size dampener --   |
-//| PT=0.25/PR=0.05 gives NET $20,353.15 (-28.78%), WR 91.28%, PF 1.599       |
-//| (higher than baseline despite the NET drop), avg loss -$136.61 (-46%).   |
-//| A PT/PR grid sweep (PT 0.25-0.40, PR 0.05-0.20) confirmed the shape:      |
-//| lower PT shrinks avg loss size more but costs more NET; higher PT        |
-//| (0.40) keeps NET close to baseline (-7 to -9%) but barely dampens loss    |
-//| size any more. Within a fixed PT, raising PR improves WR/NET slightly     |
-//| but counter-intuitively makes the REMAINING losses' average size worse    |
-//| (not the total $ lost) -- a selection effect: a higher PR rescues more    |
-//| of the marginal/retracing trades into small wins, leaving only the        |
-//| fast/severe blow-through losses in the loss bucket, which skews that      |
-//| bucket's average up even as its total $ and count both fall. User         |
-//| explicitly chose PT=0.25/PR=0.05 (the most aggressive loss-size            |
-//| reduction) for live trading, trading -28.78% backtest NET for a much       |
-//| smaller/more consistent daily loss profile -- this is now the CONFIRMED   |
-//| default (UseProtectStop=true).                                            |
+//| Ground truth (PT=ProtectTriggerR, PR=ProtectR), CORRECTED: the first      |
+//| ground-truth pass (OFF NET $28,579.18/WR 92.24%/PF 1.539/n=2,693 -> ON    |
+//| PT=0.25/PR=0.05 NET $20,353.15/-28.78%/WR 91.28%/PF 1.599/avg loss -46%)  |
+//| was later found to have had UseSupplyZoneFilter=true silently active      |
+//| throughout (see that input's own header entry) -- EVERY number above is   |
+//| contaminated by an unrelated, separately-undecided filter. Re-run clean   |
+//| (UseSupplyZoneFilter=false) on the same PT=0.25/PR=0.05: OFF->ON gave     |
+//| NET -32.83% (worse than the contaminated -28.78%), WR -1.18pp, PF +0.007  |
+//| (essentially flat, not the "higher than baseline" the contaminated run    |
+//| showed), avg loss -46.3% (this part replicated cleanly, -46% before).     |
+//| Unlike the rejected breakeven stop, this still DOES work as a loss-size   |
+//| dampener -- that finding holds -- but the "free PF improvement" framing   |
+//| from the first pass was substantially a filter-contamination artifact.    |
+//| A PT/PR grid sweep (PT 0.25-0.40, PR 0.05-0.20, run before the            |
+//| contamination was found so its own absolute numbers carry the same        |
+//| caveat) confirmed the shape: lower PT shrinks avg loss size more but      |
+//| costs more NET; higher PT (0.40) keeps NET closer to baseline but         |
+//| barely dampens loss size any more. Within a fixed PT, raising PR          |
+//| improves WR/NET slightly but counter-intuitively makes the REMAINING      |
+//| losses' average size worse (not the total $ lost) -- a selection effect:  |
+//| a higher PR rescues more of the marginal/retracing trades into small      |
+//| wins, leaving only the fast/severe blow-through losses in the loss        |
+//| bucket, which skews that bucket's average up even as its total $ and      |
+//| count both fall. User explicitly chose PT=0.25/PR=0.05 (the most          |
+//| aggressive loss-size reduction) for live trading anyway, trading NET       |
+//| for a much smaller/more consistent daily loss profile -- this is now      |
+//| the CONFIRMED default (UseProtectStop=true). Same pattern replicated      |
+//| cleanly on M1 (OFF NET $25,752.58/WR 93.84%/PF 1.598/n=2,045 -> ON NET    |
+//| $20,399.97/-20.8%/WR 92.53%/PF 1.712 improved/avg loss -48.2%) and M3     |
+//| (OFF NET $18,096.15/WR 94.29%/PF 1.996/n=508 -> ON NET $14,810.64/-18.2%/ |
+//| WR 96.05% improved/PF 2.628 improved/avg loss -30.9%), both ported into   |
+//| the dedicated XAU_M1_BB_LIVE_001_STOCH.mq5/XAU_M3_BB_LIVE_001_STOCH.mq5   |
+//| sibling files (never contaminated by UseSupplyZoneFilter, which doesn't   |
+//| exist there) and also now CONFIRMED/live on both.                         |
 //| timeMildMin/timeDangerMin (diagnostic only, no trading effect):         |
 //| minutes a position spends with adverse excursion below MildZoneR        |
 //| (default 2.0, half of SL_R=4.0) vs at/above it. Motivated by a real     |
