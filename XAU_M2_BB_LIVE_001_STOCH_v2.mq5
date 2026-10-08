@@ -616,6 +616,25 @@
 //| live/backtest trade history stays distinguishable either way. Needs its     |
 //| own ground-truth run against the StochOverbought=85/StochOversold=30        |
 //| confirmed baseline.                                                         |
+//|                                                                              |
+//| UseRSIFilter (default false, UNTESTED): user's own idea, separate from      |
+//| UseRSIInsteadOfStoch above -- this does NOT replace Stochastic, it adds     |
+//| RSI(RSIFilterPeriod) as a SECOND, independent confirmation on top of        |
+//| whatever Stochastic already decided (TREND vs FADE, BUY vs SELL). For       |
+//| each of the 4 sigdir/stochK branches, RSI must point the same way          |
+//| (example from the user: a bull signal candle with stochK=80 decides         |
+//| STOCH_TREND_BULL/BUY since 80<85, but if RSI(14)=75 -- RSI's own            |
+//| overbought reading -- that conflicts with the trend call):                  |
+//|   TREND_BULL (dir==sigdir==+1): require RSI < RSIFilterOverbought           |
+//|   TREND_BEAR (dir==sigdir==-1): require RSI > RSIFilterOversold             |
+//|   FADE_BULL_OB (dir=-1,sigdir=+1): require RSI >= RSIFilterOverbought       |
+//|   FADE_BEAR_OS (dir=+1,sigdir=-1): require RSI <= RSIFilterOversold         |
+//| On conflict, two variants to test (RSIFilterReverseOnConflict):             |
+//|   false (default): skip the entry entirely (SIGNAL_SKIPPED).                |
+//|   true: trade the OPPOSITE direction instead (follow RSI's own read,        |
+//|     tag suffix _RSIREV) rather than passing on the setup.                   |
+//| Needs its own ground-truth run (both variants) against the confirmed         |
+//| baseline before any verdict.                                                 |
 //+------------------------------------------------------------------+
 #property strict
 #include <Trade/Trade.mqh>
@@ -639,6 +658,22 @@ input bool   UseRSIInsteadOfStoch = false; // Swap the TREND/FADE oscillator fro
 input int    RSIPeriod            = 8; // RSI period (only used when UseRSIInsteadOfStoch=true)
 input double RSIOverbought        = 70.0; // RSI overbought level (only used when UseRSIInsteadOfStoch=true)
 input double RSIOversold          = 30.0; // RSI oversold level (only used when UseRSIInsteadOfStoch=true)
+
+// -- RSI CONFIRMATION filter (separate from UseRSIInsteadOfStoch above --
+//    this does not replace Stochastic, it adds RSI as a second, independent
+//    condition on top of whatever Stochastic already decided). For each of
+//    the 4 sigdir/stochK branches, RSI must point the same way:
+//      TREND_BULL (dir==sigdir==+1): require RSI < RSIFilterOverbought
+//      TREND_BEAR (dir==sigdir==-1): require RSI > RSIFilterOversold
+//      FADE_BULL_OB (dir=-1,sigdir=+1): require RSI >= RSIFilterOverbought
+//      FADE_BEAR_OS (dir=+1,sigdir=-1): require RSI <= RSIFilterOversold
+//    On conflict: RSIFilterReverseOnConflict=false skips the entry entirely;
+//    =true trades the OPPOSITE direction instead (RSI's own read). UNTESTED.
+input bool   UseRSIFilter           = false; // Require RSI to agree with Stochastic's TREND/FADE decision (UNTESTED, see header)
+input int    RSIFilterPeriod        = 14; // RSI period for the confirmation filter
+input double RSIFilterOverbought    = 70.0; // RSI overbought level for the confirmation filter
+input double RSIFilterOversold      = 30.0; // RSI oversold level for the confirmation filter
+input bool   RSIFilterReverseOnConflict = false; // false=skip entry on RSI/Stoch conflict, true=trade the opposite direction instead
 input double SL_R               = 4.0;  // Stop loss (R)
 input double TP_R               = 0.45; // Take profit (R)
 input double MinR_Points        = 350;  // Min signal-candle body (points) to trade, 0=no filter
@@ -745,7 +780,7 @@ input double NYSessionEndHourKST   = 6.0; // KST hour (decimal) the NY session w
 //    on every trade so it can be bucketed before considering a filter.
 input int    DIPeriod              = 20; // SMA period for the 이격도 baseline
 
-int hBB20=INVALID_HANDLE,hBB4=INVALID_HANDLE,hStoch=INVALID_HANDLE,hADX=INVALID_HANDLE,hADXM2=INVALID_HANDLE,hRSI=INVALID_HANDLE;
+int hBB20=INVALID_HANDLE,hBB4=INVALID_HANDLE,hStoch=INVALID_HANDLE,hADX=INVALID_HANDLE,hADXM2=INVALID_HANDLE,hRSI=INVALID_HANDLE,hRSIFilter=INVALID_HANDLE;
 int hBB20_HTF=INVALID_HANDLE,hBB4_HTF=INVALID_HANDLE,hATR_HTF=INVALID_HANDLE,hMA_DI=INVALID_HANDLE;
 int hATR_Sig=INVALID_HANDLE;
 datetime last_m2_bar=0;
@@ -2106,6 +2141,32 @@ void CheckNewM2Bar()
       }
    }
 
+   if(UseRSIFilter && !IgnoreStochastic)
+   {
+      double rsiFbuf[1];
+      if(CopyBuffer(hRSIFilter,0,1,1,rsiFbuf)!=1){ Log("RSIFILTER_FAIL","no RSI value"); return; }
+      double rsiF=rsiFbuf[0];
+      bool rsiAgrees=(dir==sigdir) ?
+         ((sigdir==+1) ? (rsiF<RSIFilterOverbought) : (rsiF>RSIFilterOversold)) :
+         ((sigdir==+1) ? (rsiF>=RSIFilterOverbought) : (rsiF<=RSIFilterOversold));
+
+      if(!rsiAgrees)
+      {
+         if(RSIFilterReverseOnConflict)
+         {
+            int oldDir=dir; dir=-dir;
+            Log("RSI_FILTER_REVERSE","rsi="+DoubleToString(rsiF,2)+" sigdir="+(sigdir==1?"BULL":"BEAR")+
+                " stochDir="+(oldDir==1?"BUY":"SELL")+" -> "+(dir==1?"BUY":"SELL")+" | "+tag);
+            tag=tag+"_RSIREV";
+         }
+         else
+         {
+            Log("SIGNAL_SKIPPED","RSI filter conflict: rsi="+DoubleToString(rsiF,2)+" | "+tag);
+            return;
+         }
+      }
+   }
+
    // Band-reentry tracking only makes sense for trend-following trades (dir
    // matches the breakout direction) -- for a fade trade, price returning
    // toward/across that same band is the EXPECTED favorable direction, not
@@ -2158,9 +2219,10 @@ int OnInit()
    hATR_Sig =iATR(_Symbol,Timeframe,ATRPeriod);
    hMA_DI   =iMA(_Symbol,Timeframe,DIPeriod,0,MODE_SMA,PRICE_CLOSE);
    hRSI     =iRSI(_Symbol,Timeframe,RSIPeriod,PRICE_CLOSE);
+   hRSIFilter=iRSI(_Symbol,Timeframe,RSIFilterPeriod,PRICE_CLOSE);
    if(hBB20==INVALID_HANDLE || hBB4==INVALID_HANDLE || hStoch==INVALID_HANDLE || hADX==INVALID_HANDLE || hADXM2==INVALID_HANDLE ||
       hBB20_HTF==INVALID_HANDLE || hBB4_HTF==INVALID_HANDLE || hATR_HTF==INVALID_HANDLE || hATR_Sig==INVALID_HANDLE || hMA_DI==INVALID_HANDLE ||
-      hRSI==INVALID_HANDLE) return INIT_FAILED;
+      hRSI==INVALID_HANDLE || hRSIFilter==INVALID_HANDLE) return INIT_FAILED;
 
    f_log=FileOpen("XAU_M2_BB_LIVE_001_STOCH_v2_LOG.csv",FILE_READ|FILE_WRITE|FILE_CSV|FILE_ANSI|FILE_SHARE_READ,',');
    if(f_log!=INVALID_HANDLE)
@@ -2201,6 +2263,9 @@ int OnInit()
        " | IgnoreStochastic="+(IgnoreStochastic?"true":"false")+
        " | UseRSIInsteadOfStoch="+(UseRSIInsteadOfStoch?"true":"false")+" RSIPeriod="+IntegerToString(RSIPeriod)+
        " RSIOverbought="+DoubleToString(RSIOverbought,1)+" RSIOversold="+DoubleToString(RSIOversold,1)+
+       " | UseRSIFilter="+(UseRSIFilter?"true":"false")+" RSIFilterPeriod="+IntegerToString(RSIFilterPeriod)+
+       " RSIFilterOverbought="+DoubleToString(RSIFilterOverbought,1)+" RSIFilterOversold="+DoubleToString(RSIFilterOversold,1)+
+       " RSIFilterReverseOnConflict="+(RSIFilterReverseOnConflict?"true":"false")+
        " | CircuitBreakerLossCount="+IntegerToString(CircuitBreakerLossCount)+
        " CircuitBreakerCooldownHours="+DoubleToString(CircuitBreakerCooldownHours,1)+
        " UseCircuitBreaker="+(UseCircuitBreaker?"true":"false")+
@@ -2248,6 +2313,7 @@ void OnDeinit(const int reason)
    if(hATR_Sig!=INVALID_HANDLE) IndicatorRelease(hATR_Sig);
    if(hMA_DI!=INVALID_HANDLE) IndicatorRelease(hMA_DI);
    if(hRSI!=INVALID_HANDLE) IndicatorRelease(hRSI);
+   if(hRSIFilter!=INVALID_HANDLE) IndicatorRelease(hRSIFilter);
 }
 
 void OnTick()
