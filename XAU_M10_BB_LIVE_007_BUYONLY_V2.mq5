@@ -14,7 +14,24 @@
 //| Forward-test EA: NEW-A +0.5R protect / +1.0R split                   |
 //| M10 dual BB -> +0.95R extension -> 0.10R pullback -> countertrend|
 //| SL2R; +0.5R arms +0.25R SL; +1R closes 0.01; final target          |
-//| = signal close + countertrend 0.90R                              |
+//| = ENTRY + countertrend 0.90R (FIXED -- was signal_close +           |
+//| SignalOppositeTP_R*R, an inconsistent anchor vs every other R-     |
+//| based level in this EA, which are all entry-relative). Since entry  |
+//| is itself signal_close offset by (ExtensionR-PullbackR)*R in the    |
+//| countertrend direction, the old formula put the real TP at          |
+//| ~(ExtensionR-PullbackR+SignalOppositeTP_R)=1.75R from entry, not     |
+//| the 0.90R the input name/value implied -- user-requested fix to      |
+//| anchor consistently on entry like every other level here. KNOWN      |
+//| CONSEQUENCE, not yet resolved: PartialTriggerR=1.5R was tuned        |
+//| against the OLD ~1.75R target and is now LARGER than the new 0.90R   |
+//| target, so the partial-close stage becomes effectively unreachable   |
+//| (final TP fires first for nearly every trade) until PartialTriggerR  |
+//| is lowered and/or SignalOppositeTP_R is widened back toward ~1.75 to |
+//| preserve the old effective distance -- every TESTED/CONFIRMED value  |
+//| below this point (InitialSL_R, ProtectTriggerR, ProtectR,            |
+//| PartialTriggerR) was tuned under the OLD, now-fixed anchor and       |
+//| needs re-verification under this new one before being trusted        |
+//| again.                                                                |
 //| BODY vs WICK touch (diagnostic only, no trading effect): tags     |
 //| every trade's comment with _BODY/_WICK depending on whether the    |
 //| SIGNAL candle's close also broke BB20 or only its high/low wicked  |
@@ -182,9 +199,11 @@
 //| new value -- worth a re-sweep) found a clean, monotonic improvement   |
 //| all the way to the swept ceiling (2.0): NET $16,005.75->$17,896.92    |
 //| (+11.8%), RF 8.832->9.876, with DD roughly flat (~1.73%). STRUCTURAL  |
-//| CAUSE (why this trend exists and why it plateaus near 2.0): the R     |
-//| used here is the fixed signal-candle body, and the broker's hard      |
-//| take-profit (finaltp = signal_close + SignalOppositeTP_R*R) sits      |
+//| CAUSE (why this trend exists and why it plateaus near 2.0, UNDER THE  |
+//| OLD SIGNAL-CLOSE-ANCHORED TP -- see the FIXED note atop this header,  |
+//| this analysis predates that fix and needs redoing): the R used here   |
+//| is the fixed signal-candle body, and the broker's hard take-profit    |
+//| (finaltp = signal_close + SignalOppositeTP_R*R, THE OLD FORMULA) sat  |
 //| roughly ExtensionR-PullbackR+SignalOppositeTP_R = 0.95-0.10+0.90 =    |
 //| ~1.75R beyond entry at minimum (often more) -- so raising             |
 //| PartialTriggerR toward/past ~1.75R means most winners hit the full    |
@@ -278,7 +297,7 @@ input double InitialSL_R=2.25; // Initial stop loss (R) (TESTED, kept unchanged,
 input double ProtectTriggerR=0.50; // Break-even/protect trigger (R) (TESTED, kept unchanged, see header)
 input double PartialTriggerR=1.5; // Partial close trigger (R) (CONFIRMED, see header)
 input double ProtectR=0.25; // Protect SL level (R) (TESTED, kept unchanged, see header)
-input double SignalOppositeTP_R=0.90; // Final target beyond signal close (R)
+input double SignalOppositeTP_R=0.90; // Final target beyond ENTRY (R) (FIXED to anchor on entry like every other level -- was signal close, see header; PartialTriggerR needs re-tuning or this needs widening, see header)
 input int  MinR_Points=300; // Min signal-candle body (points) to trade, 0=no filter (CONFIRMED, see header)
 input int MaxExtensionHours=72; // Max hours waiting for extension
 input int MaxPullbackHours=72; // Max hours waiting for pullback
@@ -823,7 +842,7 @@ bool SendEntry(int i,MqlTick &tk){
     g_entryZoneDistATR=(CopyBuffer(hATR_Sig,0,1,1,atrDiag)==1) ? DistanceToNearestZone(entry,atrDiag[0]) : 999.0;
  }
  double sl=entry-dir*InitialSL_R*R;
- double finaltp=S[i].c+dir*SignalOppositeTP_R*R;
+ double finaltp=entry+dir*SignalOppositeTP_R*R;
  string tag="LIVE007_P05P10"+(S[i].bodyTouch?"_BODY":"_WICK")+(h1Against?"_H1AGAINST":"_H1OK");
  trade.SetExpertMagicNumber(MagicNumber);
  trade.SetTypeFillingBySymbol(_Symbol);
@@ -909,7 +928,6 @@ void ManageOwn(MqlTick &tk){
    tracked_entry_time=(datetime)PositionGetInteger(POSITION_TIME);
    tracked_entry=entry; tracked_dir=dir;
    double sl=PositionGetDouble(POSITION_SL);
-   double tp=PositionGetDouble(POSITION_TP);
    bool initial_sl=(sl>0 && (dir==1?sl<entry:sl>entry));
    bool locked_sl=(sl>0 && (dir==1?sl>entry:sl<entry));
    if(initial_sl)tracked_R=MathAbs(entry-sl)/InitialSL_R;
@@ -918,7 +936,6 @@ void ManageOwn(MqlTick &tk){
     Log("RECOVERY_FAILED","R cannot be reconstructed; manual management required.");
     return;
    }
-   if(tp>0)tracked_sigclose=tp-dir*SignalOppositeTP_R*tracked_R;
    double vstep=SymbolInfoDouble(_Symbol,SYMBOL_VOLUME_STEP);
    managed_partial=(vol<Lots-vstep/2.0);
    SaveTrack();
