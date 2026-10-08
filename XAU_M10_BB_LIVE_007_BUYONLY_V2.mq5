@@ -297,11 +297,18 @@
 //| avg_loss -$187.11, PF 3.45 position-level -- optimizer's 3.279 is deal- |
 //| level, splits each partial-close's own P&L into a separate win/loss     |
 //| bucket, not a discrepancy). This beats the pre-grid OFF baseline (NET   |
-//| $16,618.21) by +32%. Isolated UseTrailingStop-alone (like 005's own      |
-//| isolated test) not yet run here -- optional follow-up if a different    |
-//| WR/NET tradeoff is wanted later. Entry-commission handling              |
-//| (GetClosedPositionProfit) was already correct in this file before this  |
-//| port.                                                                   |
+//| $16,618.21) by +32%.                                                   |
+//|                                                                        |
+//| Isolated UseTrailingStop-alone (UseTrailingTP=false, like 005's own     |
+//| isolated test), TrailStopDistanceR grid-searched 0.01-0.10: REJECTED --  |
+//| unlike 005, every tested value underperforms the OFF baseline, nearly   |
+//| monotonically decreasing from 0.01 (best, NET $16,485.36, still below    |
+//| the $16,618.21 OFF baseline) down to 0.10 (NET $16,192.04). No interior  |
+//| peak, no value beats OFF. UseTrailingTP (CONFIRMED above) is the only    |
+//| live trailing mechanism worth using on this EA; UseTrailingStop stays    |
+//| true only because it's harmlessly superseded on every trade where       |
+//| UseTrailingTP arms. Entry-commission handling (GetClosedPositionProfit)  |
+//| was already correct in this file before this port.                     |
 //|                                                                        |
 //| UseStochFadeConfirm (ported from 001_STOCH_v2's FADE_BEAR_OS/          |
 //| STOCH_FADE_BULL_OB logic, UNTESTED here, default false): this EA       |
