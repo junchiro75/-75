@@ -97,21 +97,43 @@
 //| M2 -- see that file's header for the full ground truth, grid searches, |
 //| and the TrailTPTriggerR-vs-real-TP_R race-condition bug found and      |
 //| fixed there). Ported here with those same CONFIRMED M2 values as the   |
-//| initial defaults (both true) to test whether they transfer to the M3   |
-//| signal, same porting pattern as ProtectStop above and as already done  |
-//| on M1 (where the M2 values did NOT transfer exactly -- M1's own        |
-//| optimum turned out to be TrailStopTriggerR=0.05/TrailStopDistanceR=    |
-//| 0.04/TrailTPTriggerR=0.15/TrailTPDistanceR=0.03, see that file's        |
-//| header). UNTESTED on this M3 signal -- needs its own ground-truth      |
-//| backtest here before either can be called CONFIRMED. M3's own SL_R     |
-//| (4.0) and TP_R (0.45) both match M2 exactly (unlike M1's SL_R=5.0), so  |
-//| the M2 porting defaults may transfer more directly here than they did  |
-//| on M1 -- still needs its own sequential grid search to confirm rather  |
-//| than assuming. NOTE: the entry-commission logging bug found and fixed  |
-//| below (see SumPositionProfit) was already discovered and patched in    |
-//| this file BEFORE this port was tested, so every ground-truth number    |
-//| produced for this feature is accurate from the start (unlike M1's,     |
-//| which had to be re-confirmed once after the fix).                      |
+//| initial defaults (both true) -- OFF baseline here (post-commission-fix, |
+//| see SumPositionProfit): NET $14,014.14, WR 93.97%, PF 2.534, n=531, avg  |
+//| loss $285.40. Untuned M2 defaults ON: NET $19,049.87 (+35.9%), WR        |
+//| 97.79%, PF 5.849, n=544, avg loss $327.37 -- transferred strongly, same  |
+//| direction as M1 though M1's own gain was larger (+98.0%).               |
+//| Sequential 1-at-a-time Optimizer grid (Recovery Factor max), SL_R=4.0:   |
+//| TrailStopTriggerR swept 0.05-0.30 -> UNLIKE M1 (where lower was always   |
+//| better), M3 shows 0.05/0.10 are clearly WORSE (Recovery Factor 11.2/     |
+//| 11.8) while 0.15-0.30 is an almost flat plateau (13.63-13.70); 0.25       |
+//| narrowly best by the criterion. TrailStopDistanceR swept 0.01-0.10 at    |
+//| TrailStopTriggerR=0.25 -> genuine INTERIOR peak at 0.02 (Recovery        |
+//| Factor 13.74), falling off afterward to a flat floor from 0.04-0.10.     |
+//| TrailTPTriggerR swept 0.05-0.40 -> a double-peaked landscape: NET keeps   |
+//| climbing toward 0.40 (up to $20,547.64), but Recovery Factor peaks        |
+//| sharply at 0.15 (13.74, matching M2's own CONFIRMED value) and only       |
+//| partially recovers by 0.40 (13.51) -- 0.15 chosen by the criterion.       |
+//| TrailTPDistanceR swept 0.01-0.10 at the above values -> monotonically     |
+//| better the tighter it gets, peaking at the tested floor 0.01 (Recovery    |
+//| Factor 14.76) with no sign of turning -- unlike M1/M2 where this          |
+//| parameter had a genuine interior peak around 0.03-0.04, M3's optimal      |
+//| sits at the edge of what's practical (tighter than 0.01 risks the         |
+//| broker's own minimum-stop-distance cushion dominating the calculation).   |
+//| FINAL single-run confirmation (NET reconciles exactly with the            |
+//| Optimizer grid's own number for the same config) at                      |
+//| TrailStopTriggerR=0.25/TrailStopDistanceR=0.02/TrailTPTriggerR=0.15/      |
+//| TrailTPDistanceR=0.01: NET $20,584.67 (+46.9% vs OFF baseline), WR        |
+//| 95.77%, PF 5.874, n=544, avg win $47.62, avg loss $183.62 -- CONFIRMED,   |
+//| live. M3's own optimal TrailStopTriggerR/TrailStopDistanceR (0.25/0.02)   |
+//| differ substantially from both M2's (0.15/0.03) and M1's (0.05/0.04),     |
+//| while TrailTPTriggerR=0.15 matches M2 exactly -- a third distinct         |
+//| transfer pattern, reinforcing that each timeframe needs its own           |
+//| ground-truth grid rather than assuming any porting default holds.         |
+//| NOTE: the entry-commission logging bug found and fixed below (see         |
+//| SumPositionProfit) was already discovered and patched in this file        |
+//| BEFORE this port was tested, so every ground-truth number above is       |
+//| accurate from the start (unlike M1's, which had to be re-confirmed        |
+//| once after the fix).                                                     |
 //+------------------------------------------------------------------+
 #property strict
 #include <Trade/Trade.mqh>
@@ -144,12 +166,12 @@ input double ProtectTriggerR    = 0.25; // Favorable R to arm protect-lock stop 
 input double ProtectR           = 0.05; // SL level once armed, in R (CONFIRMED user-selected, see header)
 input bool   UseProtectStop     = true; // Move SL to ProtectR once armed (CONFIRMED user-selected, see header)
 
-input bool   UseTrailingStop    = true; // Continuously trail SL behind price once armed, instead of ProtectStop's one-time move (ported from M2_v2, CONFIRMED there -- UNTESTED here, see header)
-input double TrailStopTriggerR  = 0.15; // Favorable R to arm the trailing stop (ported from M2_v2, see header)
-input double TrailStopDistanceR = 0.03; // Distance maintained between price and the trailing SL, in R (ported from M2_v2, see header)
-input bool   UseTrailingTP      = true; // Once price reaches TrailTPTriggerR, widen the broker TP and trail SL behind price instead of closing there (ported from M2_v2, CONFIRMED there -- UNTESTED here, see header)
-input double TrailTPTriggerR    = 0.15; // Favorable R to arm the trailing TP -- must be strictly less than TP_R or the broker's own TP fires first (ported from M2_v2, see header; only used when UseTrailingTP=true)
-input double TrailTPDistanceR   = 0.04; // Distance maintained between price and the trailing SL once UseTrailingTP arms, in R (ported from M2_v2, see header; only used when UseTrailingTP=true)
+input bool   UseTrailingStop    = true; // Continuously trail SL behind price once armed, instead of ProtectStop's one-time move (CONFIRMED, M3-specific value, see header)
+input double TrailStopTriggerR  = 0.25; // Favorable R to arm the trailing stop (CONFIRMED, M3-specific value, see header)
+input double TrailStopDistanceR = 0.02; // Distance maintained between price and the trailing SL, in R (CONFIRMED, M3-specific value, see header)
+input bool   UseTrailingTP      = true; // Once price reaches TrailTPTriggerR, widen the broker TP and trail SL behind price instead of closing there (CONFIRMED, see header)
+input double TrailTPTriggerR    = 0.15; // Favorable R to arm the trailing TP -- must be strictly less than TP_R or the broker's own TP fires first (CONFIRMED, see header; only used when UseTrailingTP=true)
+input double TrailTPDistanceR   = 0.01; // Distance maintained between price and the trailing SL once UseTrailingTP arms, in R (CONFIRMED, M3-specific value, see header; only used when UseTrailingTP=true)
 
 int hBB20=INVALID_HANDLE,hBB4=INVALID_HANDLE,hStoch=INVALID_HANDLE;
 datetime last_m3_bar=0;
