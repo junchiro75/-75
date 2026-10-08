@@ -23,13 +23,22 @@
 //| entry, not the 0.90R the input name/value implied -- user-requested  |
 //| fix to anchor consistently on entry like every other level here.     |
 //| SignalOppositeTP_R was WIDENED from 0.90 to 1.75 in the same change   |
-//| specifically to reproduce the exact same final TP price as before    |
-//| (0.95-0.10+0.90=1.75, user-chosen over leaving it at 0.90 and         |
-//| re-tuning everything downstream) -- every TESTED/CONFIRMED value      |
-//| below this point (InitialSL_R, ProtectTriggerR, ProtectR,             |
-//| PartialTriggerR) still applies unchanged, since the actual TP price   |
-//| and therefore every trade's real outcome is identical to before the   |
-//| fix; only the formula computing it is now internally consistent.      |
+//| (0.95-0.10+0.90=1.75), user-chosen over leaving it at 0.90 and         |
+//| re-tuning everything downstream. CORRECTION to an earlier overclaim:   |
+//| this reproduces the exact same final TP price as before ONLY for a     |
+//| trade with ZERO extension overshoot (price touches the 0.95R           |
+//| extension trigger and pulls back 0.10R immediately). Since the         |
+//| pullback watch keeps updating S[i].extreme as price continues to run    |
+//| favorably past that trigger before ever retracing 0.10R from its own    |
+//| running peak, overshoot is routine, not an edge case -- for an          |
+//| overshot trade, entry sits further from signal_close than the           |
+//| (ExtensionR-PullbackR)*R minimum, so the new entry-anchored TP lands     |
+//| at OLD_finaltp - dir*overshoot (closer to entry, i.e. a SMALLER real     |
+//| target than before, growing with however far price ran past the         |
+//| trigger). Every TESTED/CONFIRMED value below this point (InitialSL_R,   |
+//| ProtectTriggerR, ProtectR, PartialTriggerR) is therefore NOT            |
+//| guaranteed to still hold and needs a fresh ground-truth confirmation     |
+//| run under this fix before being trusted again.                          |
 //| BODY vs WICK touch (diagnostic only, no trading effect): tags     |
 //| every trade's comment with _BODY/_WICK depending on whether the    |
 //| SIGNAL candle's close also broke BB20 or only its high/low wicked  |
