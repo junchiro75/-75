@@ -486,10 +486,11 @@
 //| single-run comparison in this file -- the single-run NET/PF came in        |
 //| noticeably higher than the Optimizer pass, likely MT5 tick-synthesis       |
 //| variance rather than a real difference): NET $28,390.19 (+40.8% vs OFF     |
-//| baseline), WR 96.20%, PF 2.259, n=3,103, avg loss $191.03. Best result of  |
-//| any feature tested in this file to date -- CONFIRMED, user-selected for    |
-//| live deployment.                                                           |
-//| UseTrailingTP (UNTESTED, default false): a different idea -- once          |
+//| baseline), WR 96.20%, PF 2.259, n=3,103, avg loss $191.03. Best RESULT of  |
+//| any single feature tested in this file up to that point -- superseded     |
+//| below once UseTrailingTP was added (CONFIRMED, now runs together with     |
+//| UseTrailingTP, see below for the combined ground truth).                  |
+//| UseTrailingTP (CONFIRMED, default true): a different idea -- once         |
 //| favorable R first reaches TrailTPTriggerR (set BELOW the real TP_R so      |
 //| this fires before the broker's own TP order would), the position's TP is   |
 //| REMOVED (set to 0) and a trailing SL (TrailTPDistanceR*R behind price)     |
@@ -504,17 +505,44 @@
 //| of trades across 3 separate test runs, even with UseTrailingStop AND      |
 //| UseComboExit both forced off to rule them out as the blocker). Fixed by    |
 //| adding TrailTPTriggerR as a separate, strictly-smaller trigger point.      |
-//| Independent of UseTrailingStop (different trigger point: TrailTPTriggerR   |
-//| vs TrailStopTriggerR, different distance: TrailTPDistanceR vs              |
-//| TrailStopDistanceR) -- the two can be combined or tested separately.       |
 //| Logged as TRAIL_TP_ARMED/TRAIL_TP_ARM_DRY/TRAIL_TP_ARM_FAIL (first         |
 //| TrailTPTriggerR touch) and TRAIL_TP_STOP_MOVED/TRAIL_TP_STOP_DRY/          |
-//| TRAIL_TP_STOP_MOVE_FAIL (subsequent trailing ticks). Needs its own         |
-//| ground-truth run -- this project's TP_R values here are small             |
-//| (0.45-0.5R), so this directly tests whether "letting winners run past     |
-//| the usual target" recovers more than it gives back, the opposite          |
-//| question from every earlier early-exit test in this file (which all       |
-//| found cutting winners short loses more than it saves).                    |
+//| TRAIL_TP_STOP_MOVE_FAIL (subsequent trailing ticks).                      |
+//| Ground truth, isolated (UseTrailingStop=false, against the same OFF/OFF    |
+//| baseline above): untuned default (TrailTPTriggerR=0.35/TrailTPDistanceR=   |
+//| 0.15) ON: NET $29,319.06/WR 92.57%/PF 1.799/n=3,002 -- already beat the    |
+//| OFF baseline despite being untuned. Sequential 1-at-a-time Optimizer grid  |
+//| (Recovery Factor max): TrailTPTriggerR swept 0.10-0.40 -> genuine INTERIOR  |
+//| peak at 0.15 (RecFactor 12.47, beating both 0.10's 12.31 and 0.20's        |
+//| 10.14). TrailTPDistanceR swept 0.05-0.30 at TrailTPTriggerR=0.15 ->         |
+//| monotonically better the tighter it gets, same shape as UseTrailingStop's  |
+//| own coarse grid; a finer 0.01-0.05 re-sweep found a genuine INTERIOR peak  |
+//| at 0.04 (not the tightest extreme) -- 0.01: RecFactor 14.18; 0.02: 17.10;   |
+//| 0.03: 18.07; 0.04: 18.18 (peak); 0.05: 17.30. Single-run confirmation of    |
+//| TrailTPTriggerR=0.15/TrailTPDistanceR=0.04, UseTrailingStop=false: NET      |
+//| $36,945.29/WR 95.68%/PF 2.624/n=3,099/avg loss $169.76 -- re-run with      |
+//| IDENTICAL settings reproduced this EXACTLY (bit-for-bit), establishing     |
+//| that single-run results in this file are deterministic and the            |
+//| previously-observed Optimizer-vs-single-run gap is specific to the        |
+//| Optimizer pass itself, not general backtest noise. This isolated result    |
+//| alone beats UseTrailingStop's own CONFIRMED result on every metric         |
+//| (NET/PF, WR within 0.5pp) and is the best single-feature result in this    |
+//| file to date.                                                              |
+//| Combined with UseTrailingStop (both CONFIRMED values live simultaneously,  |
+//| TrailStopTriggerR=0.15/TrailStopDistanceR=0.03 + TrailTPTriggerR=0.15/      |
+//| TrailTPDistanceR=0.04): NET $36,125.79/WR 95.22%/PF 2.582/n=3,094/avg loss  |
+//| $154.32. Confirmed via the identical-settings repeat above to be a real,   |
+//| reproducible ~2% NET/PF decline vs UseTrailingTP alone (not noise), but    |
+//| avg loss drops a further ~9% ($169.76->$154.32) -- in the code, both       |
+//| blocks run every tick and UseTrailingStop's tighter distance (0.03 vs      |
+//| TrailTPDistanceR's 0.04) wins the SL-improves comparison almost every      |
+//| time once both are armed, so the combination mostly adds UseTrailingTP's   |
+//| broker-TP removal (letting winners run past TP_R) on top of                |
+//| UseTrailingStop's own tighter trail, at a small cost to raw NET/PF.        |
+//| USER-SELECTED for live deployment: both ON together (the smaller avg loss  |
+//| was judged worth the ~2% NET/PF give-up) -- this is the combination        |
+//| actually running live, not UseTrailingTP alone despite its slightly        |
+//| better solo numbers.                                                       |
 //|                                                                            |
 //| timeMildMin/timeDangerMin (diagnostic only, no trading effect):         |
 //| minutes a position spends with adverse excursion below MildZoneR        |
@@ -824,9 +852,9 @@ input bool   ProtectStopAsiaOnly = false; // Restrict ProtectStop arming to Asia
 input bool   UseTrailingStop    = true; // Continuously trail SL behind price once armed, instead of ProtectStop's one-time move (CONFIRMED, see header)
 input double TrailStopTriggerR  = 0.15; // Favorable R to arm the trailing stop (CONFIRMED, see header)
 input double TrailStopDistanceR = 0.03; // Distance maintained between price and the trailing SL, in R (CONFIRMED, see header)
-input bool   UseTrailingTP      = false; // Once price reaches TrailTPTriggerR, widen the broker TP and trail SL behind price instead of closing there (UNTESTED, see header)
-input double TrailTPTriggerR    = 0.35; // Favorable R to arm the trailing TP -- must be strictly less than TP_R or the broker's own TP fires first (UNTESTED, see header; only used when UseTrailingTP=true)
-input double TrailTPDistanceR   = 0.15; // Distance maintained between price and the trailing SL once UseTrailingTP arms, in R (only used when UseTrailingTP=true)
+input bool   UseTrailingTP      = true; // Once price reaches TrailTPTriggerR, widen the broker TP and trail SL behind price instead of closing there (CONFIRMED, see header)
+input double TrailTPTriggerR    = 0.15; // Favorable R to arm the trailing TP -- must be strictly less than TP_R or the broker's own TP fires first (CONFIRMED, see header; only used when UseTrailingTP=true)
+input double TrailTPDistanceR   = 0.04; // Distance maintained between price and the trailing SL once UseTrailingTP arms, in R (CONFIRMED, see header; only used when UseTrailingTP=true)
 
 input double MildZoneR          = 2.0; // Adverse-R boundary for dwell-time diagnostic (no trading effect)
 input double DangerTimeStopMin  = 20.0; // Minutes in danger zone before force-close (REJECTED, see header)
