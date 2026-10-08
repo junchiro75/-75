@@ -89,6 +89,29 @@
 //| n=531, avg loss $433.13 (-30.9% vs $626.73). Unlike M2_v2 (PF flat),   |
 //| here WR and PF both improve -- user explicitly chose to deploy live   |
 //| at PT=0.25/PR=0.05 anyway, same as M2/M1.                              |
+//|                                                                        |
+//| UseTrailingStop/TrailStopTriggerR/TrailStopDistanceR and                |
+//| UseTrailingTP/TrailTPTriggerR/TrailTPDistanceR (ported from M2_v2,      |
+//| CONFIRMED there at TrailStopTriggerR=0.15/TrailStopDistanceR=0.03 and   |
+//| TrailTPTriggerR=0.15/TrailTPDistanceR=0.04, BOTH run together live on   |
+//| M2 -- see that file's header for the full ground truth, grid searches, |
+//| and the TrailTPTriggerR-vs-real-TP_R race-condition bug found and      |
+//| fixed there). Ported here with those same CONFIRMED M2 values as the   |
+//| initial defaults (both true) to test whether they transfer to the M3   |
+//| signal, same porting pattern as ProtectStop above and as already done  |
+//| on M1 (where the M2 values did NOT transfer exactly -- M1's own        |
+//| optimum turned out to be TrailStopTriggerR=0.05/TrailStopDistanceR=    |
+//| 0.04/TrailTPTriggerR=0.15/TrailTPDistanceR=0.03, see that file's        |
+//| header). UNTESTED on this M3 signal -- needs its own ground-truth      |
+//| backtest here before either can be called CONFIRMED. M3's own SL_R     |
+//| (4.0) and TP_R (0.45) both match M2 exactly (unlike M1's SL_R=5.0), so  |
+//| the M2 porting defaults may transfer more directly here than they did  |
+//| on M1 -- still needs its own sequential grid search to confirm rather  |
+//| than assuming. NOTE: the entry-commission logging bug found and fixed  |
+//| below (see SumPositionProfit) was already discovered and patched in    |
+//| this file BEFORE this port was tested, so every ground-truth number    |
+//| produced for this feature is accurate from the start (unlike M1's,     |
+//| which had to be re-confirmed once after the fix).                      |
 //+------------------------------------------------------------------+
 #property strict
 #include <Trade/Trade.mqh>
@@ -121,6 +144,13 @@ input double ProtectTriggerR    = 0.25; // Favorable R to arm protect-lock stop 
 input double ProtectR           = 0.05; // SL level once armed, in R (CONFIRMED user-selected, see header)
 input bool   UseProtectStop     = true; // Move SL to ProtectR once armed (CONFIRMED user-selected, see header)
 
+input bool   UseTrailingStop    = true; // Continuously trail SL behind price once armed, instead of ProtectStop's one-time move (ported from M2_v2, CONFIRMED there -- UNTESTED here, see header)
+input double TrailStopTriggerR  = 0.15; // Favorable R to arm the trailing stop (ported from M2_v2, see header)
+input double TrailStopDistanceR = 0.03; // Distance maintained between price and the trailing SL, in R (ported from M2_v2, see header)
+input bool   UseTrailingTP      = true; // Once price reaches TrailTPTriggerR, widen the broker TP and trail SL behind price instead of closing there (ported from M2_v2, CONFIRMED there -- UNTESTED here, see header)
+input double TrailTPTriggerR    = 0.15; // Favorable R to arm the trailing TP -- must be strictly less than TP_R or the broker's own TP fires first (ported from M2_v2, see header; only used when UseTrailingTP=true)
+input double TrailTPDistanceR   = 0.04; // Distance maintained between price and the trailing SL once UseTrailingTP arms, in R (ported from M2_v2, see header; only used when UseTrailingTP=true)
+
 int hBB20=INVALID_HANDLE,hBB4=INVALID_HANDLE,hStoch=INVALID_HANDLE;
 datetime last_m3_bar=0;
 int f_log=INVALID_HANDLE;
@@ -145,6 +175,10 @@ bool     g_comboExited[TRACK_SLOTS];
 bool     g_protectTriggered[TRACK_SLOTS]; // favR >= ProtectTriggerR reached at least once
 bool     g_protectMoved[TRACK_SLOTS];     // live SL was actually moved to the protect-lock level (UseProtectStop only)
 
+double   g_trailStopLevel[TRACK_SLOTS];   // UseTrailingStop: current trailing SL level (0 = not yet armed/moved)
+bool     g_trailTPArmed[TRACK_SLOTS];     // UseTrailingTP: TrailTPTriggerR reached, broker TP widened, now trailing via SL
+double   g_trailTPStopLevel[TRACK_SLOTS]; // UseTrailingTP: current trailing SL level once armed (0 = not yet moved)
+
 int FindTrackSlot(ulong ticket)
 {
    for(int i=0;i<TRACK_SLOTS;i++) if(g_trackTicket[i]==ticket) return i;
@@ -166,6 +200,7 @@ void StartMAETracking(ulong ticket,double entry,double R,int dir,string tag)
    g_trackLastSample[i]=TimeCurrent(); g_timeMildMin[i]=0; g_timeDangerMin[i]=0;
    g_comboExited[i]=false;
    g_protectTriggered[i]=false; g_protectMoved[i]=false;
+   g_trailStopLevel[i]=0; g_trailTPArmed[i]=false; g_trailTPStopLevel[i]=0;
 }
 
 void CheckMAEProgress()
@@ -222,6 +257,77 @@ void CheckMAEProgress()
             }
             else
                Log("PROTECT_MOVE_FAIL",IntegerToString((int)trade.ResultRetcode())+" | "+trade.ResultRetcodeDescription());
+         }
+      }
+
+      if(UseTrailingStop && favR>=TrailStopTriggerR)
+      {
+         double curPrice=(g_trackDir[i]==+1)?q.bid:q.ask;
+         double candidateSL=NormalizeDouble(curPrice-g_trackDir[i]*TrailStopDistanceR*g_trackR[i],_Digits);
+         double curSL=PositionGetDouble(POSITION_SL);
+         bool improves=(curSL==0) || (g_trackDir[i]==+1 ? candidateSL>curSL : candidateSL<curSL);
+         if(improves)
+         {
+            double cushion=MinStopDistance()+_Point;
+            double sl=candidateSL;
+            if(g_trackDir[i]==+1){ if(sl>q.bid-cushion) sl=q.bid-cushion; }
+            else                 { if(sl<q.ask+cushion) sl=q.ask+cushion; }
+            sl=NormalizeDouble(sl,_Digits);
+            double curTPforTrail=PositionGetDouble(POSITION_TP);
+            if(!EnableLiveOrders)
+               Log("TRAIL_STOP_DRY","would move SL->"+DoubleToString(sl,_Digits)+" (EnableLiveOrders=false) | "+g_trackTag[i]);
+            else if(trade.PositionModify(g_trackTicket[i],sl,curTPforTrail))
+            {
+               g_trailStopLevel[i]=sl;
+               Log("TRAIL_STOP_MOVED","SL->"+DoubleToString(sl,_Digits)+" favR="+DoubleToString(favR,3)+" | "+g_trackTag[i]);
+            }
+            else
+               Log("TRAIL_STOP_MOVE_FAIL",IntegerToString((int)trade.ResultRetcode())+" | "+trade.ResultRetcodeDescription());
+         }
+      }
+
+      if(UseTrailingTP)
+      {
+         if(!g_trailTPArmed[i] && favR>=TrailTPTriggerR)
+         {
+            double curSLforArm=PositionGetDouble(POSITION_SL);
+            if(!EnableLiveOrders)
+            {
+               g_trailTPArmed[i]=true;
+               Log("TRAIL_TP_ARM_DRY","would widen TP and start trailing (EnableLiveOrders=false) | "+g_trackTag[i]);
+            }
+            else if(trade.PositionModify(g_trackTicket[i],curSLforArm,0.0))
+            {
+               g_trailTPArmed[i]=true;
+               Log("TRAIL_TP_ARMED","TP removed, now trailing | favR="+DoubleToString(favR,3)+" | "+g_trackTag[i]);
+            }
+            else
+               Log("TRAIL_TP_ARM_FAIL",IntegerToString((int)trade.ResultRetcode())+" | "+trade.ResultRetcodeDescription());
+         }
+
+         if(g_trailTPArmed[i])
+         {
+            double curPriceTP=(g_trackDir[i]==+1)?q.bid:q.ask;
+            double candidateSL2=NormalizeDouble(curPriceTP-g_trackDir[i]*TrailTPDistanceR*g_trackR[i],_Digits);
+            double curSL2=PositionGetDouble(POSITION_SL);
+            bool improves2=(curSL2==0) || (g_trackDir[i]==+1 ? candidateSL2>curSL2 : candidateSL2<curSL2);
+            if(improves2)
+            {
+               double cushion2=MinStopDistance()+_Point;
+               double sl2=candidateSL2;
+               if(g_trackDir[i]==+1){ if(sl2>q.bid-cushion2) sl2=q.bid-cushion2; }
+               else                 { if(sl2<q.ask+cushion2) sl2=q.ask+cushion2; }
+               sl2=NormalizeDouble(sl2,_Digits);
+               if(!EnableLiveOrders)
+                  Log("TRAIL_TP_STOP_DRY","would move SL->"+DoubleToString(sl2,_Digits)+" (EnableLiveOrders=false) | "+g_trackTag[i]);
+               else if(trade.PositionModify(g_trackTicket[i],sl2,0.0))
+               {
+                  g_trailTPStopLevel[i]=sl2;
+                  Log("TRAIL_TP_STOP_MOVED","SL->"+DoubleToString(sl2,_Digits)+" favR="+DoubleToString(favR,3)+" | "+g_trackTag[i]);
+               }
+               else
+                  Log("TRAIL_TP_STOP_MOVE_FAIL",IntegerToString((int)trade.ResultRetcode())+" | "+trade.ResultRetcodeDescription());
+            }
          }
       }
    }
@@ -511,6 +617,10 @@ int OnInit()
        " | UseFridayNarrowWindow="+(UseFridayNarrowWindow?"true":"false")+
        " | ProtectTriggerR="+DoubleToString(ProtectTriggerR,2)+" ProtectR="+DoubleToString(ProtectR,2)+
        " UseProtectStop="+(UseProtectStop?"true":"false")+
+       " | UseTrailingStop="+(UseTrailingStop?"true":"false")+" TrailStopTriggerR="+DoubleToString(TrailStopTriggerR,2)+
+       " TrailStopDistanceR="+DoubleToString(TrailStopDistanceR,2)+
+       " | UseTrailingTP="+(UseTrailingTP?"true":"false")+" TrailTPTriggerR="+DoubleToString(TrailTPTriggerR,2)+
+       " TrailTPDistanceR="+DoubleToString(TrailTPDistanceR,2)+
        " | Lots="+DoubleToString(Lots,2)+" | Magic="+IntegerToString((int)MagicNumber)+
        " | orders="+(EnableLiveOrders?"ENABLED":"DRY"));
    return INIT_SUCCEEDED;
@@ -571,6 +681,9 @@ void OnTradeTransaction(const MqlTradeTransaction &trans,const MqlTradeRequest &
        " timeMildMin="+DoubleToString(g_timeMildMin[i],1)+" timeDangerMin="+DoubleToString(g_timeDangerMin[i],1)+
        " protectTriggered="+(g_protectTriggered[i]?"true":"false")+
        " protectMoved="+(g_protectMoved[i]?"true":"false")+
+       " trailStopLevel="+DoubleToString(g_trailStopLevel[i],_Digits)+
+       " trailTPArmed="+(g_trailTPArmed[i]?"true":"false")+
+       " trailTPStopLevel="+DoubleToString(g_trailTPStopLevel[i],_Digits)+
        " | "+g_trackTag[i]);
    g_trackTicket[i]=0; // free slot
    g_waitingBar3[i]=false;
