@@ -67,6 +67,7 @@ UseTrailingStop=true
 TrailStopTriggerR=0.15
 TrailStopDistanceR=0.03
 UseTrailingTP=false
+TrailTPTriggerR=0.35
 TrailTPDistanceR=0.15
 MildZoneR=2.0
 DangerTimeStopMin=20.0

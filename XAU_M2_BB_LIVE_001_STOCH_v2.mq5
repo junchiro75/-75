@@ -490,21 +490,31 @@
 //| any feature tested in this file to date -- CONFIRMED, user-selected for    |
 //| live deployment.                                                           |
 //| UseTrailingTP (UNTESTED, default false): a different idea -- once          |
-//| favorable R first reaches the ORIGINAL TP_R target, instead of letting     |
-//| the broker auto-close there, the position's TP is REMOVED (set to 0) and   |
-//| a trailing SL (TrailTPDistanceR*R behind price) takes over from that       |
-//| point on, so a trade that would have closed at exactly TP_R can instead    |
-//| ride further if the move continues, only giving back TrailTPDistanceR*R    |
-//| of whatever extra it reached. Independent of UseTrailingStop (different    |
-//| trigger point: TP_R vs TrailStopTriggerR, different distance: TrailTPDistanceR |
-//| vs TrailStopDistanceR) -- the two can be combined or tested separately.    |
-//| Logged as TRAIL_TP_ARMED/TRAIL_TP_ARM_DRY/TRAIL_TP_ARM_FAIL (first TP_R     |
-//| touch) and TRAIL_TP_STOP_MOVED/TRAIL_TP_STOP_DRY/TRAIL_TP_STOP_MOVE_FAIL    |
-//| (subsequent trailing ticks). Needs its own ground-truth run -- this        |
-//| project's TP_R values here are small (0.45-0.5R), so this directly tests   |
-//| whether "letting winners run past the usual target" recovers more than it  |
-//| gives back, the opposite question from every earlier early-exit test in    |
-//| this file (which all found cutting winners short loses more than it saves).|
+//| favorable R first reaches TrailTPTriggerR (set BELOW the real TP_R so      |
+//| this fires before the broker's own TP order would), the position's TP is   |
+//| REMOVED (set to 0) and a trailing SL (TrailTPDistanceR*R behind price)     |
+//| takes over from that point on, so a trade that would have closed at       |
+//| exactly TP_R can instead ride further if the move continues, only giving  |
+//| back TrailTPDistanceR*R of whatever extra it reached. BUG FOUND AND FIXED  |
+//| during ground-truth testing: the first implementation armed at            |
+//| favR>=TP_R (the real TP level itself) instead of a point strictly before   |
+//| it -- the broker's own pending TP order always fires at/before that exact  |
+//| same tick, closing the position first every single time, so the arm       |
+//| condition was unreachable (confirmed via log: trailTPArmed=false on 100%   |
+//| of trades across 3 separate test runs, even with UseTrailingStop AND      |
+//| UseComboExit both forced off to rule them out as the blocker). Fixed by    |
+//| adding TrailTPTriggerR as a separate, strictly-smaller trigger point.      |
+//| Independent of UseTrailingStop (different trigger point: TrailTPTriggerR   |
+//| vs TrailStopTriggerR, different distance: TrailTPDistanceR vs              |
+//| TrailStopDistanceR) -- the two can be combined or tested separately.       |
+//| Logged as TRAIL_TP_ARMED/TRAIL_TP_ARM_DRY/TRAIL_TP_ARM_FAIL (first         |
+//| TrailTPTriggerR touch) and TRAIL_TP_STOP_MOVED/TRAIL_TP_STOP_DRY/          |
+//| TRAIL_TP_STOP_MOVE_FAIL (subsequent trailing ticks). Needs its own         |
+//| ground-truth run -- this project's TP_R values here are small             |
+//| (0.45-0.5R), so this directly tests whether "letting winners run past     |
+//| the usual target" recovers more than it gives back, the opposite          |
+//| question from every earlier early-exit test in this file (which all       |
+//| found cutting winners short loses more than it saves).                    |
 //|                                                                            |
 //| timeMildMin/timeDangerMin (diagnostic only, no trading effect):         |
 //| minutes a position spends with adverse excursion below MildZoneR        |
@@ -814,7 +824,8 @@ input bool   ProtectStopAsiaOnly = false; // Restrict ProtectStop arming to Asia
 input bool   UseTrailingStop    = true; // Continuously trail SL behind price once armed, instead of ProtectStop's one-time move (CONFIRMED, see header)
 input double TrailStopTriggerR  = 0.15; // Favorable R to arm the trailing stop (CONFIRMED, see header)
 input double TrailStopDistanceR = 0.03; // Distance maintained between price and the trailing SL, in R (CONFIRMED, see header)
-input bool   UseTrailingTP      = false; // Once price reaches TP_R, widen the broker TP and trail SL behind price instead of closing there (UNTESTED, see header)
+input bool   UseTrailingTP      = false; // Once price reaches TrailTPTriggerR, widen the broker TP and trail SL behind price instead of closing there (UNTESTED, see header)
+input double TrailTPTriggerR    = 0.35; // Favorable R to arm the trailing TP -- must be strictly less than TP_R or the broker's own TP fires first (UNTESTED, see header; only used when UseTrailingTP=true)
 input double TrailTPDistanceR   = 0.15; // Distance maintained between price and the trailing SL once UseTrailingTP arms, in R (only used when UseTrailingTP=true)
 
 input double MildZoneR          = 2.0; // Adverse-R boundary for dwell-time diagnostic (no trading effect)
@@ -1462,7 +1473,7 @@ void CheckMAEProgress()
 
       if(UseTrailingTP)
       {
-         if(!g_trailTPArmed[i] && favR>=TP_R)
+         if(!g_trailTPArmed[i] && favR>=TrailTPTriggerR)
          {
             double curSLforArm=PositionGetDouble(POSITION_SL);
             if(!EnableLiveOrders)
@@ -2435,7 +2446,8 @@ int OnInit()
        " ProtectStopAsiaOnly="+(ProtectStopAsiaOnly?"true":"false")+
        " | UseTrailingStop="+(UseTrailingStop?"true":"false")+" TrailStopTriggerR="+DoubleToString(TrailStopTriggerR,2)+
        " TrailStopDistanceR="+DoubleToString(TrailStopDistanceR,2)+
-       " | UseTrailingTP="+(UseTrailingTP?"true":"false")+" TrailTPDistanceR="+DoubleToString(TrailTPDistanceR,2)+
+       " | UseTrailingTP="+(UseTrailingTP?"true":"false")+" TrailTPTriggerR="+DoubleToString(TrailTPTriggerR,2)+
+       " TrailTPDistanceR="+DoubleToString(TrailTPDistanceR,2)+
        " | MildZoneR="+DoubleToString(MildZoneR,2)+" DangerTimeStopMin="+DoubleToString(DangerTimeStopMin,1)+
        " UseDangerTimeStop="+(UseDangerTimeStop?"true":"false")+
        " | UseThreeBarExit="+(UseThreeBarExit?"true":"false")+
