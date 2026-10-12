@@ -414,6 +414,23 @@ void Log(string event,string detail="")
    if(f_log!=INVALID_HANDLE){ FileWrite(f_log,TS(TimeCurrent()),event,detail); FileFlush(f_log); }
 }
 
+// BUG FOUND LIVE 2026.10.12: the post-partial trailing block below had no
+// floor against the broker's own minimum stop distance (unlike the M1/M2/M3
+// trailing code, which already clamped against this). With TrailTPDistanceR=
+// 0.02 the candidate SL regularly landed closer to current price than this
+// broker allows, so PositionModify was rejected every tick with "Invalid
+// stops" and the runner's SL sat frozen at the +0.25R protect lock the whole
+// time instead of trailing -- confirmed live (ticket #1226305257: repeated
+// failed modify ... [Invalid stops], SL stuck at 4183.69 while price ran to
+// ~4188). Added the same MinStopDistance() cushion M1/M2/M3 already use.
+double MinStopDistance()
+{
+   long stops=0,freeze=0;
+   SymbolInfoInteger(_Symbol,SYMBOL_TRADE_STOPS_LEVEL,stops);
+   SymbolInfoInteger(_Symbol,SYMBOL_TRADE_FREEZE_LEVEL,freeze);
+   return (double)MathMax(stops,freeze)*_Point;
+}
+
 struct Setup{
  datetime sig,ct,exp;
  int sd;
@@ -1114,6 +1131,17 @@ void ManageOwn(MqlTick &tk){
  double curSL=PositionGetDouble(POSITION_SL);
  bool improves=(curSL==0) || (dir==1 ? candidateSL>curSL : candidateSL<curSL);
  if(!improves) return;
+
+ // Floor against the broker's own minimum stop distance from current price
+ // (same cushion M1/M2/M3 already use) -- without this, a tight
+ // TrailTPDistanceR/TrailStopDistanceR can compute a candidate SL closer to
+ // price than the broker allows, and PositionModify silently keeps failing
+ // with "Invalid stops" every tick while the SL sits frozen (confirmed live).
+ double cushion=MinStopDistance()+_Point;
+ if(dir==1){ if(candidateSL>px-cushion) candidateSL=px-cushion; }
+ else      { if(candidateSL<px+cushion) candidateSL=px+cushion; }
+ candidateSL=NormalizeDouble(candidateSL,_Digits);
+ if(dir==1 ? candidateSL<=curSL && curSL>0 : candidateSL>=curSL && curSL>0) return; // cushion pushed it back past curSL: nothing to send
 
  double desiredTP=(tpRemoved ? 0.0 : PositionGetDouble(POSITION_TP));
  if(!EnableLiveOrders)
