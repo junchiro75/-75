@@ -544,14 +544,30 @@ void OpenTrade(int dir,double R,string tag)
       // reproduces in the Strategy Tester (synchronous execution there), so
       // CONFIRMED grid-search results were unaffected while live trading could
       // silently lose tracking (StartMAETracking never called -> no
-      // protect/trailing, no MAE_OUTCOME). Fixed by reading the position ID
-      // directly off the deal the order just created (trade.ResultDeal(),
-      // synchronously available), falling back to the old rescan only if that fails.
+      // protect/trailing, no MAE_OUTCOME).
+      // FIRST FIX (trade.ResultDeal()->DEAL_POSITION_ID) was STILL live-only
+      // broken: confirmed via the terminal's own Experts log (not just the CSV)
+      // that no PROTECT_TRIGGER/TRAIL_STOP_MOVED ever printed for a real trade
+      // after that fix shipped -- ResultDeal() isn't reliably populated
+      // synchronously on this broker for a market order, so execution fell
+      // through to the same race-prone rescan every time. Per the MQL5
+      // documentation, a newly opened position's ticket equals the ticket of
+      // the ORDER that opened it, and trade.ResultOrder() is synchronously
+      // populated the instant OrderSend returns (unlike ResultDeal) -- use that
+      // directly as the position ticket, no History lookup needed at all.
       ulong posId=0;
-      ulong dealTicket=trade.ResultDeal();
-      if(dealTicket!=0 && HistoryDealSelect(dealTicket))
-         posId=(ulong)HistoryDealGetInteger(dealTicket,DEAL_POSITION_ID);
-      if(posId!=0 && PositionSelectByTicket(posId))
+      ulong orderTicket=trade.ResultOrder();
+      if(orderTicket!=0 && PositionSelectByTicket(orderTicket)) posId=orderTicket;
+      if(posId==0)
+      {
+         ulong dealTicket=trade.ResultDeal();
+         if(dealTicket!=0 && HistoryDealSelect(dealTicket))
+         {
+            ulong pid=(ulong)HistoryDealGetInteger(dealTicket,DEAL_POSITION_ID);
+            if(pid!=0 && PositionSelectByTicket(pid)) posId=pid;
+         }
+      }
+      if(posId!=0)
          StartMAETracking(posId,ref,R,dir,tag);
       else
       {
