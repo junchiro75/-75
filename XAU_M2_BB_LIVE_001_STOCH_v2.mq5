@@ -750,6 +750,12 @@
 //| losses (worse than skipping). RSI(14) on this M2 signal appears to mostly   |
 //| echo Stochastic(8) rather than add independent information. Keep           |
 //| UseRSIFilter=false.                                                          |
+//| TrailStopDistanceR REVISED 0.03->0.04 (user request, cross-EA           |
+//| consistency): grid peak was 0.03 (RF 13.58) vs 0.04 (RF 13.34) --       |
+//| essentially tied, NET $23,735.69->$23,635.99 (-0.42%). Moved to 0.04    |
+//| so this file's own TrailStopDistanceR/TrailTPDistanceR match (0.04/     |
+//| 0.04) and M1's own revised TrailTPDistanceR=0.04 lines up too -- cost   |
+//| is within noise.                                                       |
 //+------------------------------------------------------------------+
 #property strict
 #include <Trade/Trade.mqh>
@@ -851,7 +857,7 @@ input bool   ProtectStopAsiaOnly = false; // Restrict ProtectStop arming to Asia
 
 input bool   UseTrailingStop    = true; // Continuously trail SL behind price once armed, instead of ProtectStop's one-time move (CONFIRMED, see header)
 input double TrailStopTriggerR  = 0.15; // Favorable R to arm the trailing stop (CONFIRMED, see header)
-input double TrailStopDistanceR = 0.03; // Distance maintained between price and the trailing SL, in R (CONFIRMED, see header)
+input double TrailStopDistanceR = 0.04; // Distance maintained between price and the trailing SL, in R (CONFIRMED, see header)
 input bool   UseTrailingTP      = true; // Once price reaches TrailTPTriggerR, widen the broker TP and trail SL behind price instead of closing there (CONFIRMED, see header)
 input double TrailTPTriggerR    = 0.15; // Favorable R to arm the trailing TP -- must be strictly less than TP_R or the broker's own TP fires first (CONFIRMED, see header; only used when UseTrailingTP=true)
 input double TrailTPDistanceR   = 0.04; // Distance maintained between price and the trailing SL once UseTrailingTP arms, in R (CONFIRMED, see header; only used when UseTrailingTP=true)

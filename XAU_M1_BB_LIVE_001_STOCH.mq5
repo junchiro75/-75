@@ -189,6 +189,11 @@
 //| cuts loss rate by roughly a third (11.53%->7.56%) for only a 2.2% NET    |
 //| giveback, with RF essentially unchanged (38.06->38.32); 0.08+ gives up   |
 //| materially more NET/PF/RF for diminishing loss-rate improvement.         |
+//| TrailTPDistanceR REVISED 0.03->0.04 (user request, cross-EA consistency):|
+//| grid peak was 0.03 (RF 38.07) vs 0.04 (RF 38.04) -- essentially tied,    |
+//| NET $41,304.47->$40,954.28 (-0.85%). Moved to 0.04 so M1's own          |
+//| TrailStopDistanceR/TrailTPDistanceR match (0.04/0.04) and M1 matches    |
+//| M2_v2's own revised TrailStopDistanceR=0.04 -- cost is within noise.    |
 //+------------------------------------------------------------------+
 #property strict
 #include <Trade/Trade.mqh>
@@ -229,7 +234,7 @@ input double TrailStopTriggerR  = 0.07; // Favorable R to arm the trailing stop 
 input double TrailStopDistanceR = 0.04; // Distance maintained between price and the trailing SL, in R (CONFIRMED, M1-specific value, see header)
 input bool   UseTrailingTP      = true; // Once price reaches TrailTPTriggerR, widen the broker TP and trail SL behind price instead of closing there (CONFIRMED, see header)
 input double TrailTPTriggerR    = 0.15; // Favorable R to arm the trailing TP -- must be strictly less than TP_R or the broker's own TP fires first (CONFIRMED, see header; only used when UseTrailingTP=true)
-input double TrailTPDistanceR   = 0.03; // Distance maintained between price and the trailing SL once UseTrailingTP arms, in R (CONFIRMED, M1-specific value, see header; only used when UseTrailingTP=true)
+input double TrailTPDistanceR   = 0.04; // Distance maintained between price and the trailing SL once UseTrailingTP arms, in R (CONFIRMED, M1-specific value, see header; only used when UseTrailingTP=true)
 
 int hBB20=INVALID_HANDLE,hBB4=INVALID_HANDLE,hStoch=INVALID_HANDLE;
 datetime last_m1_bar=0;

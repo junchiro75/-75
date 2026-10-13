@@ -30,4 +30,4 @@ TrailStopTriggerR=0.07
 TrailStopDistanceR=0.04
 UseTrailingTP=true
 TrailTPTriggerR=0.15
-TrailTPDistanceR=0.03
+TrailTPDistanceR=0.04

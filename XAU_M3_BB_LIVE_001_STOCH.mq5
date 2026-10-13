@@ -134,6 +134,10 @@
 //| BEFORE this port was tested, so every ground-truth number above is       |
 //| accurate from the start (unlike M1's, which had to be re-confirmed        |
 //| once after the fix).                                                     |
+//| TrailStopDistanceR REVISED 0.02->0.03 (user request, cross-EA           |
+//| consistency): grid peak was 0.02 (RF 13.74) vs 0.03 (RF 13.70) --       |
+//| essentially tied, NET $19,159.77->$19,120.87 (-0.2%). Moved to 0.03     |
+//| to sit closer to M1/M2_v2's own revised 0.04 -- cost is within noise.   |
 //+------------------------------------------------------------------+
 #property strict
 #include <Trade/Trade.mqh>
@@ -168,7 +172,7 @@ input bool   UseProtectStop     = true; // Move SL to ProtectR once armed (CONFI
 
 input bool   UseTrailingStop    = true; // Continuously trail SL behind price once armed, instead of ProtectStop's one-time move (CONFIRMED, M3-specific value, see header)
 input double TrailStopTriggerR  = 0.25; // Favorable R to arm the trailing stop (CONFIRMED, M3-specific value, see header)
-input double TrailStopDistanceR = 0.02; // Distance maintained between price and the trailing SL, in R (CONFIRMED, M3-specific value, see header)
+input double TrailStopDistanceR = 0.03; // Distance maintained between price and the trailing SL, in R (CONFIRMED, M3-specific value, see header)
 input bool   UseTrailingTP      = true; // Once price reaches TrailTPTriggerR, widen the broker TP and trail SL behind price instead of closing there (CONFIRMED, see header)
 input double TrailTPTriggerR    = 0.15; // Favorable R to arm the trailing TP -- must be strictly less than TP_R or the broker's own TP fires first (CONFIRMED, see header; only used when UseTrailingTP=true)
 input double TrailTPDistanceR   = 0.01; // Distance maintained between price and the trailing SL once UseTrailingTP arms, in R (CONFIRMED, M3-specific value, see header; only used when UseTrailingTP=true)
