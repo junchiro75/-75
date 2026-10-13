@@ -164,6 +164,31 @@
 //| landed very close to M2's own confirmed 0.15/0.04 -- a mixed transfer,    |
 //| underscoring why each timeframe needed its own ground-truth grid rather  |
 //| than just reusing M2's porting defaults.                                 |
+//| TrailStopTriggerR REVISED 0.05->0.07 (user request, loss-rate concern):  |
+//| live observation that 0.05 cuts many trades near breakeven prompted a    |
+//| single-run re-check of 0.05/0.07/0.08/0.10 (all else held at the above   |
+//| CONFIRMED values), reading full Win%/Loss%/avg win/avg loss from each    |
+//| run's own xlsx report (not just the Optimizer summary table):           |
+//| 0.05: WR 88.47%, loss rate 11.53% (268 trades), avg win $25.75, avg loss |
+//| -$43.40, NET $41,306.45, PF 4.551, RF 38.06, Equity DD 0.77%.            |
+//| 0.07: WR 92.44%, loss rate 7.56% (173 trades), avg win $25.79, avg loss  |
+//| -$81.97, NET $40,388.69 (-2.2% vs 0.05), PF 3.847, RF 38.32 (slightly    |
+//| ABOVE 0.05's), Equity DD 0.92%.                                          |
+//| 0.08: WR 93.60%, loss rate 6.40% (146 trades), avg win $26.05, avg loss  |
+//| -$102.84, NET $40,634.49, PF 3.706, RF 31.49 (cliff drop), DD 1.13%.     |
+//| 0.10: WR 94.34%, loss rate 5.66% (128 trades), avg win $26.80, avg loss  |
+//| -$136.75, NET $39,714.43, PF 3.269, RF 30.77, DD 1.13%.                  |
+//| Pattern: raising the trigger steadily trades loss-rate for loss-size --  |
+//| avg win stays flat (~$26) while avg loss roughly triples, 0.05->0.10;    |
+//| NET/PF decline monotonically past 0.07. The RF cliff between 0.07 and    |
+//| 0.08 traces to a single historical trade whose favR peaked between       |
+//| 0.07R and 0.08R before reversing to the full SL_R stop -- at 0.07        |
+//| trailing had already armed and capped that loss; at 0.08+ it never      |
+//| armed (both 0.08 and 0.10 share the identical $1,140.10/1.00% Balance    |
+//| DD Maximal from that same trade). 0.07 CONFIRMED as the new live value:  |
+//| cuts loss rate by roughly a third (11.53%->7.56%) for only a 2.2% NET    |
+//| giveback, with RF essentially unchanged (38.06->38.32); 0.08+ gives up   |
+//| materially more NET/PF/RF for diminishing loss-rate improvement.         |
 //+------------------------------------------------------------------+
 #property strict
 #include <Trade/Trade.mqh>
@@ -200,7 +225,7 @@ input double ProtectR           = 0.05; // SL level once armed, in R (CONFIRMED 
 input bool   UseProtectStop     = true; // Move SL to ProtectR once armed (CONFIRMED user-selected, see header)
 
 input bool   UseTrailingStop    = true; // Continuously trail SL behind price once armed, instead of ProtectStop's one-time move (CONFIRMED, M1-specific value, see header)
-input double TrailStopTriggerR  = 0.05; // Favorable R to arm the trailing stop (CONFIRMED, M1-specific value, see header)
+input double TrailStopTriggerR  = 0.07; // Favorable R to arm the trailing stop (CONFIRMED, M1-specific value, see header)
 input double TrailStopDistanceR = 0.04; // Distance maintained between price and the trailing SL, in R (CONFIRMED, M1-specific value, see header)
 input bool   UseTrailingTP      = true; // Once price reaches TrailTPTriggerR, widen the broker TP and trail SL behind price instead of closing there (CONFIRMED, see header)
 input double TrailTPTriggerR    = 0.15; // Favorable R to arm the trailing TP -- must be strictly less than TP_R or the broker's own TP fires first (CONFIRMED, see header; only used when UseTrailingTP=true)
