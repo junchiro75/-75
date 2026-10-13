@@ -258,8 +258,41 @@ void StartMAETracking(ulong ticket,double entry,double R,int dir,string tag)
    g_trailStopLevel[i]=0; g_trailTPArmed[i]=false; g_trailTPStopLevel[i]=0;
 }
 
+// Safety net for the entry-time registration race (confirmed live 2026.10.13:
+// neither trade.ResultDeal() nor trade.ResultOrder(), tried same-tick as
+// trade.Buy()/Sell(), reliably see the new position on this broker --
+// PositionSelectByTicket() itself can still miss it in that same instant,
+// regardless of which ticket you already know). Run every tick, independent
+// of the entry-time attempt: adopt any own-Magic position not yet in
+// g_trackTicket[], reconstructing R from its still-untouched initial SL
+// (same fallback method 007's RECOVERY_FALLBACK already uses) so
+// protect/trailing engage even if the entry-time capture missed entirely.
+void AdoptOrphanPositions()
+{
+   for(int i=PositionsTotal()-1;i>=0;i--)
+   {
+      ulong tk=PositionGetTicket(i);
+      if(tk==0 || !PositionSelectByTicket(tk)) continue;
+      if(PositionGetString(POSITION_SYMBOL)!=_Symbol) continue;
+      if((ulong)PositionGetInteger(POSITION_MAGIC)!=MagicNumber) continue;
+      if(FindTrackSlot(tk)>=0) continue; // already tracked
+
+      double entry=PositionGetDouble(POSITION_PRICE_OPEN);
+      double sl=PositionGetDouble(POSITION_SL);
+      int dir=(PositionGetInteger(POSITION_TYPE)==POSITION_TYPE_BUY)?1:-1;
+      if(sl<=0 || SL_R<=0) continue; // SL already moved off the initial level, or none set: can't safely reconstruct R
+      double R=MathAbs(entry-sl)/SL_R;
+      if(R<=0) continue;
+
+      StartMAETracking(tk,entry,R,dir,"ADOPTED_ORPHAN");
+      Log("ORPHAN_ADOPTED","ticket="+IntegerToString((int)tk)+" entry="+DoubleToString(entry,_Digits)+
+          " R="+DoubleToString(R,_Digits)+" dir="+(dir==1?"BUY":"SELL"));
+   }
+}
+
 void CheckMAEProgress()
 {
+   AdoptOrphanPositions();
    bool anyActive=false;
    for(int i=0;i<TRACK_SLOTS;i++) if(g_trackTicket[i]!=0){ anyActive=true; break; }
    if(!anyActive) return;
