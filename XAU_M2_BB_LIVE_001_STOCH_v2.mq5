@@ -1951,14 +1951,37 @@ void OpenTrade(int dir,double R,string tag)
    {
       Log("ENTRY_OK",(dir==1?"BUY":"SELL")+" R="+DoubleToString(R,_Digits)+
           " SL="+DoubleToString(sl,_Digits)+" TP="+DoubleToString(tp,_Digits)+" | "+tag);
-      for(int i=PositionsTotal()-1;i>=0;i--)
+      // BUG FOUND LIVE 2026.10.13: rescanning PositionsTotal() right after
+      // trade.Buy()/Sell() returns can race the terminal's local position
+      // cache on a real live account -- this NEVER reproduces in the
+      // Strategy Tester (execution there is synchronous), which is why
+      // every CONFIRMED grid-search result for this EA's protect/trailing
+      // looked correct while, live, the rescan loop below found nothing
+      // every single time: 61/61 live ENTRY_OK events over 3 weeks had
+      // ZERO matching MAE_OUTCOME lines, meaning StartMAETracking() never
+      // actually registered a single live position, so protect/trailing
+      // never engaged on any live trade despite the confirmed inputs being
+      // correct. Fixed by reading the position ID directly off the deal the
+      // order just created (synchronously available via trade.ResultDeal()),
+      // instead of re-scanning the position cache; the old rescan stays as
+      // a fallback only.
+      ulong posId=0;
+      ulong dealTicket=trade.ResultDeal();
+      if(dealTicket!=0 && HistoryDealSelect(dealTicket))
+         posId=(ulong)HistoryDealGetInteger(dealTicket,DEAL_POSITION_ID);
+      if(posId!=0 && PositionSelectByTicket(posId))
+         StartMAETracking(posId,ref,R,dir,tag);
+      else
       {
-         ulong tk=PositionGetTicket(i);
-         if(tk==0 || !PositionSelectByTicket(tk)) continue;
-         if(PositionGetString(POSITION_SYMBOL)!=_Symbol) continue;
-         if((ulong)PositionGetInteger(POSITION_MAGIC)!=MagicNumber) continue;
-         StartMAETracking(tk,ref,R,dir,tag);
-         break;
+         for(int i=PositionsTotal()-1;i>=0;i--)
+         {
+            ulong tk=PositionGetTicket(i);
+            if(tk==0 || !PositionSelectByTicket(tk)) continue;
+            if(PositionGetString(POSITION_SYMBOL)!=_Symbol) continue;
+            if((ulong)PositionGetInteger(POSITION_MAGIC)!=MagicNumber) continue;
+            StartMAETracking(tk,ref,R,dir,tag);
+            break;
+         }
       }
    }
 }
