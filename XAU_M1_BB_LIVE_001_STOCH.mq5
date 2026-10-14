@@ -194,6 +194,18 @@
 //| NET $41,304.47->$40,954.28 (-0.85%). Moved to 0.04 so M1's own          |
 //| TrailStopDistanceR/TrailTPDistanceR match (0.04/0.04) and M1 matches    |
 //| M2_v2's own revised TrailStopDistanceR=0.04 -- cost is within noise.    |
+//| TrailStopDistanceR RE-SWEPT under the revised TrailStopTriggerR=0.07    |
+//| (the 0.04 peak above was found back when TrailStopTriggerR=0.05): new   |
+//| Optimizer sweep 0.04-0.15 at TrailStopTriggerR=0.07 found the peak       |
+//| shifted to 0.05 (RF 38.47, NET $40,596.72) vs 0.04 (RF 38.31, NET        |
+//| $40,381.32) -- 0.04 still close second, 0.06+ declines steadily         |
+//| (RF down to 35.80-37.38 by 0.10-0.15). REVISED 0.04->0.05 accordingly.  |
+//| Also checked unifying with M2_v2's own TrailStopTriggerR/               |
+//| TrailStopDistanceR=0.15/0.04: REJECTED, M1's own full trigger sweep at   |
+//| TrailStopDistanceR=0.04 shows TrailStopTriggerR=0.15 scores RF 22.05/    |
+//| NET $37,048.29 -- far worse than 0.07's RF ~38/NET ~$40,400 (M1's        |
+//| optimal trigger genuinely sits much lower than M2_v2's, unlike the      |
+//| distance parameters which transfer closely).                            |
 //+------------------------------------------------------------------+
 #property strict
 #include <Trade/Trade.mqh>
@@ -231,7 +243,7 @@ input bool   UseProtectStop     = true; // Move SL to ProtectR once armed (CONFI
 
 input bool   UseTrailingStop    = true; // Continuously trail SL behind price once armed, instead of ProtectStop's one-time move (CONFIRMED, M1-specific value, see header)
 input double TrailStopTriggerR  = 0.07; // Favorable R to arm the trailing stop (CONFIRMED, M1-specific value, see header)
-input double TrailStopDistanceR = 0.04; // Distance maintained between price and the trailing SL, in R (CONFIRMED, M1-specific value, see header)
+input double TrailStopDistanceR = 0.05; // Distance maintained between price and the trailing SL, in R (CONFIRMED, M1-specific value, see header)
 input bool   UseTrailingTP      = true; // Once price reaches TrailTPTriggerR, widen the broker TP and trail SL behind price instead of closing there (CONFIRMED, see header)
 input double TrailTPTriggerR    = 0.15; // Favorable R to arm the trailing TP -- must be strictly less than TP_R or the broker's own TP fires first (CONFIRMED, see header; only used when UseTrailingTP=true)
 input double TrailTPDistanceR   = 0.04; // Distance maintained between price and the trailing SL once UseTrailingTP arms, in R (CONFIRMED, M1-specific value, see header; only used when UseTrailingTP=true)
