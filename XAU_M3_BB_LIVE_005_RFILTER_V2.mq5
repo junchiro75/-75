@@ -14,18 +14,33 @@
 //| SL/TP) and a stale-POSITION_SL-read guard in the trailing block.    |
 //| New inputs default to M2's CONFIRMED values but are UNTESTED on     |
 //| this timeframe -- see each input's own comment.                    |
-//| MinR_Points (CONFIRMED to KEEP the inherited 200 on M3): an MT5    |
-//| Optimizer sweep (2025.01-2026.09, 400-1200 step 50, Recovery       |
-//| Factor objective) found every value in that range UNDERPERFORMS    |
-//| the inherited MinR_Points=200 -- best swept was 450 (RF 2.902, PF  |
-//| 1.369, NET $11,770.49) vs 200's RF 3.586, PF 1.262, NET $11,812.16 |
-//| (measured separately, outside the swept range). Opposite of the    |
-//| 001_STOCH family's own M3 tuning (which raised MinR to 900) --      |
-//| likely because 005's Extension(0.95R)+Pullback(0.10R) staging      |
-//| already filters weak signals, so an additional R floor here just    |
-//| prunes good trades too. Keep MinR_Points=200; a downward sweep      |
-//| (e.g. 50-200) is untried but not urgent given 200 already beats      |
-//| everything tested above it.                                         |
+//| MinR_Points (CONFIRMED on M3 =250, supersedes the pre-TrailingTP-  |
+//| port note below -- that 400-1200 sweep predates the Protect/       |
+//| TrailingStop/TrailingTP port above and is not comparable): with    |
+//| the ported trailing feature active (UseTrailingTP=true,            |
+//| TrailTPDistanceR=0.09), an MT5 Optimizer sweep (2025.01-2026.09.18, |
+//| 150-600 step 25, Recovery Factor objective) found a clear single    |
+//| peak at 250 (RF 6.30, PF 1.469, NET $19,223.66, DD 3.04%, n=1,805)   |
+//| vs the inherited MinR_Points=200 (RF 4.78, PF 1.404, NET            |
+//| $18,260.63, DD 3.81%, n=2,132) -- +31.8% RF, +5.3% NET, DD reduced   |
+//| meaningfully. 275 close second (RF 6.04) but 250 wins on every      |
+//| metric. Values above 300 decline steadily (RF back down to          |
+//| 3.5-4.4). Still well below M1 (RF 12.64)/M2 (RF 13.37) even at this  |
+//| timeframe's own optimum -- M3 (3-minute bars) may just be a weaker   |
+//| fit for this strategy than M1/M2, not purely a MinR_Points issue.    |
+//| LIVE ROLLOUT HELD on M3 pending further validation (user decision,   |
+//| 2026.10.15) -- this file is NOT yet reattached live with the new     |
+//| Protect/Trailing feature or this MinR_Points value.                  |
+//| ---- superseded pre-TrailingTP-port note (kept for history) ----    |
+//| An earlier MT5 Optimizer sweep (2025.01-2026.09, 400-1200 step 50,  |
+//| Recovery Factor objective, BEFORE the Protect/TrailingStop/         |
+//| TrailingTP port above) found every value in that range UNDERPERFORMS |
+//| MinR_Points=200 -- best swept was 450 (RF 2.902, PF 1.369, NET      |
+//| $11,770.49) vs 200's RF 3.586, PF 1.262, NET $11,812.16 (measured    |
+//| separately, outside the swept range; note the whole-portfolio NET   |
+//| here is far lower than the current $18-19K range because this ran   |
+//| without TrailingTP). Opposite of the 001_STOCH family's own M3      |
+//| tuning (which raised MinR to 900).                                   |
 //| ---- inherited from XAU_M2_BB_LIVE_005_RFILTER_V2.mq5 ----        |
 //| V2: added LatestSignalOnly -- when true, a new BB-breakout signal |
 //| candle discards ANY still-pending earlier setup(s) instead of     |
@@ -74,7 +89,7 @@ input double InitialSL_R          = 3.5; // Initial stop loss (R) (CONFIRMED on 
 input double TP1_R                = 0.50; // Partial/lock trigger (R)
 input double Lock_R               = 0.30; // Lock SL level (R) (CONFIRMED on M2, see header)
 input double TP2_R                = 0.90; // Final target (R)
-input double MinR_Points          = 200; // Min signal-candle body (points) to trade, 0=no filter (CONFIRMED on M2, see header)
+input double MinR_Points          = 250; // Min signal-candle body (points) to trade, 0=no filter (CONFIRMED on M3, see header; LIVE ROLLOUT HELD, not yet reattached live)
 input bool   LatestSignalOnly     = true; // New signal cancels older pending setups (CONFIRMED on M2, see header)
 input int    MaxExtensionHours    = 72; // Max hours waiting for extension
 input int    MaxPullbackHours     = 72; // Max hours waiting for pullback
