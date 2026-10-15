@@ -182,6 +182,31 @@
 //| signal -> SELL fade) -- same idea as 001's "does the oscillator       |
 //| agree with the fade, or is this just a breakout that happens to       |
 //| touch the bands." Needs its own ground-truth run before any verdict.  |
+//| BUG FOUND AND FIXED LIVE 2026.10.15 (ticket #1227805316): two        |
+//| compounding issues in post-TP1 trailing, found live-debugging a      |
+//| trade whose TP vanished (correct, UseTrailingTP armed at TP1) but    |
+//| then sat with SL frozen at the ORIGINAL far stop for ~2 minutes      |
+//| before trailing visibly caught up, and whose SL steps were erratic   |
+//| and sometimes shrank (e.g. 4133.62->4133.61) instead of moving only  |
+//| forward. (1) managed_R was recomputed every tick in FindOurPosition  |
+//| from the CURRENT SL/TP -- fine before TP1, but once UseTrailingTP    |
+//| zeroes the TP, managed_tp2>0 goes false and R falls through to the   |
+//| SL-based formula using the LIVE (trailing) SL, which is no longer    |
+//| InitialSL_R away from entry -- R silently shrinks every tick as the  |
+//| SL creeps toward price, shrinking the trailing distance with it.     |
+//| Fixed by caching managed_R once per ticket (same pattern as the      |
+//| 001_STOCH family's AdoptOrphanPositions: recompute only for a newly- |
+//| found ticket, reuse the cached value otherwise) -- the every-tick    |
+//| FindOurPosition() re-scan itself (the self-healing fix ported FROM   |
+//| this file's own pattern TO 001_STOCH) is unchanged. (2) separately,  |
+//| POSITION_SL can read one tick stale right after a just-accepted      |
+//| modify (local cache lag), letting a new candidateSL pass the         |
+//| improves check against an outdated (lower) curSL and request moving  |
+//| the SL backward. Fixed by flooring/ceiling curSL against this file's |
+//| own trail_tp_stop_level/trail_stop_level (the last level it actually |
+//| set) before the improves comparison. Both fixes are local to the     |
+//| post-TP1 trailing block; M1/M3 siblings share this code and likely   |
+//| share the bug -- port the same fix there if/when confirmed live.     |
 //+------------------------------------------------------------------+
 #property strict
 #include <Trade/Trade.mqh>
@@ -516,6 +541,7 @@ bool HasOurPosition()
 
 bool FindOurPosition()
 {
+   ulong prevTicket=managed_ticket; double prevR=managed_R;
    managed=false; managed_ticket=0;
    for(int i=PositionsTotal()-1;i>=0;i--)
    {
@@ -531,7 +557,21 @@ bool FindOurPosition()
       long type=PositionGetInteger(POSITION_TYPE);
       managed_dir=(type==POSITION_TYPE_BUY ? +1 : -1);
 
-      if(managed_tp2>0) managed_R=MathAbs(managed_tp2-managed_entry)/TP2_R;
+      bool sameTicketAsBefore=(tk==prevTicket && prevR>0);
+      if(sameTicketAsBefore)
+      {
+         // Already-tracked position: keep the original R. Recomputing it from
+         // the CURRENT SL/TP here is wrong once trailing has moved the SL or
+         // UseTrailingTP has zeroed the TP -- managed_tp2>0 flips false the
+         // moment TP is removed, falling through to the SL-based formula,
+         // which then silently shrinks R every tick as the trailing SL creeps
+         // toward price (SL moving closer -> R computed smaller -> trailing
+         // distance=distanceR*R shrinks too -> SL moves even tighter next
+         // tick). Confirmed live: erratic, shrinking SL step sizes after
+         // TrailingTP armed (this file, ticket #1227805316, 2026.10.15).
+         managed_R=prevR;
+      }
+      else if(managed_tp2>0) managed_R=MathAbs(managed_tp2-managed_entry)/TP2_R;
       else if(managed_sl>0) managed_R=MathAbs(managed_sl-managed_entry)/InitialSL_R;
       else managed_R=0;
 
@@ -539,14 +579,21 @@ bool FindOurPosition()
       {
          managed_tp1=managed_entry+managed_dir*TP1_R*managed_R;
          managed_lock=managed_entry+managed_dir*Lock_R*managed_R;
-         // If the current SL is already at/through the intended lock, preserve state after restart.
-         double eps=2*_Point;
-         tp1_reached=(managed_dir==+1 ? managed_sl>=managed_lock-eps
-                                     : managed_sl<=managed_lock+eps && managed_sl>0);
-         double managed_protect=managed_entry+managed_dir*ProtectR*managed_R;
-         protect_reached=tp1_reached ||
-            (managed_dir==+1 ? managed_sl>=managed_protect-eps
-                             : managed_sl<=managed_protect+eps && managed_sl>0);
+         if(!sameTicketAsBefore)
+         {
+            // Newly-found position (fresh entry or EA restart): recover
+            // tp1_reached/protect_reached from the current SL. Only done once
+            // per ticket -- re-deriving this every tick from a since-moved
+            // trailing SL would be harmless here (monotonic once true) but
+            // there's no reason to keep re-evaluating it either.
+            double eps=2*_Point;
+            tp1_reached=(managed_dir==+1 ? managed_sl>=managed_lock-eps
+                                        : managed_sl<=managed_lock+eps && managed_sl>0);
+            double managed_protect=managed_entry+managed_dir*ProtectR*managed_R;
+            protect_reached=tp1_reached ||
+               (managed_dir==+1 ? managed_sl>=managed_protect-eps
+                                : managed_sl<=managed_protect+eps && managed_sl>0);
+         }
       }
       return true;
    }
@@ -952,6 +999,15 @@ void ManagePosition(MqlTick &tick)
    double distanceR=(tpRemoved ? TrailTPDistanceR : TrailStopDistanceR);
    double candidateSL=NormalizeDouble(curPrice-managed_dir*distanceR*managed_R,_Digits);
    double curSL=PositionGetDouble(POSITION_SL);
+   // POSITION_SL can lag one tick behind a just-accepted modify (local
+   // position cache not yet refreshed), so also floor/ceiling curSL against
+   // this EA's own record of the last level it successfully set -- otherwise
+   // a stale read lets candidateSL "improve" on a SL that's already been
+   // superseded, and the EA requests moving the SL backward. Confirmed live
+   // (this file, ticket #1227805316, 2026.10.15): repeated sl:higher->
+   // sl:lower modify requests right after a successful forward move.
+   double knownSL=(tpRemoved ? trail_tp_stop_level : trail_stop_level);
+   if(knownSL>0) curSL=(managed_dir==+1 ? MathMax(curSL,knownSL) : MathMin(curSL,knownSL));
    bool improves=(curSL==0) || (managed_dir==+1 ? candidateSL>curSL : candidateSL<curSL);
    if(!improves) return;
 
