@@ -206,6 +206,22 @@
 //| NET $37,048.29 -- far worse than 0.07's RF ~38/NET ~$40,400 (M1's        |
 //| optimal trigger genuinely sits much lower than M2_v2's, unlike the      |
 //| distance parameters which transfer closely).                            |
+//| TrailStopTriggerR REVISED 0.07->0.09 (user request, live slippage        |
+//| concern): live observation of 3 consecutive near-breakeven stop-outs    |
+//| traced to the thin profit cushion at arm (TrailStopTriggerR-            |
+//| TrailStopDistanceR = 0.07-0.05 = 0.02R), easily eaten by real slippage.  |
+//| Single-run check at TrailStopDistanceR=0.05 fixed, TrailStopTriggerR=    |
+//| 0.07/0.08/0.09/0.10: loss rate falls monotonically (5.84%->4.50%->       |
+//| 3.95%->3.57%) as the arm-time cushion widens (0.02R->0.03R->0.04R->      |
+//| 0.05R), but avg loss grows just as monotonically ($99.22->$137.03->      |
+//| $165.47->$204.86) since a losing trade now travels further before the   |
+//| (later-arming) trailing SL catches it. NET peaks at 0.09 ($40,451.37,   |
+//| +1.0% vs 0.07), WR also peaks at 0.09 (96.05%, vs 94.16%); RF/PF decline |
+//| at every step past 0.07 (RF 37.97->31.29 at 0.09, PF 4.014->3.716) since |
+//| the bigger per-loss size dominates the risk-adjusted metrics despite     |
+//| fewer losses and higher NET. REVISED to 0.09: best NET/WR/loss-rate      |
+//| combination in the set, explicitly accepting the RF/PF tradeoff to      |
+//| reduce the frequency of thin-margin near-breakeven stop-outs seen live.  |
 //+------------------------------------------------------------------+
 #property strict
 #include <Trade/Trade.mqh>
@@ -242,7 +258,7 @@ input double ProtectR           = 0.05; // SL level once armed, in R (CONFIRMED 
 input bool   UseProtectStop     = true; // Move SL to ProtectR once armed (CONFIRMED user-selected, see header)
 
 input bool   UseTrailingStop    = true; // Continuously trail SL behind price once armed, instead of ProtectStop's one-time move (CONFIRMED, M1-specific value, see header)
-input double TrailStopTriggerR  = 0.07; // Favorable R to arm the trailing stop (CONFIRMED, M1-specific value, see header)
+input double TrailStopTriggerR  = 0.09; // Favorable R to arm the trailing stop (CONFIRMED, M1-specific value, see header)
 input double TrailStopDistanceR = 0.05; // Distance maintained between price and the trailing SL, in R (CONFIRMED, M1-specific value, see header)
 input bool   UseTrailingTP      = true; // Once price reaches TrailTPTriggerR, widen the broker TP and trail SL behind price instead of closing there (CONFIRMED, see header)
 input double TrailTPTriggerR    = 0.15; // Favorable R to arm the trailing TP -- must be strictly less than TP_R or the broker's own TP fires first (CONFIRMED, see header; only used when UseTrailingTP=true)
