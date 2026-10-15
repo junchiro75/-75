@@ -5,6 +5,15 @@
 //| Number so it can run alongside the M2 version. Most ground-truth  |
 //| numbers in the inherited header below are M2-specific and do not  |
 //| automatically transfer.                                            |
+//| 2026.10.15: ported M2's Protect-stop/TrailingStop/TrailingTP       |
+//| feature set (this sibling had been stale since 2025.09.29 and      |
+//| lacked it entirely -- only did a one-time TP1_R->Lock_R SL move     |
+//| with no continuous trailing). Ported WITH both bug fixes M2 found   |
+//| live (ticket #1227805316) already built in: per-ticket cached R     |
+//| in FindOurPosition() (not recomputed every tick from current        |
+//| SL/TP) and a stale-POSITION_SL-read guard in the trailing block.    |
+//| New inputs default to M2's CONFIRMED values but are UNTESTED on     |
+//| this timeframe -- see each input's own comment.                    |
 //| MinR_Points (CONFIRMED to KEEP the inherited 200 on M3): an MT5    |
 //| Optimizer sweep (2025.01-2026.09, 400-1200 step 50, Recovery       |
 //| Factor objective) found every value in that range UNDERPERFORMS    |
@@ -78,6 +87,15 @@ input int    SkipHourStartKST     = 20; // KST hour skip window start (see heade
 input int    SkipHourEndKST       = 22; // KST hour skip window end, exclusive (see header, SkipEntryHourKST)
 input bool   SkipEntryHourKST     = true; // Block entries in [SkipHourStartKST,SkipHourEndKST) KST (CONFIRMED on M2, see header)
 
+input double ProtectTriggerR      = 0.25; // Favorable R to arm an early protect-lock stop, before TP1 (REJECTED on M2, UNTESTED here, see header)
+input double ProtectR             = 0.05; // SL level once armed, in R (REJECTED on M2, UNTESTED here, see header)
+input bool   UseProtectStop       = false; // Move SL to ProtectR once armed, before TP1/Lock fires (REJECTED on M2, UNTESTED here, see header)
+
+input bool   UseTrailingStop      = false; // After TP1 reached, continuously trail SL instead of the one-time move to Lock_R (OFF on M2 in favor of UseTrailingTP, UNTESTED here, see header)
+input double TrailStopDistanceR   = 0.04; // Distance maintained between price and the trailing SL after TP1, in R (CONFIRMED-but-unused on M2, UNTESTED here; only used when UseTrailingStop=true AND UseTrailingTP hasn't armed)
+input bool   UseTrailingTP        = true; // After TP1 reached, remove the TP2 cap and trail SL instead of closing at TP2 (CONFIRMED on M2, UNTESTED here, see header)
+input double TrailTPDistanceR     = 0.09; // Distance maintained between price and the trailing SL once TP2 cap removed, in R (CONFIRMED on M2, UNTESTED here; only used when UseTrailingTP=true)
+
 int hBB20=INVALID_HANDLE,hBB4=INVALID_HANDLE;
 datetime last_m2_bar=0;
 int f_log=INVALID_HANDLE;
@@ -95,6 +113,10 @@ ulong managed_ticket=0;
 int managed_dir=0;          // +1 BUY, -1 SELL
 double managed_R=0,managed_entry=0,managed_sl=0,managed_tp1=0,managed_lock=0,managed_tp2=0;
 bool tp1_reached=false;
+bool protect_reached=false; // UseProtectStop: SL already moved to the early protect-lock level
+double trail_stop_level=0;    // UseTrailingStop: current trailing SL level post-TP1 (0 = not yet moved)
+bool   trail_tp_armed=false;  // UseTrailingTP: TP2 cap removed, now trailing via SL
+double trail_tp_stop_level=0; // UseTrailingTP: current trailing SL level once armed (0 = not yet moved)
 
 // DRY/tester virtual position: reproduces research MAX1 without sending orders.
 bool v_open=false,v_tp1=false;
@@ -186,6 +208,7 @@ bool HasOurPosition()
 
 bool FindOurPosition()
 {
+   ulong prevTicket=managed_ticket; double prevR=managed_R;
    managed=false; managed_ticket=0;
    for(int i=PositionsTotal()-1;i>=0;i--)
    {
@@ -201,7 +224,19 @@ bool FindOurPosition()
       long type=PositionGetInteger(POSITION_TYPE);
       managed_dir=(type==POSITION_TYPE_BUY ? +1 : -1);
 
-      if(managed_tp2>0) managed_R=MathAbs(managed_tp2-managed_entry)/TP2_R;
+      bool sameTicketAsBefore=(tk==prevTicket && prevR>0);
+      if(sameTicketAsBefore)
+      {
+         // Already-tracked position: keep the original R -- recomputing it
+         // every tick from the CURRENT SL/TP breaks once UseTrailingTP zeroes
+         // the TP (falls through to the SL-based formula using the already-
+         // moved SL, silently shrinking R tick by tick). Ported from
+         // XAU_M2_BB_LIVE_005_RFILTER_V2.mq5's own header -- see that file
+         // for the live bug (ticket #1227805316, 2026.10.15) this guards
+         // against; not yet observed live on this timeframe.
+         managed_R=prevR;
+      }
+      else if(managed_tp2>0) managed_R=MathAbs(managed_tp2-managed_entry)/TP2_R;
       else if(managed_sl>0) managed_R=MathAbs(managed_sl-managed_entry)/InitialSL_R;
       else managed_R=0;
 
@@ -209,14 +244,25 @@ bool FindOurPosition()
       {
          managed_tp1=managed_entry+managed_dir*TP1_R*managed_R;
          managed_lock=managed_entry+managed_dir*Lock_R*managed_R;
-         // If the current SL is already at/through the intended lock, preserve state after restart.
-         double eps=2*_Point;
-         tp1_reached=(managed_dir==+1 ? managed_sl>=managed_lock-eps
-                                     : managed_sl<=managed_lock+eps && managed_sl>0);
+         if(!sameTicketAsBefore)
+         {
+            // Newly-found position (fresh entry or EA restart): recover
+            // tp1_reached/protect_reached from the current SL. Only done once
+            // per ticket.
+            double eps=2*_Point;
+            tp1_reached=(managed_dir==+1 ? managed_sl>=managed_lock-eps
+                                        : managed_sl<=managed_lock+eps && managed_sl>0);
+            double managed_protect=managed_entry+managed_dir*ProtectR*managed_R;
+            protect_reached=tp1_reached ||
+               (managed_dir==+1 ? managed_sl>=managed_protect-eps
+                                : managed_sl<=managed_protect+eps && managed_sl>0);
+         }
       }
       return true;
    }
    tp1_reached=false;
+   protect_reached=false;
+   trail_stop_level=0; trail_tp_armed=false; trail_tp_stop_level=0;
    return false;
 }
 
@@ -480,27 +526,113 @@ void ManageVirtual(MqlTick &tick)
 void ManagePosition(MqlTick &tick)
 {
    if(!FindOurPosition()) return;
-   if(tp1_reached || managed_R<=0) return;
+   if(managed_R<=0) return;
 
-   double px=(managed_dir==+1 ? tick.bid : tick.ask); // executable close side
-   bool hit=(managed_dir==+1 ? px>=managed_tp1 : px<=managed_tp1);
-   if(!hit) return;
+   if(UseProtectStop && !protect_reached && !tp1_reached)
+   {
+      double protectTriggerPx=managed_entry+managed_dir*ProtectTriggerR*managed_R;
+      double px0=(managed_dir==+1 ? tick.bid : tick.ask);
+      bool protectHit=(managed_dir==+1 ? px0>=protectTriggerPx : px0<=protectTriggerPx);
+      if(protectHit)
+      {
+         double protectLevel=managed_entry+managed_dir*ProtectR*managed_R;
+         Log("PROTECT_TRIGGER","favR="+DoubleToString(ProtectTriggerR,3));
+         if(!EnableLiveOrders)
+         {
+            protect_reached=true;
+            Log("DRY_PROTECT","would move SL to "+DoubleToString(protectLevel,_Digits));
+         }
+         else if(SafeModifyPosition(managed_ticket,managed_dir,protectLevel,managed_tp2,"PROTECT_MODIFY"))
+         {
+            protect_reached=true;
+            Log("PROTECT_MOVED","SL->"+DoubleToString(protectLevel,_Digits));
+         }
+      }
+   }
 
+   if(!tp1_reached)
+   {
+      double px=(managed_dir==+1 ? tick.bid : tick.ask); // executable close side
+      bool hit=(managed_dir==+1 ? px>=managed_tp1 : px<=managed_tp1);
+      if(!hit) return;
+
+      if(!EnableLiveOrders)
+      {
+         tp1_reached=true;
+         Log("DRY_TP1","would move whole-position SL to +0.25R");
+         return;
+      }
+
+      if(!UseTrailingStop && !UseTrailingTP)
+      {
+         trade.SetExpertMagicNumber(MagicNumber);
+         if(SafeModifyPosition(managed_ticket,managed_dir,managed_lock,managed_tp2,"LOCK_MODIFY"))
+         {
+            tp1_reached=true;
+            Log("TP1_LOCK","TP1 reached; 0.01 lot cannot partial-close 30%, whole SL moved to "+
+                DoubleToString(managed_lock,_Digits));
+         }
+         // If temporarily invalid because price is too close, retry on later ticks.
+         return;
+      }
+
+      // TP1 reached with trailing enabled: arm continuous trailing instead
+      // of the static one-time Lock_R move. Falls through to the trailing
+      // logic below on this same tick.
+      tp1_reached=true;
+      trade.SetExpertMagicNumber(MagicNumber);
+      Log("TP1_TRAIL_ARM","TP1 reached, switching to continuous trailing instead of static Lock_R");
+   }
+
+   // -- post-TP1 continuous trailing (only reached once tp1_reached=true
+   //    AND at least one trailing mode is enabled -- otherwise the static
+   //    Lock_R branch above already handled this position) --
+   if(!UseTrailingStop && !UseTrailingTP) return;
+
+   if(UseTrailingTP && !trail_tp_armed)
+   {
+      if(!EnableLiveOrders)
+      {
+         trail_tp_armed=true;
+         Log("TRAIL_TP_ARM_DRY","would remove TP2 cap and start trailing (EnableLiveOrders=false)");
+      }
+      else if(SafeModifyPosition(managed_ticket,managed_dir,managed_sl,0.0,"TRAIL_TP_ARM"))
+      {
+         trail_tp_armed=true;
+         Log("TRAIL_TP_ARMED","TP2 cap removed, now trailing");
+      }
+   }
+
+   bool tpRemoved=trail_tp_armed;
+   if(!UseTrailingStop && !tpRemoved) return; // TrailingTP not armed yet, TrailingStop off: nothing to do this tick
+
+   double curPrice=(managed_dir==+1 ? tick.bid : tick.ask);
+   double distanceR=(tpRemoved ? TrailTPDistanceR : TrailStopDistanceR);
+   double candidateSL=NormalizeDouble(curPrice-managed_dir*distanceR*managed_R,_Digits);
+   double curSL=PositionGetDouble(POSITION_SL);
+   // POSITION_SL can lag one tick behind a just-accepted modify (local
+   // position cache not yet refreshed), so also floor/ceiling curSL against
+   // this EA's own record of the last level it successfully set. Ported from
+   // XAU_M2_BB_LIVE_005_RFILTER_V2.mq5's own header -- see that file for the
+   // live bug (ticket #1227805316, 2026.10.15) this guards against; not yet
+   // observed live on this timeframe.
+   double knownSL=(tpRemoved ? trail_tp_stop_level : trail_stop_level);
+   if(knownSL>0) curSL=(managed_dir==+1 ? MathMax(curSL,knownSL) : MathMin(curSL,knownSL));
+   bool improves=(curSL==0) || (managed_dir==+1 ? candidateSL>curSL : candidateSL<curSL);
+   if(!improves) return;
+
+   double desiredTP=(tpRemoved ? 0.0 : managed_tp2);
    if(!EnableLiveOrders)
    {
-      tp1_reached=true;
-      Log("DRY_TP1","would move whole-position SL to +0.25R");
+      Log(tpRemoved?"TRAIL_TP_STOP_DRY":"TRAIL_STOP_DRY","would move SL->"+DoubleToString(candidateSL,_Digits)+
+          " (EnableLiveOrders=false)");
       return;
    }
-
-   trade.SetExpertMagicNumber(MagicNumber);
-   if(SafeModifyPosition(managed_ticket,managed_dir,managed_lock,managed_tp2,"LOCK_MODIFY"))
+   if(SafeModifyPosition(managed_ticket,managed_dir,candidateSL,desiredTP,tpRemoved?"TRAIL_TP_STOP_MODIFY":"TRAIL_STOP_MODIFY"))
    {
-      tp1_reached=true;
-      Log("TP1_LOCK","TP1 reached; 0.01 lot cannot partial-close 30%, whole SL moved to "+
-          DoubleToString(managed_lock,_Digits));
+      if(tpRemoved) trail_tp_stop_level=candidateSL; else trail_stop_level=candidateSL;
+      Log(tpRemoved?"TRAIL_TP_STOP_MOVED":"TRAIL_STOP_MOVED","SL->"+DoubleToString(candidateSL,_Digits));
    }
-   // If temporarily invalid because price is too close, retry on later ticks.
 }
 
 int OnInit()
@@ -525,6 +657,10 @@ int OnInit()
        IntegerToString((int)MagicNumber)+" | Lots="+DoubleToString(Lots,2)+
        " | LatestSignalOnly="+(LatestSignalOnly?"true":"false")+
        " | AllowShort="+(AllowShort?"true":"false")+" | MinR_Points="+DoubleToString(MinR_Points,1)+
+       " | ProtectTriggerR="+DoubleToString(ProtectTriggerR,2)+" ProtectR="+DoubleToString(ProtectR,2)+
+       " UseProtectStop="+(UseProtectStop?"true":"false")+
+       " | UseTrailingStop="+(UseTrailingStop?"true":"false")+" TrailStopDistanceR="+DoubleToString(TrailStopDistanceR,2)+
+       " | UseTrailingTP="+(UseTrailingTP?"true":"false")+" TrailTPDistanceR="+DoubleToString(TrailTPDistanceR,2)+
        " | orders="+(EnableLiveOrders?"ENABLED":"DRY"));
    Log("NOTE","RFILTER2 build: 005_BUYONLY + MinR_Points filter + LatestSignalOnly (newest BB-breakout candle supersedes any pending earlier setup)");
    return INIT_SUCCEEDED;
