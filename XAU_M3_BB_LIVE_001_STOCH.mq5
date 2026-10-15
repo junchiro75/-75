@@ -138,6 +138,15 @@
 //| consistency): grid peak was 0.02 (RF 13.74) vs 0.03 (RF 13.70) --       |
 //| essentially tied, NET $19,159.77->$19,120.87 (-0.2%). Moved to 0.03     |
 //| to sit closer to M1/M2_v2's own revised 0.04 -- cost is within noise.   |
+//| PREVENTIVE FIX 2026.10.15: ported 005's stale-POSITION_SL guard here    |
+//| (not yet observed live in this file, but shares the same every-tick     |
+//| PositionGetDouble(POSITION_SL) read with no floor against this EA's own |
+//| last-set trailing level -- see XAU_M2_BB_LIVE_005_RFILTER_V2.mq5's      |
+//| header for the live bug this guards against: POSITION_SL reading one    |
+//| tick stale right after an accepted modify can let a new candidateSL     |
+//| "improve" on an already-superseded SL and request moving it backward).  |
+//| Both trailing blocks now floor/ceiling curSL against g_trailStopLevel[i]|
+//| / g_trailTPStopLevel[i] before the improves check.                      |
 //+------------------------------------------------------------------+
 #property strict
 #include <Trade/Trade.mqh>
@@ -324,6 +333,11 @@ void CheckMAEProgress()
          double curPrice=(g_trackDir[i]==+1)?q.bid:q.ask;
          double candidateSL=NormalizeDouble(curPrice-g_trackDir[i]*TrailStopDistanceR*g_trackR[i],_Digits);
          double curSL=PositionGetDouble(POSITION_SL);
+         // POSITION_SL can read one tick stale right after an accepted modify
+         // (local cache lag) -- floor/ceiling against our own last-set level
+         // so a stale read can never make the SL request move backward (bug
+         // found live in 005's twin trailing code, see that file's header).
+         if(g_trailStopLevel[i]>0) curSL=(g_trackDir[i]==+1 ? MathMax(curSL,g_trailStopLevel[i]) : MathMin(curSL,g_trailStopLevel[i]));
          bool improves=(curSL==0) || (g_trackDir[i]==+1 ? candidateSL>curSL : candidateSL<curSL);
          if(improves)
          {
@@ -369,6 +383,8 @@ void CheckMAEProgress()
             double curPriceTP=(g_trackDir[i]==+1)?q.bid:q.ask;
             double candidateSL2=NormalizeDouble(curPriceTP-g_trackDir[i]*TrailTPDistanceR*g_trackR[i],_Digits);
             double curSL2=PositionGetDouble(POSITION_SL);
+            // Same stale-read guard as the TrailingStop block above.
+            if(g_trailTPStopLevel[i]>0) curSL2=(g_trackDir[i]==+1 ? MathMax(curSL2,g_trailTPStopLevel[i]) : MathMin(curSL2,g_trailTPStopLevel[i]));
             bool improves2=(curSL2==0) || (g_trackDir[i]==+1 ? candidateSL2>curSL2 : candidateSL2<curSL2);
             if(improves2)
             {

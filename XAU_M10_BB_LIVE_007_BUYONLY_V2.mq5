@@ -320,6 +320,15 @@
 //| (oversold for a bear signal -> BUY fade, overbought for a bull         |
 //| signal -> SELL fade). Needs its own ground-truth run before any        |
 //| verdict. Same feature ported identically to 005_RFILTER_V2.            |
+//| PREVENTIVE FIX 2026.10.15: ported 005's stale-POSITION_SL guard here    |
+//| (not yet observed live in this file, but shares the same every-tick     |
+//| PositionGetDouble(POSITION_SL) read with no floor against this EA's own |
+//| last-set trailing level -- see XAU_M2_BB_LIVE_005_RFILTER_V2.mq5's      |
+//| header for the live bug this guards against: POSITION_SL reading one    |
+//| tick stale right after an accepted modify can let a new candidateSL     |
+//| "improve" on an already-superseded SL and request moving it backward).  |
+//| The trailing block now floors/ceilings curSL against trail_stop_level/  |
+//| trail_tp_stop_level before the improves check.                          |
 //+------------------------------------------------------------------+
 #property strict
 #include <Trade/Trade.mqh>
@@ -1129,6 +1138,12 @@ void ManageOwn(MqlTick &tk){
  double distanceR=(tpRemoved ? TrailTPDistanceR : TrailStopDistanceR);
  double candidateSL=NormalizeDouble(px-dir*distanceR*tracked_R,_Digits);
  double curSL=PositionGetDouble(POSITION_SL);
+ // POSITION_SL can read one tick stale right after an accepted modify
+ // (local cache lag) -- floor/ceiling against our own last-set level so a
+ // stale read can never make the SL request move backward (bug found live
+ // in 005's twin trailing code, see that file's header).
+ double knownSL=(tpRemoved ? trail_tp_stop_level : trail_stop_level);
+ if(knownSL>0) curSL=(dir==1 ? MathMax(curSL,knownSL) : MathMin(curSL,knownSL));
  bool improves=(curSL==0) || (dir==1 ? candidateSL>curSL : candidateSL<curSL);
  if(!improves) return;
 
