@@ -166,8 +166,8 @@
 //| TIME_STOP_CLOSE/TIME_STOP_DRY/TIME_STOP_FAIL; reuses the existing       |
 //| OnTradeTransaction MAE_OUTCOME logging (fires on any position close,    |
 //| not just SL/TP) so time-stopped trades show up in that log unchanged.  |
-//| SkipHourStartKST/SkipHourEndKST/SkipEntryHourKST (NEW 2026.10.16,       |
-//| UNTESTED, default OFF): ported the 005-family skip-hour mechanism onto  |
+//| SkipHourStartKST/SkipHourEndKST/SkipEntryHourKST (CONFIRMED on M3,      |
+//| default ON, 2026.10.16): ported the 005-family skip-hour mechanism onto |
 //| this file, motivated by a KST hour-of-day breakdown of this file's own  |
 //| live log (532 trades). Weekday breakdown showed no outlier (WR 93-100%  |
 //| across all 7 days). Hour breakdown found 21:00 KST specifically weak:   |
@@ -175,15 +175,17 @@
 //| -$284.60 (vs -$183.62 overall) -- 21:00 alone accounts for 5 of the     |
 //| file's 23 total losses (21.7%) despite being only 8.6% of all trades.   |
 //| Both neighboring hours are fine (20:00 WR 100%, 22:00 WR 94.1%), so     |
-//| it's a single-hour dip, not a broader session effect. Post-hoc removal  |
-//| of just the 21:00 trades from the same log: NET $20,397.14->$20,117.34  |
-//| (-1.4%), PF 5.830->8.184 (+40.4%), losses 23->18, avg loss -$183.62->   |
-//| -$155.57. Small NET give-up for a meaningfully better loss profile --   |
-//| but this is a post-hoc same-log removal, NOT a real re-run: blocking    |
-//| entries there could let the MAX1 slot free up for a different signal    |
-//| instead, changing the actual trade set. Needs a real MT5 Tester re-run  |
-//| with SkipEntryHourKST=true/SkipHourStartKST=21/SkipHourEndKST=22 before |
-//| this can be CONFIRMED.                                                  |
+//| it's a single-hour dip, not a broader session effect. A post-hoc same-  |
+//| log removal estimate (NET -1.4%, PF +40%) was then CONFIRMED by a real  |
+//| MT5 Tester re-run (2025.01-2026.09.18, SkipHourStartKST=21/             |
+//| SkipHourEndKST=22, UseTimeStop=false to isolate this one change): NET   |
+//| $20,397.14->$20,231.14 (-0.8%, smaller give-up than estimated), PF      |
+//| 5.830->6.764 (+16.0%), Recovery Factor 14.508, WR 95.68%->96.33%,       |
+//| trades 532->491, losses 23->18, avg loss -$183.62->-$154.07 -- losses   |
+//| and avg-loss figures matched the post-hoc estimate almost exactly, so   |
+//| the MAX1-slot-backfill effect worried about above turned out small.     |
+//| Small NET cost for a meaningfully better loss profile -- CONFIRMED      |
+//| live default SkipEntryHourKST=true.                                     |
 //+------------------------------------------------------------------+
 #property strict
 #include <Trade/Trade.mqh>
@@ -210,7 +212,7 @@ input bool   UseFridayNarrowWindow = false; // On Friday, only allow entries 10:
 
 input int    SkipHourStartKST     = 21; // KST hour skip window start (see header, SkipEntryHourKST)
 input int    SkipHourEndKST       = 22; // KST hour skip window end, exclusive (see header, SkipEntryHourKST)
-input bool   SkipEntryHourKST     = false; // Block entries in [SkipHourStartKST,SkipHourEndKST) KST (UNTESTED here, see header)
+input bool   SkipEntryHourKST     = true; // Block entries in [SkipHourStartKST,SkipHourEndKST) KST (CONFIRMED on M3, see header)
 
 input double MildZoneR          = 2.0;  // Adverse-R boundary for dwell-time diagnostic (no trading effect)
 input double ComboExitDangerMin = 10.0; // Danger-zone minutes required, combined with threeBarOneWay (UNTESTED, see header)
