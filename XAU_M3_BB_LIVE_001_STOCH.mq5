@@ -166,6 +166,24 @@
 //| TIME_STOP_CLOSE/TIME_STOP_DRY/TIME_STOP_FAIL; reuses the existing       |
 //| OnTradeTransaction MAE_OUTCOME logging (fires on any position close,    |
 //| not just SL/TP) so time-stopped trades show up in that log unchanged.  |
+//| SkipHourStartKST/SkipHourEndKST/SkipEntryHourKST (NEW 2026.10.16,       |
+//| UNTESTED, default OFF): ported the 005-family skip-hour mechanism onto  |
+//| this file, motivated by a KST hour-of-day breakdown of this file's own  |
+//| live log (532 trades). Weekday breakdown showed no outlier (WR 93-100%  |
+//| across all 7 days). Hour breakdown found 21:00 KST specifically weak:   |
+//| n=46 (3rd-largest hourly bucket), WR 89.1% (vs 95.7% overall), avg loss |
+//| -$284.60 (vs -$183.62 overall) -- 21:00 alone accounts for 5 of the     |
+//| file's 23 total losses (21.7%) despite being only 8.6% of all trades.   |
+//| Both neighboring hours are fine (20:00 WR 100%, 22:00 WR 94.1%), so     |
+//| it's a single-hour dip, not a broader session effect. Post-hoc removal  |
+//| of just the 21:00 trades from the same log: NET $20,397.14->$20,117.34  |
+//| (-1.4%), PF 5.830->8.184 (+40.4%), losses 23->18, avg loss -$183.62->   |
+//| -$155.57. Small NET give-up for a meaningfully better loss profile --   |
+//| but this is a post-hoc same-log removal, NOT a real re-run: blocking    |
+//| entries there could let the MAX1 slot free up for a different signal    |
+//| instead, changing the actual trade set. Needs a real MT5 Tester re-run  |
+//| with SkipEntryHourKST=true/SkipHourStartKST=21/SkipHourEndKST=22 before |
+//| this can be CONFIRMED.                                                  |
 //+------------------------------------------------------------------+
 #property strict
 #include <Trade/Trade.mqh>
@@ -189,6 +207,10 @@ input bool   TrendBearEuropeOnly = true;  // Restrict TREND_BEAR to Europe sessi
 input bool   ReverseTrendBearOutsideEurope = false; // Reverse TREND_BEAR outside Europe to BUY (UNTESTED, see header)
 input bool   SkipFadeBearOSWickTouch = true; // Skip FADE_BEAR_OS wick-only touches (CONFIRMED, see header)
 input bool   UseFridayNarrowWindow = false; // On Friday, only allow entries 10:30-15:00 KST (ported from M2_v2 where CONFIRMED; REJECTED here, see header)
+
+input int    SkipHourStartKST     = 21; // KST hour skip window start (see header, SkipEntryHourKST)
+input int    SkipHourEndKST       = 22; // KST hour skip window end, exclusive (see header, SkipEntryHourKST)
+input bool   SkipEntryHourKST     = false; // Block entries in [SkipHourStartKST,SkipHourEndKST) KST (UNTESTED here, see header)
 
 input double MildZoneR          = 2.0;  // Adverse-R boundary for dwell-time diagnostic (no trading effect)
 input double ComboExitDangerMin = 10.0; // Danger-zone minutes required, combined with threeBarOneWay (UNTESTED, see header)
@@ -496,6 +518,12 @@ int KST_Hour(datetime server_now)
    return t.hour;
 }
 
+bool InSkipHourKST(datetime server_now)
+{
+   int h=KST_Hour(server_now);
+   return (h>=SkipHourStartKST && h<SkipHourEndKST);
+}
+
 bool InEuropeSessionKST(datetime server_now)
 {
    int h=KST_Hour(server_now);
@@ -681,6 +709,12 @@ void CheckNewM3Bar()
    if(UseFridayNarrowWindow && !InFridayNarrowAllowedWindowKST(sig))
    { Log("SIGNAL_SKIPPED","Entry blocked by UseFridayNarrowWindow (Friday, outside 10:30-15:00 KST)"); return; }
 
+   if(SkipEntryHourKST && InSkipHourKST(sig))
+   {
+      Log("SIGNAL_SKIPPED","blocked by SkipEntryHourKST=true (KST hour in ["+IntegerToString(SkipHourStartKST)+","+IntegerToString(SkipHourEndKST)+"))");
+      return;
+   }
+
    // BODY vs WICK touch (diagnostic): the entry condition above only requires
    // the candle's high/low (wick) to reach BB20 -- this checks whether the
    // CLOSE (body) also closed beyond BB20. Appended to the trade tag so it
@@ -766,6 +800,8 @@ int OnInit()
        " | MildZoneR="+DoubleToString(MildZoneR,2)+" ComboExitDangerMin="+DoubleToString(ComboExitDangerMin,1)+
        " UseComboExit="+(UseComboExit?"true":"false")+
        " | UseFridayNarrowWindow="+(UseFridayNarrowWindow?"true":"false")+
+       " | SkipHourStartKST="+IntegerToString(SkipHourStartKST)+" SkipHourEndKST="+IntegerToString(SkipHourEndKST)+
+       " SkipEntryHourKST="+(SkipEntryHourKST?"true":"false")+
        " | ProtectTriggerR="+DoubleToString(ProtectTriggerR,2)+" ProtectR="+DoubleToString(ProtectR,2)+
        " UseProtectStop="+(UseProtectStop?"true":"false")+
        " | UseTrailingStop="+(UseTrailingStop?"true":"false")+" TrailStopTriggerR="+DoubleToString(TrailStopTriggerR,2)+
