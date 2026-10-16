@@ -147,6 +147,25 @@
 //| "improve" on an already-superseded SL and request moving it backward).  |
 //| Both trailing blocks now floor/ceiling curSL against g_trailStopLevel[i]|
 //| / g_trailTPStopLevel[i] before the improves check.                      |
+//| UseTimeStop/TimeStopMinutes/TimeStopMinFavR (NEW 2026.10.16, UNTESTED,  |
+//| default OFF): motivated by a holding-time bucket analysis of this       |
+//| file's own live log (532 trades, MAE_OUTCOME-paired with ENTRY_OK):     |
+//| 0-5min n=411 WR=97.8% NET=$19,947 (nearly the entire file's profit);    |
+//| 5-10min n=39 WR=92.3% NET=$1,539; past 10min, avg loss balloons 10-40x  |
+//| even though WR stays 80-93% -- 10-20min/30-40min/60min+ buckets are     |
+//| NET-NEGATIVE as groups (60min+: n=21, avg loss -$625.33, group NET      |
+//| -$1,263). WR alone doesn't predict this -- losses that survive past the |
+//| first few minutes tend to run to a much larger R before stopping out.   |
+//| UseTimeStop force-closes a position at market if, by TimeStopMinutes    |
+//| after entry, favR hasn't reached TimeStopMinFavR -- i.e. a trade that   |
+//| hasn't shown ANY sign of working gets cut before it can become one of   |
+//| the rare but expensive long-hold losses. Defaults (10min/0.25R) are a   |
+//| starting guess matching ProtectTriggerR's own threshold, NOT yet grid-  |
+//| searched -- needs an Optimizer sweep (TimeStopMinutes x TimeStopMinFavR)|
+//| against this file's own ground truth before going live. Logged as      |
+//| TIME_STOP_CLOSE/TIME_STOP_DRY/TIME_STOP_FAIL; reuses the existing       |
+//| OnTradeTransaction MAE_OUTCOME logging (fires on any position close,    |
+//| not just SL/TP) so time-stopped trades show up in that log unchanged.  |
 //+------------------------------------------------------------------+
 #property strict
 #include <Trade/Trade.mqh>
@@ -185,6 +204,10 @@ input double TrailStopDistanceR = 0.03; // Distance maintained between price and
 input bool   UseTrailingTP      = true; // Once price reaches TrailTPTriggerR, widen the broker TP and trail SL behind price instead of closing there (CONFIRMED, see header)
 input double TrailTPTriggerR    = 0.15; // Favorable R to arm the trailing TP -- must be strictly less than TP_R or the broker's own TP fires first (CONFIRMED, see header; only used when UseTrailingTP=true)
 input double TrailTPDistanceR   = 0.01; // Distance maintained between price and the trailing SL once UseTrailingTP arms, in R (CONFIRMED, M3-specific value, see header; only used when UseTrailingTP=true)
+
+input bool   UseTimeStop        = false; // Force-close if TimeStopMinutes elapsed without reaching TimeStopMinFavR favorable R (UNTESTED, see header)
+input double TimeStopMinutes    = 10.0;  // Minutes after entry to check the time-stop condition (UNTESTED, see header; only used when UseTimeStop=true)
+input double TimeStopMinFavR    = 0.25;  // Favorable R required by TimeStopMinutes to avoid forced close (UNTESTED, see header; only used when UseTimeStop=true)
 
 int hBB20=INVALID_HANDLE,hBB4=INVALID_HANDLE,hStoch=INVALID_HANDLE;
 datetime last_m3_bar=0;
@@ -308,6 +331,25 @@ void CheckMAEProgress()
       }
 
       double favR=(g_trackDir[i]==+1) ? (q.bid-g_trackEntry[i])/g_trackR[i] : (g_trackEntry[i]-q.ask)/g_trackR[i];
+
+      if(UseTimeStop)
+      {
+         double minutesOpen=(double)(now-(datetime)PositionGetInteger(POSITION_TIME))/60.0;
+         if(minutesOpen>=TimeStopMinutes && favR<TimeStopMinFavR)
+         {
+            double profit=PositionGetDouble(POSITION_PROFIT);
+            if(!EnableLiveOrders)
+               Log("TIME_STOP_DRY","ticket="+IntegerToString((int)g_trackTicket[i])+" minutes="+DoubleToString(minutesOpen,1)+
+                   " favR="+DoubleToString(favR,3)+" profit="+DoubleToString(profit,2)+" (would close, EnableLiveOrders=false) | "+g_trackTag[i]);
+            else if(trade.PositionClose(g_trackTicket[i]))
+               Log("TIME_STOP_CLOSE","ticket="+IntegerToString((int)g_trackTicket[i])+" minutes="+DoubleToString(minutesOpen,1)+
+                   " favR="+DoubleToString(favR,3)+" profit="+DoubleToString(profit,2)+" | "+g_trackTag[i]);
+            else
+               Log("TIME_STOP_FAIL",IntegerToString((int)trade.ResultRetcode())+" | "+trade.ResultRetcodeDescription());
+            continue; // position closed (or dry-run would have); skip remaining management this tick
+         }
+      }
+
       if(!g_protectTriggered[i] && favR>=ProtectTriggerR)
       {
          g_protectTriggered[i]=true;
@@ -730,6 +772,8 @@ int OnInit()
        " TrailStopDistanceR="+DoubleToString(TrailStopDistanceR,2)+
        " | UseTrailingTP="+(UseTrailingTP?"true":"false")+" TrailTPTriggerR="+DoubleToString(TrailTPTriggerR,2)+
        " TrailTPDistanceR="+DoubleToString(TrailTPDistanceR,2)+
+       " | UseTimeStop="+(UseTimeStop?"true":"false")+" TimeStopMinutes="+DoubleToString(TimeStopMinutes,1)+
+       " TimeStopMinFavR="+DoubleToString(TimeStopMinFavR,2)+
        " | Lots="+DoubleToString(Lots,2)+" | Magic="+IntegerToString((int)MagicNumber)+
        " | orders="+(EnableLiveOrders?"ENABLED":"DRY"));
    return INIT_SUCCEEDED;
