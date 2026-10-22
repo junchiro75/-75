@@ -224,6 +224,31 @@
 //| to the exact value. TP1_R>=0.90 (>=TP2_R=0.90) structurally breaks:     |
 //| TP1 can never fire before TP2, so Protect/Lock/Trailing never arms      |
 //| (0.90/0.95/1.00 all identical, NET collapses to $28,640).               |
+//|                                                                        |
+//| SkipSatEarlyEntry / SkipThuHour3Entry (CONFIRMED 2026-10-23): a KST     |
+//| day-of-week breakdown across this file plus its 001 M1/M2/M3 and 007    |
+//| M10 siblings (real live logs, 2025.01-2026.10.21) found Saturday is     |
+//| this file's ONLY net-negative weekday: n=139, WR 79.86%, NET -$596.58    |
+//| (every other weekday positive; 001 M1's own Saturday slice stays        |
+//| positive for comparison -- not a shared across-the-board weekend        |
+//| effect, specific to this file's signal). All 139 Saturday trades fall    |
+//| in [00:00,06:50) KST (Friday-US-session spillover past midnight KST);    |
+//| blocking [00:00,06:00) KST on Saturday removes the loss. Separately, an  |
+//| hourly breakdown of this file's own Thursday (NET $5,205.42, otherwise   |
+//| unremarkable) found a single dominant outlier hour: 03:00-04:00 KST,     |
+//| n=32, WR 75.00%, NET -$1,519.59 -- alone responsible for more than the    |
+//| day's entire net profit (without it, Thursday nets ~$6,725). Neighboring |
+//| hours (02h: WR 100%/+$716, 04h: WR 86%/+$652) are fine, so it's a        |
+//| single-hour dip, not a broader early-morning effect -- confirmed by      |
+//| checking the full Thu 02:00-06:00 KST block together (n=100, WR 86.00%,  |
+//| NET +$170.48 -- blocking the whole block would throw away the 02h/04h/   |
+//| 05h profit for almost no net gain, so only 03h specifically is blocked). |
+//| Both are day-of-week-scoped (day_of_week==6/4 only, reusing KST_Hour()'s |
+//| own IsEUDST() DST handling) and independently toggleable. Checked and    |
+//| ruled out as non-issues on the same real logs: economic-release-adjacent |
+//| hours 03/21/23 KST across all weekdays combined (all positive, every     |
+//| EA), and 001 M1/M2/M3's own day-of-week breakdowns (no outlier weekday   |
+//| on any of the three).                                                   |
 //+------------------------------------------------------------------+
 #property strict
 #include <Trade/Trade.mqh>
@@ -257,6 +282,12 @@ input int    SkipHourStartKST     = 20; // KST hour skip window start (see heade
 input int    SkipHourEndKST       = 22; // KST hour skip window end, exclusive (see header, SkipEntryHourKST)
 input bool   SkipEntryHourKST     = true; // Block entries in [SkipHourStartKST,SkipHourEndKST) KST (CONFIRMED, see header)
 input bool   UseFridayNarrowWindow = false; // On Friday, only allow entries 10:30-15:00 KST (ported from 001 M2_v2 where CONFIRMED; REJECTED here, see header)
+input bool   SkipSatEarlyEntry     = true; // Block entries on Saturday in [SkipSatStartKST,SkipSatEndKST) KST (CONFIRMED 2026-10-23, see header)
+input int    SkipSatStartKST       = 0; // Saturday-block window start, KST
+input int    SkipSatEndKST         = 6; // Saturday-block window end, KST, exclusive
+input bool   SkipThuHour3Entry     = true; // Block entries on Thursday in [SkipThuStartKST,SkipThuEndKST) KST (CONFIRMED 2026-10-23, see header)
+input int    SkipThuStartKST       = 3; // Thursday-block window start, KST
+input int    SkipThuEndKST         = 4; // Thursday-block window end, KST, exclusive
 
 input double ProtectTriggerR      = 0.25; // Favorable R to arm an early protect-lock stop, before TP1 (REJECTED, see header)
 input double ProtectR             = 0.05; // SL level once armed, in R (REJECTED, see header)
@@ -402,6 +433,26 @@ bool InFridayNarrowAllowedWindowKST(datetime server_now)
    MqlDateTime t; TimeToStruct(server_now+offsetHours*3600,t);
    int minOfDay=t.hour*60+t.min;
    return (minOfDay>=630 && minOfDay<900); // 10:30-15:00
+}
+
+// -- Saturday-early / Thursday-03h entry blocks (CONFIRMED 2026-10-23, see
+//    header): day-of-week-scoped versions of the same KST_Hour() pattern
+//    above, each gated to a single MQL5 day_of_week (0=Sunday, so Thu=4,
+//    Sat=6).
+bool InSkipSatEarlyKST(datetime server_now)
+{
+   int offsetHours=IsEUDST(server_now)?6:7;
+   MqlDateTime t; TimeToStruct(server_now+offsetHours*3600,t);
+   if(t.day_of_week!=6) return false; // Saturday only
+   return (t.hour>=SkipSatStartKST && t.hour<SkipSatEndKST);
+}
+
+bool InSkipThuHourKST(datetime server_now)
+{
+   int offsetHours=IsEUDST(server_now)?6:7;
+   MqlDateTime t; TimeToStruct(server_now+offsetHours*3600,t);
+   if(t.day_of_week!=4) return false; // Thursday only
+   return (t.hour>=SkipThuStartKST && t.hour<SkipThuEndKST);
 }
 
 // -- 매물대 (supply/demand zone) tracking, ported verbatim from 001 M2_v2 --
@@ -760,6 +811,16 @@ bool OpenCountertrend(Setup &s,MqlTick &tick)
       Log("ENTRY_SKIPPED","blocked by UseFridayNarrowWindow (Friday, outside 10:30-15:00 KST)");
       return false;
    }
+   if(SkipSatEarlyEntry && InSkipSatEarlyKST(entryNow))
+   {
+      Log("ENTRY_SKIPPED","blocked by SkipSatEarlyEntry (Saturday, KST hour in ["+IntegerToString(SkipSatStartKST)+","+IntegerToString(SkipSatEndKST)+"))");
+      return false;
+   }
+   if(SkipThuHour3Entry && InSkipThuHourKST(entryNow))
+   {
+      Log("ENTRY_SKIPPED","blocked by SkipThuHour3Entry (Thursday, KST hour in ["+IntegerToString(SkipThuStartKST)+","+IntegerToString(SkipThuEndKST)+"))");
+      return false;
+   }
    if(!EnableLiveOrders)
    {
       v_open=true; v_tp1=false; v_dir=dir; v_R=s.R;
@@ -1075,6 +1136,8 @@ int OnInit()
        " | SkipHourStartKST="+IntegerToString(SkipHourStartKST)+" SkipHourEndKST="+IntegerToString(SkipHourEndKST)+
        " SkipEntryHourKST="+(SkipEntryHourKST?"true":"false")+
        " | UseFridayNarrowWindow="+(UseFridayNarrowWindow?"true":"false")+
+       " | SkipSatEarlyEntry="+(SkipSatEarlyEntry?"true":"false")+" ["+IntegerToString(SkipSatStartKST)+","+IntegerToString(SkipSatEndKST)+")KST"+
+       " SkipThuHour3Entry="+(SkipThuHour3Entry?"true":"false")+" ["+IntegerToString(SkipThuStartKST)+","+IntegerToString(SkipThuEndKST)+")KST"+
        " | ProtectTriggerR="+DoubleToString(ProtectTriggerR,2)+" ProtectR="+DoubleToString(ProtectR,2)+
        " UseProtectStop="+(UseProtectStop?"true":"false")+
        " | UseTrailingStop="+(UseTrailingStop?"true":"false")+" TrailStopDistanceR="+DoubleToString(TrailStopDistanceR,2)+
