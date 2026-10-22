@@ -207,6 +207,23 @@
 //| set) before the improves comparison. Both fixes are local to the     |
 //| post-TP1 trailing block; M1/M3 siblings share this code and likely   |
 //| share the bug -- port the same fix there if/when confirmed live.     |
+//|                                                                        |
+//| TP1_R (CONFIRMED 2026-10-23, raised 0.50->0.80): had never been grid- |
+//| tested on its own (unlike TrailTPDistanceR/TrailStopDistanceR above) -- |
+//| MT5 Optimizer sweep 0.10-1.00 step 0.05 (ground-truth tick backtest,   |
+//| 2025.01.01-2026.10.20, current UseTrailingTP=true/TrailTPDistanceR=0.09 |
+//| config held fixed): old default 0.50 gave NET $36,162.24/PF 1.857/RF   |
+//| 12.58/DD 2.67%/n=2798. Best Recovery Factor was 0.25 (RF 16.05) but at  |
+//| much lower NET ($24,277.69) -- a fast-lock/low-drawdown profile, not    |
+//| what was chosen here. Best NET was 0.80: $38,325.55 (+6.0% vs 0.50),    |
+//| PF 1.594, RF 13.34 (also beats 0.50's 12.58), DD 2.58% (also lower      |
+//| than 0.50's 2.67%) -- dominates the old default on NET/RF/DD            |
+//| simultaneously, at the cost of PF (1.857->1.594) and trade count        |
+//| (2798->2616, fewer/later locks). Flat interior peak across 0.75-0.85    |
+//| (0.75: $37,378/RF 13.01, 0.85: $37,375/RF 13.00) -- not razor-sensitive |
+//| to the exact value. TP1_R>=0.90 (>=TP2_R=0.90) structurally breaks:     |
+//| TP1 can never fire before TP2, so Protect/Lock/Trailing never arms      |
+//| (0.90/0.95/1.00 all identical, NET collapses to $28,640).               |
 //+------------------------------------------------------------------+
 #property strict
 #include <Trade/Trade.mqh>
@@ -217,7 +234,7 @@ input double Lots                 = 0.1; // Lot size
 input double ExtensionR           = 0.95; // Extension (R) before pullback watch starts
 input double PullbackR            = 0.10; // Pullback (R) from extension extreme to trigger entry
 input double InitialSL_R          = 3.5; // Initial stop loss (R) (CONFIRMED, see header)
-input double TP1_R                = 0.50; // Partial/lock trigger (R)
+input double TP1_R                = 0.80; // Partial/lock trigger (R) (CONFIRMED 2026-10-23, raised from 0.50, see header)
 input double Lock_R               = 0.30; // Lock SL level (R) (CONFIRMED, see header)
 input double TP2_R                = 0.90; // Final target (R)
 input double MinR_Points          = 200; // Min signal-candle body (points) to trade, 0=no filter (CONFIRMED, see header)
