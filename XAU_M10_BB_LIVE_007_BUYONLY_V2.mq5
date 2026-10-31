@@ -1,5 +1,21 @@
 //+------------------------------------------------------------------+
 //| XAU_M10_BB_LIVE_007_BUYONLY_V2.mq5                               |
+//| UseExtensionERFilter (UNTESTED, default false, added 2026-10-31): |
+//| skips entry if the extension phase (signal close -> EXT_HIT, the  |
+//| price run-up that first reaches ExtensionR*R) was a near-straight |
+//| line with little retracement, measured as an efficiency ratio     |
+//| (net move / total path length since signal close, both sampled on |
+//| the same bid/ask series ManageSetups already uses) >=              |
+//| ExtensionERThreshold (default 0.70). Offline analysis of a         |
+//| 2025.01-2026.10 real-trade log (521 trades, Python replay of the   |
+//| logged EXT_HIT/signal timestamps against 1-min closes, not an      |
+//| actual Strategy Tester run with this filter compiled in) found     |
+//| the losing-trade subset is disproportionately ER>=0.7 (10.0% of    |
+//| losses vs 5.1% of wins), and that excluding ER>=0.7 entries would   |
+//| have removed a NET-NEGATIVE cohort (-$382.54 across 27 trades,      |
+//| 5 losses/22 wins) -- raising total NET from $16,689 to $17,072.     |
+//| Sample is thin (5 losses) so this needs a real confirmation run      |
+//| before being trusted; defaults OFF until then.                       |
 //| V2: added LatestSignalOnly, ported from 005_RFILTER_V2's finding |
 //| (gold M2: NET +15,135->+16,281, MaxDD -19,924->-5,658). A new BB- |
 //| breakout signal candle discards any still-pending earlier        |
@@ -339,6 +355,8 @@ input bool EnableLiveOrders=false; // Enable live orders
 input long MagicNumber=95011207; // Magic number
 input double ExtensionR=0.95; // Extension (R) before pullback watch starts
 input double PullbackR=0.10; // Pullback (R) from extension extreme to trigger entry
+input bool   UseExtensionERFilter = false; // Skip entry if extension-phase efficiency ratio >= ExtensionERThreshold (UNTESTED, see header)
+input double ExtensionERThreshold = 0.70; // Efficiency ratio (net move / total path since signal close) cutoff for UseExtensionERFilter (UNTESTED, see header)
 input double InitialSL_R=2.25; // Initial stop loss (R) (TESTED, kept unchanged, see header)
 input double ProtectTriggerR=0.50; // Break-even/protect trigger (R) (TESTED, kept unchanged, see header)
 input double PartialTriggerR=1.5; // Partial close trigger (R) (CONFIRMED, see header)
@@ -445,6 +463,11 @@ struct Setup{
  int sd;
  double R,o,h,l,c,extreme;
  bool ext;
+ double pathLen; // sum of |tick-to-tick price change| since signal close, accumulated
+                 // every tick while !ext (used for the extension-phase efficiency ratio)
+ double lastPx;  // last sampled price for the pathLen accumulator
+ double extER;   // efficiency ratio = |net move since signal close| / pathLen, frozen
+                 // at the moment EXT_HIT fires (see UseExtensionERFilter)
  bool bodyTouch; // diagnostic: did the signal candle's CLOSE also break BB20, or only
                  // the high/low (wick)? See 001 family's ground truth on this same
                  // distinction (FADE_BEAR_OS+WICK was a losing combination there).
@@ -635,6 +658,7 @@ void NewBar(){
  int n=ArraySize(S);ArrayResize(S,n+1);
  S[n].sig=st;S[n].ct=st+PeriodSeconds(PERIOD_M10);S[n].exp=S[n].ct+MaxExtensionHours*3600;
  S[n].sd=bull?1:-1;S[n].R=R;S[n].o=o;S[n].h=h;S[n].l=l;S[n].c=c;S[n].extreme=c;S[n].ext=false;
+ S[n].pathLen=0;S[n].lastPx=c;S[n].extER=0;
  S[n].bodyTouch=bodyTouch;
  S[n].h1Against=h1Against;
  S[n].next5BearCount=-1;S[n].next5Ready=false;
@@ -899,6 +923,15 @@ bool SendEntry(int i,MqlTick &tk){
   DS(i);return false;
  }
 
+ // Extension-phase efficiency ratio filter (UseExtensionERFilter ACTS, see
+ // header): a near-straight-line extension (little retracement before
+ // EXT_HIT) was disproportionately common among losing trades offline.
+ if(UseExtensionERFilter && S[i].extER>=ExtensionERThreshold){
+  Log("SIGNAL_SKIPPED","extensionER="+DoubleToString(S[i].extER,3)+" >= threshold "+
+      DoubleToString(ExtensionERThreshold,2)+" by UseExtensionERFilter=true");
+  DS(i);return false;
+ }
+
  double entry=(dir==1?tk.ask:tk.bid);
  {
     double atrDiag[1];
@@ -930,7 +963,8 @@ bool SendEntry(int i,MqlTick &tk){
  SaveTrack();
  Log("ENTRY_OK",(dir==1?"BUY":"SELL")+" entry="+DoubleToString(tracked_entry,_Digits)+
      " R="+DoubleToString(R,2)+" lots="+DoubleToString(Lots,2)+" sig="+TimeToString(S[i].sig)+
-     " zoneDistATR="+(g_entryZoneDistATR>=999.0?"n/a":DoubleToString(g_entryZoneDistATR,3)));
+     " zoneDistATR="+(g_entryZoneDistATR>=999.0?"n/a":DoubleToString(g_entryZoneDistATR,3))+
+     " extensionER="+DoubleToString(S[i].extER,3));
  DS(i);return true;
 }
 
@@ -941,8 +975,14 @@ void ManageSetups(MqlTick &tk){
   double px=S[i].sd==1?tk.bid:tk.ask;
   if(!S[i].ext){
    if(now>S[i].exp){DS(i);continue;}
+   S[i].pathLen+=MathAbs(px-S[i].lastPx);S[i].lastPx=px;
    double ext=S[i].c+S[i].sd*ExtensionR*S[i].R;
-   if(S[i].sd==1?px>=ext:px<=ext){S[i].ext=true;S[i].extreme=px;S[i].exp=now+MaxPullbackHours*3600;Log("EXT_HIT");}
+   if(S[i].sd==1?px>=ext:px<=ext){
+    S[i].ext=true;S[i].extreme=px;S[i].exp=now+MaxPullbackHours*3600;
+    double netMove=MathAbs(px-S[i].c);
+    S[i].extER=(S[i].pathLen>0)?netMove/S[i].pathLen:0;
+    Log("EXT_HIT","er="+DoubleToString(S[i].extER,3));
+   }
   }else{
    if(now>S[i].exp){DS(i);continue;}
    if(S[i].sd==1&&px>S[i].extreme)S[i].extreme=px;
@@ -1209,6 +1249,8 @@ int OnInit(){
      " | SkipHourBStartKST="+IntegerToString(SkipHourBStartKST)+" SkipHourBEndKST="+IntegerToString(SkipHourBEndKST)+
      " SkipHourBEntry="+(SkipHourBEntry?"true":"false")+
      " | UseFridayNarrowWindow="+(UseFridayNarrowWindow?"true":"false")+
+     " | UseExtensionERFilter="+(UseExtensionERFilter?"true":"false")+
+     " ExtensionERThreshold="+DoubleToString(ExtensionERThreshold,2)+
      " | UseTrailingStop="+(UseTrailingStop?"true":"false")+" TrailStopDistanceR="+DoubleToString(TrailStopDistanceR,2)+
      " | UseTrailingTP="+(UseTrailingTP?"true":"false")+" TrailTPDistanceR="+DoubleToString(TrailTPDistanceR,2)+
      " | Lots="+DoubleToString(Lots,2)+
