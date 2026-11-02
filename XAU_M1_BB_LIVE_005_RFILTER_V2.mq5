@@ -32,6 +32,27 @@
 //| TrailTPDistanceR move together with it -- in isolation (TP1_R=0.50   |
 //| held fixed) 350 still beats 200-300, so the three inputs genuinely   |
 //| interact here.                                                       |
+//| SkipHour2StartKST/SkipHour2EndKST/SkipEntryHour2KST (added            |
+//| 2026-11-03, UNTESTED, default OFF): a KST hour-of-day breakdown of    |
+//| the 2026-11-03 joint-retune confirmation run (3,381 trades, deal-     |
+//| level, DST-aware KST conversion) found 14-16 KST is clearly the       |
+//| weakest 2-hour window on this file -- WR 86.73% (vs ~90% elsewhere)   |
+//| and lowest $/trade by far ($2.03 avg over 324 trades, vs $10-27       |
+//| elsewhere), essentially break-even despite meaningful volume. No      |
+//| weekday was net-negative (unlike M2's Saturday) -- Friday is the      |
+//| weakest day by $/trade ($10.38) but still clearly positive, so no     |
+//| day-of-week filter is added here. Notably, 001 M1 (same M1            |
+//| timeframe, different entry engine) independently blocks this exact    |
+//| 14-16 KST window for the same reason ("WR 유독 낮아 차단") --          |
+//| cross-strategy agreement on the same timeframe, suggesting a          |
+//| session-structure effect rather than an artifact of this file's own   |
+//| entry logic. Added as a SECOND independent skip window (separate      |
+//| from the inherited 20-22 KST one, whose own merit on M1 specifically  |
+//| is still unverified -- it has always been active, so this file has    |
+//| no data on what 20-22 KST looks like unblocked) so the two windows    |
+//| can be tested together or independently. Needs its own Strategy      |
+//| Tester A/B run (SkipEntryHour2KST=false vs true) before flipping the  |
+//| default to true.                                                      |
 //| ---- superseded single-variable MinR_Points note (kept for history) |
 //| ----                                                                 |
 //| MinR_Points (CONFIRMED on M1 =350, was inherited stale M2 value    |
@@ -104,6 +125,9 @@ input bool   AllowShort           = false; // Allow SELL entries (default BUY-on
 input int    SkipHourStartKST     = 20; // KST hour skip window start (see header, SkipEntryHourKST)
 input int    SkipHourEndKST       = 22; // KST hour skip window end, exclusive (see header, SkipEntryHourKST)
 input bool   SkipEntryHourKST     = true; // Block entries in [SkipHourStartKST,SkipHourEndKST) KST (CONFIRMED on M2, see header)
+input int    SkipHour2StartKST    = 14; // Second KST hour skip window start (UNTESTED, see header)
+input int    SkipHour2EndKST      = 16; // Second KST hour skip window end, exclusive (UNTESTED, see header)
+input bool   SkipEntryHour2KST    = false; // Block entries in [SkipHour2StartKST,SkipHour2EndKST) KST (UNTESTED, see header)
 
 input double ProtectTriggerR      = 0.25; // Favorable R to arm an early protect-lock stop, before TP1 (REJECTED on M2, UNTESTED here, see header)
 input double ProtectR             = 0.05; // SL level once armed, in R (REJECTED on M2, UNTESTED here, see header)
@@ -188,6 +212,12 @@ bool InSkipHourKST(datetime server_now)
 {
    int h=KST_Hour(server_now);
    return (h>=SkipHourStartKST && h<SkipHourEndKST);
+}
+
+bool InSkipHour2KST(datetime server_now)
+{
+   int h=KST_Hour(server_now);
+   return (h>=SkipHour2StartKST && h<SkipHour2EndKST);
 }
 
 void Log(string event,string detail="")
@@ -383,6 +413,12 @@ bool OpenCountertrend(Setup &s,MqlTick &tick)
    if(skipHour && SkipEntryHourKST)
    {
       Log("ENTRY_SKIPPED","blocked by SkipEntryHourKST=true (KST hour in ["+IntegerToString(SkipHourStartKST)+","+IntegerToString(SkipHourEndKST)+"))");
+      return false;
+   }
+   bool skipHour2=InSkipHour2KST(entryNow);
+   if(skipHour2 && SkipEntryHour2KST)
+   {
+      Log("ENTRY_SKIPPED","blocked by SkipEntryHour2KST=true (KST hour in ["+IntegerToString(SkipHour2StartKST)+","+IntegerToString(SkipHour2EndKST)+"))");
       return false;
    }
    if(!EnableLiveOrders)
