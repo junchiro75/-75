@@ -14,6 +14,29 @@
 //| SL/TP) and a stale-POSITION_SL-read guard in the trailing block.    |
 //| New inputs default to M2's CONFIRMED values but are UNTESTED on     |
 //| this timeframe -- see each input's own comment.                    |
+//| TP1_R/TrailTPDistanceR/MinR_Points (CONFIRMED 2026-11-03, jointly  |
+//| re-tuned together, supersedes the MinR_Points=250-alone note        |
+//| below -- that sweep held TP1_R fixed at the stale 0.50 and never     |
+//| varied TrailTPDistanceR): MT5 Optimizer joint sweep                  |
+//| (2025.01.01-2026.10.31, TP1_R 0.50-0.90 step 0.05 x                  |
+//| TrailTPDistanceR 0.01-0.09 step 0.02 x MinR_Points 150-300 step 25,  |
+//| 315 combos, Recovery Factor objective, genetic algorithm) found      |
+//| TP1_R=0.55/TrailTPDistanceR=0.01/MinR_Points=250 best: RF 11.50 (vs  |
+//| the old combo's 9.42), NET $31,722.66 (vs $28,797.66, +10.2%), PF    |
+//| 1.769, DD 2.75% (vs 3.04%), n=1,915 (vs 1,937), WR 90.55%, avg loss   |
+//| -$211.97 (vs -$210.58, essentially flat), avg win $42.08 (vs         |
+//| $38.34), payoff ratio 0.20 (vs 0.18). Single-run Tester confirmation  |
+//| reproduced the Optimizer pass exactly. Unlike M1 (whose joint-        |
+//| optimal MinR_Points moved far from its single-variable optimum),      |
+//| M3's MinR_Points=250 holds up unchanged in the joint sweep -- only    |
+//| TP1_R (0.50->0.55) and TrailTPDistanceR (0.09->0.01) moved. The       |
+//| improvement here is real but far smaller than M1's (+10.2% NET here   |
+//| vs +58.8% there), consistent with the "M3 may just be a weaker fit"   |
+//| read below. LIVE ROLLOUT STILL HELD (per the 2026.10.15 decision     |
+//| below) -- this re-tune has not changed that; it only updates what     |
+//| the eventual live config would be.                                   |
+//| ---- superseded single-variable MinR_Points note (kept for history) |
+//| ----                                                                 |
 //| MinR_Points (CONFIRMED on M3 =250, supersedes the pre-TrailingTP-  |
 //| port note below -- that 400-1200 sweep predates the Protect/       |
 //| TrailingStop/TrailingTP port above and is not comparable): with    |
@@ -86,10 +109,10 @@ input double Lots                 = 0.1; // Lot size
 input double ExtensionR           = 0.95; // Extension (R) before pullback watch starts
 input double PullbackR            = 0.10; // Pullback (R) from extension extreme to trigger entry
 input double InitialSL_R          = 3.5; // Initial stop loss (R) (CONFIRMED on M2, see header)
-input double TP1_R                = 0.80; // Partial/lock trigger (R) (CONFIRMED on M2 2026-10-23, UNTESTED on M3 -- see header)
+input double TP1_R                = 0.55; // Partial/lock trigger (R) (CONFIRMED on M3 2026-11-03, jointly re-tuned, see header)
 input double Lock_R               = 0.30; // Lock SL level (R) (CONFIRMED on M2, see header)
 input double TP2_R                = 0.90; // Final target (R)
-input double MinR_Points          = 250; // Min signal-candle body (points) to trade, 0=no filter (CONFIRMED on M3, see header; LIVE ROLLOUT HELD, not yet reattached live)
+input double MinR_Points          = 250; // Min signal-candle body (points) to trade, 0=no filter (CONFIRMED on M3 2026-11-03, jointly re-tuned, see header; LIVE ROLLOUT HELD, not yet reattached live)
 input bool   LatestSignalOnly     = true; // New signal cancels older pending setups (CONFIRMED on M2, see header)
 input int    MaxExtensionHours    = 72; // Max hours waiting for extension
 input int    MaxPullbackHours     = 72; // Max hours waiting for pullback
@@ -109,7 +132,7 @@ input bool   UseProtectStop       = false; // Move SL to ProtectR once armed, be
 input bool   UseTrailingStop      = false; // After TP1 reached, continuously trail SL instead of the one-time move to Lock_R (OFF on M2 in favor of UseTrailingTP, UNTESTED here, see header)
 input double TrailStopDistanceR   = 0.04; // Distance maintained between price and the trailing SL after TP1, in R (CONFIRMED-but-unused on M2, UNTESTED here; only used when UseTrailingStop=true AND UseTrailingTP hasn't armed)
 input bool   UseTrailingTP        = true; // After TP1 reached, remove the TP2 cap and trail SL instead of closing at TP2 (CONFIRMED on M2, UNTESTED here, see header)
-input double TrailTPDistanceR     = 0.09; // Distance maintained between price and the trailing SL once TP2 cap removed, in R (CONFIRMED on M2, UNTESTED here; only used when UseTrailingTP=true)
+input double TrailTPDistanceR     = 0.01; // Distance maintained between price and the trailing SL once TP2 cap removed, in R (CONFIRMED on M3 2026-11-03, jointly re-tuned, see header; only used when UseTrailingTP=true)
 
 int hBB20=INVALID_HANDLE,hBB4=INVALID_HANDLE;
 datetime last_m2_bar=0;
