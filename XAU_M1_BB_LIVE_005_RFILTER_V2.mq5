@@ -68,7 +68,7 @@ input double Lots                 = 0.1; // Lot size
 input double ExtensionR           = 0.95; // Extension (R) before pullback watch starts
 input double PullbackR            = 0.10; // Pullback (R) from extension extreme to trigger entry
 input double InitialSL_R          = 3.5; // Initial stop loss (R) (CONFIRMED on M2, see header)
-input double TP1_R                = 0.50; // Partial/lock trigger (R)
+input double TP1_R                = 0.80; // Partial/lock trigger (R) (CONFIRMED on M2 2026-10-23, UNTESTED on M1 -- see header)
 input double Lock_R               = 0.30; // Lock SL level (R) (CONFIRMED on M2, see header)
 input double TP2_R                = 0.90; // Final target (R)
 input double MinR_Points          = 350; // Min signal-candle body (points) to trade, 0=no filter (CONFIRMED on M1, see header)
