@@ -1,0 +1,1230 @@
+//+------------------------------------------------------------------+
+//| XAU_M2_BB_LIVE_005_RFILTER_V8.mq5                                |
+//| Forked from XAU_M2_BB_LIVE_005_RFILTER_V2.mq5 (2026-11-03). Same  |
+//| entry engine, unchanged. Only TrailTPDistanceR/MinR_Points differ,|
+//| per an MT5 Optimizer joint sweep (2025.01.01-2026.10.31, TP1_R    |
+//| 0.50-0.90 step 0.05 x TrailTPDistanceR 0.01-0.09 step 0.02 x      |
+//| MinR_Points 150-300 step 25, 315 combos, Recovery Factor          |
+//| objective, genetic algorithm) that found TP1_R=0.80 (unchanged    |
+//| from V2) / TrailTPDistanceR=0.01 (was 0.09) / MinR_Points=150     |
+//| (was 200) dominant: RF 17.86 (vs V2's 17.03), NET $51,326.92      |
+//| (vs $48,928.47, +4.9%), PF 1.874 (vs 1.920, slightly lower), DD   |
+//| 2.58% (vs 2.57%, flat), n=3,074 (vs 2,529), WR 86.76% (vs         |
+//| 87.66%), avg loss -$132.98 (vs -$158.39, -16.0%), avg win $41.27  |
+//| (vs $46.07), payoff ratio 0.31 (vs 0.29). Single-run Tester        |
+//| confirmation reproduced the Optimizer pass exactly. A narrower     |
+//| TrailTPDistanceR-only sweep at this TP1_R/MinR_Points (0.01/0.03/  |
+//| 0.05/0.07/0.09) confirmed 0.01 as the genuine optimum, monotonic   |
+//| decline through 0.09 (NET $51,326.92 -> $49,747.92).               |
+//| NAMED V8, NOT V3: the user asked for a "V3"-labeled file to A/B    |
+//| against V2, but XAU_M2_BB_LIVE_005_RFILTER_V3/V4/V5/V6/V7.mq5      |
+//| already exist as unrelated prior experiments (fixed-point SL,      |
+//| SimpleTP_NoProtect, TightenSLOnTP1, MaxSL_Points, TimeCutoffMin    |
+//| respectively) -- V8 is the next free slot in that numbering        |
+//| sequence, kept as a SEPARATE file from V2 (not overwriting V2's    |
+//| inputs in place) so both can run side by side live with distinct   |
+//| Magic Numbers/log files for a direct A/B comparison.                |
+//+------------------------------------------------------------------+
+//+------------------------------------------------------------------+
+//| Generalized to a Timeframe input (default PERIOD_M2, unchanged    |
+//| behavior) so the same engine can run on other timeframes -- see   |
+//| the M1/M3 sibling files (XAU_M1_BB_LIVE_005_RFILTER_V2.mq5 /       |
+//| XAU_M3_BB_LIVE_005_RFILTER_V2.mq5), each just a copy with a        |
+//| different Timeframe default and Magic Number. All ground-truth     |
+//| numbers below are M2-specific; M1/M3 are UNTESTED.                 |
+//| V2: added LatestSignalOnly -- when true, a new BB-breakout signal |
+//| candle discards ANY still-pending earlier setup(s) instead of     |
+//| letting them keep waiting alongside it. Default false reproduces  |
+//| V1 exactly (multiple concurrent pending setups allowed).          |
+//| CONFIRMED defaults (ground-truth MT5 tick backtest, 2025.01-      |
+//| 2026.09, M2, Lots=0.1): InitialSL_R=3.5 (was stale 2.0),          |
+//| MinR_Points=200 (was stale 0), LatestSignalOnly=true -- NET       |
+//| $28,172.55, PF 1.61, Recovery Factor 9.80, WR 90.46% (2664W/      |
+//| 281L, 2945 trades, BUY-only), MaxDD 1.07%/2.72%. Avg win +$27.92  |
+//| vs avg loss -$148.70 (wide-SL/narrow-lock asymmetry, offset by    |
+//| the high win rate). Supersedes the earlier InitialSL_R=2.0/       |
+//| MinR_Points=0 result (NET $16,281, ported into 007/001_STOCH_v2's |
+//| own LatestSignalOnly finding) which is now stale.                 |
+//| SkipEntryHourKST (CONFIRMED default=true): a KST hour-of-day       |
+//| breakdown of the confirmed-default backtest above found the        |
+//| 20-22 KST window is the weakest of twelve 2-hour buckets -- WR     |
+//| 86.3% (vs 90.46% overall) and lowest $/trade (n=291, NET only      |
+//| $620.20), sitting right at the Europe/US session handoff. The      |
+//| very next bucket (22-24 KST) is the STRONGEST (WR 92.2%, NET       |
+//| $8,069.30), so this is a narrow dip, not a broader session         |
+//| weakness. Blocks new entries while the KST hour is in              |
+//| [SkipHourStartKST,SkipHourEndKST). Ground-truth backtest (same     |
+//| period, Lock_R=0.30) confirmed: 2945->2657 trades (-288, the       |
+//| 20-22 KST bucket removed), NET $28,172.55->$28,329.75 (~flat),     |
+//| PF 1.610->1.709, WR 90.46%->90.97%, MaxDD 1.07%/2.72%->1.28%/      |
+//| 2.71% -- fewer trades at the same NET with better PF/WR, so the    |
+//| removed bucket was low-quality. Lock_R was also raised 0.25->0.30  |
+//| in that same test (see Lock_R), so this isn't a fully isolated     |
+//| A/B, but the direction is corroborated by the original hour        |
+//| breakdown.                                                          |
+//| BODY/WICK touch tag (diagnostic, UNTESTED, no trading effect): the    |
+//| signal condition only requires the candle's high/low to reach the    |
+//| bands (h>=up20/up4 or l<=lo20/lo4) -- this additionally tags whether  |
+//| the CLOSE also broke the band ("BODY") or only wicked through and    |
+//| closed back inside ("WICK"), appended to every live order's tag.     |
+//| Mirrors the same distinction already confirmed as a real edge in the |
+//| 001_STOCH family (SkipFadeBearOSWickTouch) -- never checked here     |
+//| before. Needs its own backtest to see if the same pattern holds.     |
+//| _P5S/_P5D tag suffix (diagnostic, UNTESTED, no trading effect):      |
+//| checks the 5 candles immediately BEFORE the signal candle (shifts    |
+//| 2-6) -- _P5S ("prior 5 same") when all 5 ran in the same direction   |
+//| as the signal candle's own breakout; _P5D otherwise. Since 005       |
+//| always fades the signal (AllowShort=false means every live trade is  |
+//| a BUY after a bear/down signal candle), this directly tests whether  |
+//| a longer one-way run into the signal candle (5 straight down         |
+//| candles before the fade) predicts the BUY's outcome. No backtest     |
+//| yet -- needs one to read the tag crosstab.                           |
+//| ---- inherited from 005_RFILTER_V1.mq5 ----                       |
+//| R-filter variant of 005_BUYONLY, built for symbols (e.g. NAS100+) |
+//| where the unfiltered signal has a losing edge (gross PF<1) but a  |
+//| large right-skewed R distribution -- same idea that turned MA120  |
+//| V12 from PF 0.88 to PF 1.18 on NAS100 by keeping only the biggest  |
+//| R (=M2 signal candle body) setups. Adds MinR_Points: skip signals  |
+//| whose R is below this threshold. MinR_Points=0 reproduces          |
+//| 005_BUYONLY exactly.                                                |
+//| ---- inherited from 005_FINAL_BUYONLY.mq5 ----                     |
+//| BUY-ONLY variant of 005 (AllowShort=false by default).          |
+//| Real MT5 tick backtest (2025.01-2026.09): SELL trades alone were |
+//| net -$540.86 vs BUY alone net +$1,697.03. Disabling SELL turns   |
+//| the EA's 21-month result from +$1,156.17 to +$1,697.03. Re-enable|
+//| SELL via the AllowShort input if you want the original behavior. |
+//| M2 Dual-BB -> +0.95R extension -> 0.10R pullback -> countertrend |
+//| LIVE FORWARD TEST EA | own-Magic MAX1                             |
+//| NOTE: at 0.01 lot, 30% partial close is impossible on 0.01 step.  |
+//| At TP1 this EA moves the whole position SL to +0.25R.             |
+//| zoneDistATR diagnostic (ported from 001_STOCH_v2, UNTESTED here): |
+//| logs the distance (in ATR units) from the ACTUAL ENTRY FILL price |
+//| (not the signal candle, since this EA's entry can fire up to      |
+//| MaxExtensionHours+MaxPullbackHours after the signal) to the        |
+//| nearest enabled 매물대 zone (Asia/NY opening-hour boxes, today/     |
+//| previous-day high-low, previous-NY-session high-low). Diagnostic   |
+//| only -- does NOT block or alter any entry. Logged on every trade   |
+//| close: MANAGED_EXIT (EnableLiveOrders=true, the real/managed       |
+//| position -- this is the path actual backtests use since this EA's  |
+//| .set ships with EnableLiveOrders=true) or VIRTUAL_EXIT_* (dry-run   |
+//| virtual simulation). Per the lesson learned on 001: do NOT turn     |
+//| this into an active filter until a bucketed analysis of logged      |
+//| zoneDistATR vs outcome shows a robust, replicating relationship --  |
+//| 001's first such attempt looked clean on a settings-drifted log     |
+//| and did NOT replicate once corrected.                               |
+//|                                                                     |
+//| ProtectTriggerR/ProtectR/UseProtectStop (ported from 001_STOCH_v2,  |
+//| REJECTED, default UseProtectStop=false): this EA already has a     |
+//| profit-lock stage at TP1_R=0.50 (moves SL to Lock_R=0.30) -- this   |
+//| added an EARLIER, smaller lock before that (ProtectTriggerR=0.25 -> |
+//| SL to ProtectR=0.05). Ground-truth backtest: OFF n=2,740/WR 90.44%/ |
+//| NET $27,811.95/PF 1.732/avg loss $144.99 -> ON n=2,887/WR 70.28%    |
+//| (-20.16pp)/NET $20,864.43 (-25.0%)/PF 1.840/avg loss $28.95 (-80%). |
+//| PF/avg-loss look good in isolation but the WR collapse gives it     |
+//| away: this EA's baseline WR is already ~90% because most trades     |
+//| eventually reach TP1/Lock_R -- arming a tighter lock at 0.25R        |
+//| intercepts many of those same trades on their way to TP1 and exits  |
+//| them at +0.05R, which nets to roughly breakeven or a small loss      |
+//| after commission/swap. A worse version of the "cut winners to save  |
+//| losers" trap seen throughout the 001 family -- here it's cutting    |
+//| winners that were headed for the EA's OWN already-confirmed TP1     |
+//| stage. Keep UseProtectStop=false.                                    |
+//|                                                                       |
+//| UseTrailingStop/TrailStopDistanceR and UseTrailingTP/TrailTPDistanceR |
+//| (CONFIRMED, both default true): NOT a repeat of the REJECTED          |
+//| ProtectTriggerR experiment above -- that one intercepted trades       |
+//| BEFORE TP1 and was rejected for cutting off trades headed to this     |
+//| EA's own TP1/Lock stage. These two instead change what happens        |
+//| AFTER TP1_R is reached (the same, already-safe trigger point the      |
+//| existing Lock_R mechanism uses). UseTrailingStop: once TP1 fires,      |
+//| instead of moving the whole-position SL to a fixed Lock_R=0.30 ONE     |
+//| TIME, continuously re-trail it at TrailStopDistanceR*R behind price    |
+//| every tick (only ever tightening), same "never loosen" pattern as the  |
+//| 001 family's own UseTrailingStop. UseTrailingTP: once TP1 fires, ALSO  |
+//| remove the TP2_R=0.90 cap (set broker TP to 0) so a trade that would   |
+//| have closed at TP2 can instead ride further if the move continues,     |
+//| trailing SL at TrailTPDistanceR*R behind price from that point on. If  |
+//| both are enabled, UseTrailingTP's own distance/TP-removal takes over   |
+//| once armed (mirrors how the two interact on 001 M1/M2/M3) -- in        |
+//| practice TrailingTP arms the instant TP1 fires, so TrailStopDistanceR  |
+//| never actually gets used while UseTrailingTP=true. Ported architecture |
+//| directly from 001_STOCH_v2 (SumPositionProfit's deal-summed commission |
+//| handling was already correct here before this port -- see              |
+//| GetClosedPositionProfit, uses the same pattern).                        |
+//| Ground truth (2025.01-2026.10, clean re-run confirming settings         |
+//| drift-free after an initial contaminated upload had UseStochFadeConfirm |
+//| stuck at true from an earlier test): OFF baseline NET $27,811.95, WR     |
+//| 90.44%, PF 1.732, n=2,740, avg loss $144.99 (matches this file's own     |
+//| existing CONFIRMED-defaults record exactly). Untuned ON (both true,      |
+//| TrailStopDistanceR=0.03/TrailTPDistanceR=0.15 defaults): NET $37,986.59  |
+//| (+36.6%), WR 84.68%, PF 1.988, n=2,742, avg loss $91.55 -- WR drops (same |
+//| shape as every other "cut trades at a small favorable point" test in     |
+//| this project) but NET/PF both improve substantially, unlike the REJECTED |
+//| pre-TP1 experiment where NET also fell. trailTPArmed=true on 2,488/2,742 |
+//| trades (90.7%) -- essentially every trade that reaches TP1 arms          |
+//| TrailingTP immediately. TrailTPDistanceR swept 0.01-0.30 (MT5 Optimizer, |
+//| Recovery Factor max): genuine INTERIOR peak at 0.09 (Recovery Factor     |
+//| 13.37, NET $38,434.69) -- climbs steadily 0.01->0.09, then noisy but      |
+//| generally declining through 0.30. FINAL single-run confirmation (NET     |
+//| reconciles exactly with the Optimizer grid's own number for the same     |
+//| config) at TrailStopDistanceR=0.03/TrailTPDistanceR=0.09: NET $38,434.69 |
+//| (+38.2% vs OFF baseline), WR 81.84%, PF 1.913, n=2,742. First successful  |
+//| trailing-feature transfer onto a non-001-family EA in this project, by   |
+//| gating on the EA's own existing safe trigger (TP1) instead of repeating  |
+//| the earlier-trigger approach that was REJECTED here.                     |
+//|                                                                          |
+//| UseTrailingStop ISOLATED (UseTrailingTP=false, to see its own effect     |
+//| since UseTrailingTP otherwise arms instantly at TP1 and dominates):       |
+//| untuned default TrailStopDistanceR=0.03: NET $36,663.55 (+31.8% vs OFF),  |
+//| WR 91.06% (actually HIGHER than OFF's 90.44%, unlike every "early        |
+//| intervention" test in this project), PF 1.966, avg loss $154.90 (worse    |
+//| than OFF's $144.99). TrailStopDistanceR swept 0.01-0.10 (Optimizer): a    |
+//| flat interior peak at 0.04 (Recovery Factor 12.77). Single-run            |
+//| confirmation at 0.04: NET $36,707.04, WR 91.06%, PF 1.967 (best PF of     |
+//| any config tested here) -- genuinely different character from            |
+//| UseTrailingTP: WR holds or improves because the TP2 cap stays in place,   |
+//| so winners that were already headed to TP2 mostly still get there; it     |
+//| just tightens the floor underneath them after TP1 instead of leaving a    |
+//| static Lock_R=0.30.                                                      |
+//|                                                                          |
+//| FINAL CHOICE (user-selected): UseTrailingTP (NET $38,434.69/WR 81.84%/   |
+//| PF 1.913) over UseTrailingStop alone (NET $36,707.04/WR 91.06%/PF        |
+//| 1.967) -- higher NET was preferred over UseTrailingStop's better WR/PF.  |
+//| Live defaults: UseTrailingStop=false, UseTrailingTP=true,                |
+//| TrailTPDistanceR=0.09. TrailStopDistanceR stays at its own CONFIRMED      |
+//| value (0.04) for the record even though UseTrailingStop=false means it   |
+//| isn't actually used while UseTrailingTP is live -- re-enable             |
+//| UseTrailingStop (and flip UseTrailingTP off) to run that alternative      |
+//| instead.                                                                 |
+//|                                                                        |
+//| UseStochFadeConfirm (ported from 001_STOCH_v2's FADE_BEAR_OS/         |
+//| STOCH_FADE_BULL_OB logic, UNTESTED here, default false): this EA      |
+//| currently fades EVERY qualifying signal candle unconditionally (the   |
+//| whole extension+pullback mechanism IS the fade, there's no            |
+//| trend-following branch to compare against like 001 has). This adds    |
+//| an optional gate at the signal candle itself: only start tracking a   |
+//| setup if Stochastic ALSO confirms the fade direction at that bar      |
+//| (oversold for a bear signal -> BUY fade, overbought for a bull        |
+//| signal -> SELL fade) -- same idea as 001's "does the oscillator       |
+//| agree with the fade, or is this just a breakout that happens to       |
+//| touch the bands." Needs its own ground-truth run before any verdict.  |
+//| BUG FOUND AND FIXED LIVE 2026.10.15 (ticket #1227805316): two        |
+//| compounding issues in post-TP1 trailing, found live-debugging a      |
+//| trade whose TP vanished (correct, UseTrailingTP armed at TP1) but    |
+//| then sat with SL frozen at the ORIGINAL far stop for ~2 minutes      |
+//| before trailing visibly caught up, and whose SL steps were erratic   |
+//| and sometimes shrank (e.g. 4133.62->4133.61) instead of moving only  |
+//| forward. (1) managed_R was recomputed every tick in FindOurPosition  |
+//| from the CURRENT SL/TP -- fine before TP1, but once UseTrailingTP    |
+//| zeroes the TP, managed_tp2>0 goes false and R falls through to the   |
+//| SL-based formula using the LIVE (trailing) SL, which is no longer    |
+//| InitialSL_R away from entry -- R silently shrinks every tick as the  |
+//| SL creeps toward price, shrinking the trailing distance with it.     |
+//| Fixed by caching managed_R once per ticket (same pattern as the      |
+//| 001_STOCH family's AdoptOrphanPositions: recompute only for a newly- |
+//| found ticket, reuse the cached value otherwise) -- the every-tick    |
+//| FindOurPosition() re-scan itself (the self-healing fix ported FROM   |
+//| this file's own pattern TO 001_STOCH) is unchanged. (2) separately,  |
+//| POSITION_SL can read one tick stale right after a just-accepted      |
+//| modify (local cache lag), letting a new candidateSL pass the         |
+//| improves check against an outdated (lower) curSL and request moving  |
+//| the SL backward. Fixed by flooring/ceiling curSL against this file's |
+//| own trail_tp_stop_level/trail_stop_level (the last level it actually |
+//| set) before the improves comparison. Both fixes are local to the     |
+//| post-TP1 trailing block; M1/M3 siblings share this code and likely   |
+//| share the bug -- port the same fix there if/when confirmed live.     |
+//|                                                                        |
+//| TP1_R (CONFIRMED 2026-10-23, raised 0.50->0.80): had never been grid- |
+//| tested on its own (unlike TrailTPDistanceR/TrailStopDistanceR above) -- |
+//| MT5 Optimizer sweep 0.10-1.00 step 0.05 (ground-truth tick backtest,   |
+//| 2025.01.01-2026.10.20, current UseTrailingTP=true/TrailTPDistanceR=0.09 |
+//| config held fixed): old default 0.50 gave NET $36,162.24/PF 1.857/RF   |
+//| 12.58/DD 2.67%/n=2798. Best Recovery Factor was 0.25 (RF 16.05) but at  |
+//| much lower NET ($24,277.69) -- a fast-lock/low-drawdown profile, not    |
+//| what was chosen here. Best NET was 0.80: $38,325.55 (+6.0% vs 0.50),    |
+//| PF 1.594, RF 13.34 (also beats 0.50's 12.58), DD 2.58% (also lower      |
+//| than 0.50's 2.67%) -- dominates the old default on NET/RF/DD            |
+//| simultaneously, at the cost of PF (1.857->1.594) and trade count        |
+//| (2798->2616, fewer/later locks). Flat interior peak across 0.75-0.85    |
+//| (0.75: $37,378/RF 13.01, 0.85: $37,375/RF 13.00) -- not razor-sensitive |
+//| to the exact value. TP1_R>=0.90 (>=TP2_R=0.90) structurally breaks:     |
+//| TP1 can never fire before TP2, so Protect/Lock/Trailing never arms      |
+//| (0.90/0.95/1.00 all identical, NET collapses to $28,640).               |
+//|                                                                        |
+//| SkipSatEarlyEntry / SkipThuHour3Entry (CONFIRMED 2026-10-23): a KST     |
+//| day-of-week breakdown across this file plus its 001 M1/M2/M3 and 007    |
+//| M10 siblings (real live logs, 2025.01-2026.10.21) found Saturday is     |
+//| this file's ONLY net-negative weekday: n=139, WR 79.86%, NET -$596.58    |
+//| (every other weekday positive; 001 M1's own Saturday slice stays        |
+//| positive for comparison -- not a shared across-the-board weekend        |
+//| effect, specific to this file's signal). All 139 Saturday trades fall    |
+//| in [00:00,06:50) KST (Friday-US-session spillover past midnight KST);    |
+//| blocking [00:00,06:00) KST on Saturday removes the loss. Separately, an  |
+//| hourly breakdown of this file's own Thursday (NET $5,205.42, otherwise   |
+//| unremarkable) found a single dominant outlier hour: 03:00-04:00 KST,     |
+//| n=32, WR 75.00%, NET -$1,519.59 -- alone responsible for more than the    |
+//| day's entire net profit (without it, Thursday nets ~$6,725). Neighboring |
+//| hours (02h: WR 100%/+$716, 04h: WR 86%/+$652) are fine, so it's a        |
+//| single-hour dip, not a broader early-morning effect -- confirmed by      |
+//| checking the full Thu 02:00-06:00 KST block together (n=100, WR 86.00%,  |
+//| NET +$170.48 -- blocking the whole block would throw away the 02h/04h/   |
+//| 05h profit for almost no net gain, so only 03h specifically is blocked). |
+//| Both are day-of-week-scoped (day_of_week==6/4 only, reusing KST_Hour()'s |
+//| own IsEUDST() DST handling) and independently toggleable. Checked and    |
+//| ruled out as non-issues on the same real logs: economic-release-adjacent |
+//| hours 03/21/23 KST across all weekdays combined (all positive, every     |
+//| EA), and 001 M1/M2/M3's own day-of-week breakdowns (no outlier weekday   |
+//| on any of the three).                                                   |
+//+------------------------------------------------------------------+
+#property strict
+#include <Trade/Trade.mqh>
+CTrade trade;
+
+input ENUM_TIMEFRAMES Timeframe   = PERIOD_M2; // signal-candle timeframe
+input double Lots                 = 0.1; // Lot size
+input double ExtensionR           = 0.95; // Extension (R) before pullback watch starts
+input double PullbackR            = 0.10; // Pullback (R) from extension extreme to trigger entry
+input double InitialSL_R          = 3.5; // Initial stop loss (R) (CONFIRMED, see header)
+input double TP1_R                = 0.80; // Partial/lock trigger (R) (CONFIRMED 2026-10-23, raised from 0.50, see header)
+input double Lock_R               = 0.30; // Lock SL level (R) (CONFIRMED, see header)
+input double TP2_R                = 0.90; // Final target (R)
+input double MinR_Points          = 150; // Min signal-candle body (points) to trade, 0=no filter (CONFIRMED on V8 2026-11-03, jointly re-tuned, see header)
+input bool   LatestSignalOnly     = true; // New signal cancels older pending setups (CONFIRMED, see header)
+input int    MaxExtensionHours    = 72; // Max hours waiting for extension
+input int    MaxPullbackHours     = 72; // Max hours waiting for pullback
+input int    MaxVirtualExitHours  = 168; // Max hours holding a position
+input ulong  MagicNumber          = 95012108; // Magic number (V8's own, distinct from V2's 95012101, see header)
+input int    MaxDeviationPts      = 50; // Max price deviation (points)
+input bool   EnableLiveOrders     = false; // Enable live orders
+input bool   AllowShort           = false; // Allow SELL entries (default BUY-only, see header)
+
+input bool   UseStochFadeConfirm  = false; // Require Stochastic to confirm the fade direction at the signal candle (UNTESTED, see header)
+input int    StochK_Period        = 8; // Stoch %K period (only used when UseStochFadeConfirm=true)
+input int    StochD_Period        = 3; // Stoch %D period (only used when UseStochFadeConfirm=true)
+input int    StochSlowing         = 3; // Stoch slowing (only used when UseStochFadeConfirm=true)
+input double StochOverbought      = 85.0; // Stoch overbought level, confirms a bull-signal SELL fade (only used when UseStochFadeConfirm=true)
+input double StochOversold        = 30.0; // Stoch oversold level, confirms a bear-signal BUY fade (only used when UseStochFadeConfirm=true)
+input int    SkipHourStartKST     = 20; // KST hour skip window start (see header, SkipEntryHourKST)
+input int    SkipHourEndKST       = 22; // KST hour skip window end, exclusive (see header, SkipEntryHourKST)
+input bool   SkipEntryHourKST     = true; // Block entries in [SkipHourStartKST,SkipHourEndKST) KST (CONFIRMED, see header)
+input bool   UseFridayNarrowWindow = false; // On Friday, only allow entries 10:30-15:00 KST (ported from 001 M2_v2 where CONFIRMED; REJECTED here, see header)
+input bool   SkipSatEarlyEntry     = true; // Block entries on Saturday in [SkipSatStartKST,SkipSatEndKST) KST (CONFIRMED 2026-10-23, see header)
+input int    SkipSatStartKST       = 0; // Saturday-block window start, KST
+input int    SkipSatEndKST         = 6; // Saturday-block window end, KST, exclusive
+input bool   SkipThuHour3Entry     = true; // Block entries on Thursday in [SkipThuStartKST,SkipThuEndKST) KST (CONFIRMED 2026-10-23, see header)
+input int    SkipThuStartKST       = 3; // Thursday-block window start, KST
+input int    SkipThuEndKST         = 4; // Thursday-block window end, KST, exclusive
+
+input double ProtectTriggerR      = 0.25; // Favorable R to arm an early protect-lock stop, before TP1 (REJECTED, see header)
+input double ProtectR             = 0.05; // SL level once armed, in R (REJECTED, see header)
+input bool   UseProtectStop       = false; // Move SL to ProtectR once armed, before TP1/Lock fires (REJECTED, see header)
+
+input bool   UseTrailingStop      = false; // After TP1 reached, continuously trail SL instead of the one-time move to Lock_R (TESTED, user-selected OFF in favor of UseTrailingTP, see header)
+input double TrailStopDistanceR   = 0.04; // Distance maintained between price and the trailing SL after TP1, in R (CONFIRMED-but-unused value, see header; only used when UseTrailingStop=true AND UseTrailingTP hasn't armed)
+input bool   UseTrailingTP        = true; // After TP1 reached, remove the TP2 cap and trail SL instead of closing at TP2 (CONFIRMED, user-selected, see header)
+input double TrailTPDistanceR     = 0.01; // Distance maintained between price and the trailing SL once TP2 cap removed, in R (CONFIRMED on V8 2026-11-03, jointly re-tuned, see header; only used when UseTrailingTP=true)
+
+// -- 매물대 (supply/demand zone) diagnostic (ported from 001 M2_v2): logs
+//    zoneDistATR (distance from the actual entry fill to the nearest
+//    enabled zone level, in ATR units) on every trade close. Diagnostic
+//    ONLY -- does not block or alter any entry. Bucket zoneDistATR against
+//    outcome before considering an active filter (see 001's header for why
+//    gating on an untested hypothesis was wrong there).
+input int    ATRPeriod             = 14; // ATR period used for zoneDistATR (does not affect SL/TP, those are R-based)
+input bool   UseAsiaBoxZone        = true; // Include the Asia-session opening-hour candle's high/low
+input int    AsiaOpenHourKST       = 8; // KST hour (integer) the Asia session opening candle starts
+input bool   UseNYBoxZone          = true; // Include the NY/US-session opening-hour candle's high/low
+input double NYOpenHourKST         = 22.5; // KST hour (decimal) the NY session opening candle starts
+input bool   UseTodayHighLowZone   = true; // Include today's running high/low (so far, KST calendar day)
+input bool   UsePrevDayHighLowZone = true; // Include the previous KST calendar day's high/low
+input bool   UsePrevNYHighLowZone  = true; // Include the previous day's NY-session-window high/low (미국장 전일 고가저가)
+input double NYSessionStartHourKST = 20.0; // KST hour (decimal) the NY session window starts, for 전일 미장 고가/저가 tracking (wraps past midnight)
+input double NYSessionEndHourKST   = 6.0; // KST hour (decimal) the NY session window ends
+
+int hBB20=INVALID_HANDLE,hBB4=INVALID_HANDLE,hATR_Sig=INVALID_HANDLE,hStoch=INVALID_HANDLE;
+datetime last_m2_bar=0;
+int f_log=INVALID_HANDLE;
+
+// -- supply-zone state (all in KST calendar-day terms), ported from 001 M2_v2 --
+int    g_szLastDay=-1;          // KST day index of the last processed bar, -1=uninitialized
+bool   g_szAsiaBoxSet=false;    // today's Asia open-hour box already captured
+double g_szAsiaHigh=0, g_szAsiaLow=0;
+bool   g_szNYBoxSet=false;      // today's NY open-hour box already captured
+double g_szNYHigh=0, g_szNYLow=0;
+double g_szTodayHigh=0, g_szTodayLow=0;
+double g_szPrevDayHigh=0, g_szPrevDayLow=0;
+bool   g_szHavePrevDay=false;
+double g_szNYSessHigh=0, g_szNYSessLow=0;     // running NY-session-window high/low (in progress)
+double g_szPrevNYHigh=0, g_szPrevNYLow=0;     // finalized previous NY-session-window high/low
+bool   g_szHavePrevNY=false;
+bool   g_szInNYSessPrevBar=false;             // was the previously processed bar inside the NY session window
+
+double g_entryZoneDistATR=999.0; // zoneDistATR at the actual entry fill of the currently open trade (live or virtual)
+
+struct Setup {
+   datetime signal_time,close_time,extension_time;
+   int sigdir;              // +1 bull signal, -1 bear signal
+   double R,close_price,target,extreme;
+   bool extension_hit;
+   bool bodyTouch;          // diagnostic: did the signal candle's CLOSE also break the band, or only the high/low (see header)
+   bool prior5Same;         // diagnostic: were the 5 candles before the signal candle all in the signal's own direction (see header)
+};
+Setup setups[];
+
+bool managed=false;
+ulong managed_ticket=0;
+int managed_dir=0;          // +1 BUY, -1 SELL
+double managed_R=0,managed_entry=0,managed_sl=0,managed_tp1=0,managed_lock=0,managed_tp2=0;
+bool tp1_reached=false;
+bool protect_reached=false; // UseProtectStop: SL already moved to the early protect-lock level
+double trail_stop_level=0;    // UseTrailingStop: current trailing SL level post-TP1 (0 = not yet moved)
+bool   trail_tp_armed=false;  // UseTrailingTP: TP2 cap removed, now trailing via SL
+double trail_tp_stop_level=0; // UseTrailingTP: current trailing SL level once armed (0 = not yet moved)
+
+// DRY/tester virtual position: reproduces research MAX1 without sending orders.
+bool v_open=false,v_tp1=false;
+int v_dir=0;
+double v_R=0,v_entry=0,v_sl=0,v_tp1px=0,v_lock=0,v_tp2=0;
+datetime v_entry_time=0;
+int v_entries=0,v_sl_n=0,v_lock_n=0,v_tp_n=0,v_timeout_n=0;
+double v_totalR=0;
+
+string TS(datetime t){ return TimeToString(t,TIME_DATE|TIME_MINUTES|TIME_SECONDS); }
+
+string TFPrefix()
+{
+   switch(Timeframe)
+   {
+      case PERIOD_M1: return "M1_";
+      case PERIOD_M2: return "M2_";
+      case PERIOD_M3: return "M3_";
+      case PERIOD_M4: return "M4_";
+      case PERIOD_M5: return "M5_";
+      default: return EnumToString(Timeframe)+"_";
+   }
+}
+
+datetime LastSundayOfMonth(int year,int month,int daysInMonth)
+{
+   MqlDateTime dt; dt.year=year; dt.mon=month; dt.day=daysInMonth;
+   dt.hour=0; dt.min=0; dt.sec=0;
+   datetime d=StructToTime(dt);
+   MqlDateTime cur; TimeToStruct(d,cur);
+   d-=cur.day_of_week*86400; // day_of_week: 0=Sunday
+   return d;
+}
+
+bool IsEUDST(datetime server_now)
+{
+   MqlDateTime t; TimeToStruct(server_now,t);
+   datetime dstStart=LastSundayOfMonth(t.year,3,31);
+   datetime dstEnd  =LastSundayOfMonth(t.year,10,31);
+   return (server_now>=dstStart && server_now<dstEnd);
+}
+
+int KST_Hour(datetime server_now)
+{
+   int offsetHours=IsEUDST(server_now)?6:7;
+   MqlDateTime t; TimeToStruct(server_now+offsetHours*3600,t);
+   return t.hour;
+}
+
+bool InSkipHourKST(datetime server_now)
+{
+   int h=KST_Hour(server_now);
+   return (h>=SkipHourStartKST && h<SkipHourEndKST);
+}
+
+// -- Friday narrow-window filter, ported from XAU_M2_BB_LIVE_001_STOCH_v2
+//    (CONFIRMED there: NET +10.6% vs baseline, +$202.40 vs an all-day
+//    Friday block, same WR/MaxDD, on the 001 M2 signal). Only allow entries
+//    in 10:30-15:00 KST on Friday; every other day is unaffected. REJECTED
+//    on this extension/pullback signal: ground-truth backtest against this
+//    file's own baseline (NET $27,814.55, WR 90.77%, PF 1.667, MaxDD
+//    $1,359.10, n=2,740) gave NET $23,543.79 (-15.4%), WR 90.59%, PF
+//    1.665, MaxDD $1,440.36 (+6.0%, WORSE), n=2,328 -- worse on every
+//    metric. Doesn't generalize from 001 M2's BB-breakout signal to this
+//    extension/pullback entry. ------------------------------------------
+bool IsFridayKST(datetime server_now)
+{
+   int offsetHours=IsEUDST(server_now)?6:7;
+   MqlDateTime t; TimeToStruct(server_now+offsetHours*3600,t);
+   return (t.day_of_week==5); // MQL5 day_of_week: 0=Sunday
+}
+
+bool InFridayNarrowAllowedWindowKST(datetime server_now)
+{
+   if(!IsFridayKST(server_now)) return true;
+   int offsetHours=IsEUDST(server_now)?6:7;
+   MqlDateTime t; TimeToStruct(server_now+offsetHours*3600,t);
+   int minOfDay=t.hour*60+t.min;
+   return (minOfDay>=630 && minOfDay<900); // 10:30-15:00
+}
+
+// -- Saturday-early / Thursday-03h entry blocks (CONFIRMED 2026-10-23, see
+//    header): day-of-week-scoped versions of the same KST_Hour() pattern
+//    above, each gated to a single MQL5 day_of_week (0=Sunday, so Thu=4,
+//    Sat=6).
+bool InSkipSatEarlyKST(datetime server_now)
+{
+   int offsetHours=IsEUDST(server_now)?6:7;
+   MqlDateTime t; TimeToStruct(server_now+offsetHours*3600,t);
+   if(t.day_of_week!=6) return false; // Saturday only
+   return (t.hour>=SkipSatStartKST && t.hour<SkipSatEndKST);
+}
+
+bool InSkipThuHourKST(datetime server_now)
+{
+   int offsetHours=IsEUDST(server_now)?6:7;
+   MqlDateTime t; TimeToStruct(server_now+offsetHours*3600,t);
+   if(t.day_of_week!=4) return false; // Thursday only
+   return (t.hour>=SkipThuStartKST && t.hour<SkipThuEndKST);
+}
+
+// -- 매물대 (supply/demand zone) tracking, ported verbatim from 001 M2_v2 --
+int KSTDayIndex(datetime server_now)
+{
+   int offsetHours=IsEUDST(server_now)?6:7;
+   datetime kst=server_now+offsetHours*3600;
+   return (int)(kst/86400);
+}
+
+bool InWindowKST(int minOfDay,double startHour,double endHour)
+{
+   int start=(int)MathRound(startHour*60);
+   int end=(int)MathRound(endHour*60);
+   if(start<=end) return (minOfDay>=start && minOfDay<end);
+   return (minOfDay>=start || minOfDay<end); // wraps past midnight
+}
+
+// Called once per new signal-timeframe bar with that bar's own high/low --
+// rolls today's running high/low into "previous day" at KST midnight,
+// captures the Asia/NY session opening-hour boxes the first time each
+// day's clock reaches them, and finalizes the previous NY-session-window
+// high/low the moment that window closes.
+void UpdateSupplyZones(datetime sig,double h,double l)
+{
+   int day=KSTDayIndex(sig);
+   int hourKST=KST_Hour(sig);
+   int offsetHours=IsEUDST(sig)?6:7;
+   MqlDateTime t; TimeToStruct(sig+offsetHours*3600,t);
+   int minOfDay=t.hour*60+t.min;
+
+   if(g_szLastDay<0)
+   {
+      g_szLastDay=day; g_szTodayHigh=h; g_szTodayLow=l;
+      g_szAsiaBoxSet=false; g_szNYBoxSet=false;
+   }
+   else if(day!=g_szLastDay)
+   {
+      g_szPrevDayHigh=g_szTodayHigh; g_szPrevDayLow=g_szTodayLow; g_szHavePrevDay=true;
+      g_szTodayHigh=h; g_szTodayLow=l;
+      g_szAsiaBoxSet=false; g_szNYBoxSet=false;
+      g_szLastDay=day;
+   }
+   else
+   {
+      if(h>g_szTodayHigh) g_szTodayHigh=h;
+      if(l<g_szTodayLow)  g_szTodayLow=l;
+   }
+
+   if(!g_szAsiaBoxSet && hourKST==AsiaOpenHourKST)
+   { g_szAsiaHigh=h; g_szAsiaLow=l; g_szAsiaBoxSet=true; }
+
+   int nyOpenMin=(int)MathRound(NYOpenHourKST*60);
+   if(!g_szNYBoxSet && minOfDay>=nyOpenMin && minOfDay<nyOpenMin+60)
+   { g_szNYHigh=h; g_szNYLow=l; g_szNYBoxSet=true; }
+
+   bool inNYSess=InWindowKST(minOfDay,NYSessionStartHourKST,NYSessionEndHourKST);
+   if(inNYSess)
+   {
+      if(!g_szInNYSessPrevBar){ g_szNYSessHigh=h; g_szNYSessLow=l; }
+      else { if(h>g_szNYSessHigh) g_szNYSessHigh=h; if(l<g_szNYSessLow) g_szNYSessLow=l; }
+   }
+   else if(g_szInNYSessPrevBar)
+   {
+      g_szPrevNYHigh=g_szNYSessHigh; g_szPrevNYLow=g_szNYSessLow; g_szHavePrevNY=true;
+   }
+   g_szInNYSessPrevBar=inNYSess;
+}
+
+// Distance from price to the NEAREST enabled zone level, in ATR units
+// (999.0 = no enabled zone has a value yet).
+double DistanceToNearestZone(double price,double atr)
+{
+   if(atr<=0) return 999.0;
+   double best=999.0;
+
+   if(UseAsiaBoxZone && g_szAsiaBoxSet)
+   {
+      best=MathMin(best,MathAbs(price-g_szAsiaHigh)/atr);
+      best=MathMin(best,MathAbs(price-g_szAsiaLow)/atr);
+   }
+   if(UseNYBoxZone && g_szNYBoxSet)
+   {
+      best=MathMin(best,MathAbs(price-g_szNYHigh)/atr);
+      best=MathMin(best,MathAbs(price-g_szNYLow)/atr);
+   }
+   if(UseTodayHighLowZone)
+   {
+      best=MathMin(best,MathAbs(price-g_szTodayHigh)/atr);
+      best=MathMin(best,MathAbs(price-g_szTodayLow)/atr);
+   }
+   if(UsePrevDayHighLowZone && g_szHavePrevDay)
+   {
+      best=MathMin(best,MathAbs(price-g_szPrevDayHigh)/atr);
+      best=MathMin(best,MathAbs(price-g_szPrevDayLow)/atr);
+   }
+   if(UsePrevNYHighLowZone && g_szHavePrevNY)
+   {
+      best=MathMin(best,MathAbs(price-g_szPrevNYHigh)/atr);
+      best=MathMin(best,MathAbs(price-g_szPrevNYLow)/atr);
+   }
+   return best;
+}
+
+// Looks up the realized profit (profit+swap+commission across all deals)
+// for a position ticket that has already closed, via deal history.
+double GetClosedPositionProfit(ulong posTicket)
+{
+   double profit=0;
+   if(!HistorySelectByPosition(posTicket)) return profit;
+   int total=HistoryDealsTotal();
+   for(int i=0;i<total;i++)
+   {
+      ulong dt=HistoryDealGetTicket(i);
+      if(dt==0) continue;
+      profit+=HistoryDealGetDouble(dt,DEAL_PROFIT)+HistoryDealGetDouble(dt,DEAL_SWAP)+HistoryDealGetDouble(dt,DEAL_COMMISSION);
+   }
+   return profit;
+}
+
+void Log(string event,string detail="")
+{
+   Print("LIVE005 RFILTER8 ",TFPrefix(),"| ",event," | ",detail);
+   if(f_log!=INVALID_HANDLE){ FileWrite(f_log,TS(TimeCurrent()),event,detail); FileFlush(f_log); }
+}
+
+void RemoveSetup(int idx)
+{
+   int n=ArraySize(setups);
+   for(int j=idx;j<n-1;j++) setups[j]=setups[j+1];
+   ArrayResize(setups,n-1);
+}
+
+double MinStopDistance()
+{
+   long stops=0,freeze=0;
+   SymbolInfoInteger(_Symbol,SYMBOL_TRADE_STOPS_LEVEL,stops);
+   SymbolInfoInteger(_Symbol,SYMBOL_TRADE_FREEZE_LEVEL,freeze);
+   return (double)MathMax(stops,freeze)*_Point;
+}
+
+bool HasOurPosition()
+{
+   for(int i=PositionsTotal()-1;i>=0;i--)
+   {
+      ulong tk=PositionGetTicket(i);
+      if(tk==0 || !PositionSelectByTicket(tk)) continue;
+      if(PositionGetString(POSITION_SYMBOL)!=_Symbol) continue;
+      if((ulong)PositionGetInteger(POSITION_MAGIC)!=MagicNumber) continue;
+      return true;
+   }
+   return false;
+}
+
+bool FindOurPosition()
+{
+   ulong prevTicket=managed_ticket; double prevR=managed_R;
+   managed=false; managed_ticket=0;
+   for(int i=PositionsTotal()-1;i>=0;i--)
+   {
+      ulong tk=PositionGetTicket(i);
+      if(tk==0 || !PositionSelectByTicket(tk)) continue;
+      if(PositionGetString(POSITION_SYMBOL)!=_Symbol) continue;
+      if((ulong)PositionGetInteger(POSITION_MAGIC)!=MagicNumber) continue;
+
+      managed=true; managed_ticket=tk;
+      managed_entry=PositionGetDouble(POSITION_PRICE_OPEN);
+      managed_sl=PositionGetDouble(POSITION_SL);
+      managed_tp2=PositionGetDouble(POSITION_TP);
+      long type=PositionGetInteger(POSITION_TYPE);
+      managed_dir=(type==POSITION_TYPE_BUY ? +1 : -1);
+
+      bool sameTicketAsBefore=(tk==prevTicket && prevR>0);
+      if(sameTicketAsBefore)
+      {
+         // Already-tracked position: keep the original R. Recomputing it from
+         // the CURRENT SL/TP here is wrong once trailing has moved the SL or
+         // UseTrailingTP has zeroed the TP -- managed_tp2>0 flips false the
+         // moment TP is removed, falling through to the SL-based formula,
+         // which then silently shrinks R every tick as the trailing SL creeps
+         // toward price (SL moving closer -> R computed smaller -> trailing
+         // distance=distanceR*R shrinks too -> SL moves even tighter next
+         // tick). Confirmed live: erratic, shrinking SL step sizes after
+         // TrailingTP armed (this file, ticket #1227805316, 2026.10.15).
+         managed_R=prevR;
+      }
+      else if(managed_tp2>0) managed_R=MathAbs(managed_tp2-managed_entry)/TP2_R;
+      else if(managed_sl>0) managed_R=MathAbs(managed_sl-managed_entry)/InitialSL_R;
+      else managed_R=0;
+
+      if(managed_R>0)
+      {
+         managed_tp1=managed_entry+managed_dir*TP1_R*managed_R;
+         managed_lock=managed_entry+managed_dir*Lock_R*managed_R;
+         if(!sameTicketAsBefore)
+         {
+            // Newly-found position (fresh entry or EA restart): recover
+            // tp1_reached/protect_reached from the current SL. Only done once
+            // per ticket -- re-deriving this every tick from a since-moved
+            // trailing SL would be harmless here (monotonic once true) but
+            // there's no reason to keep re-evaluating it either.
+            double eps=2*_Point;
+            tp1_reached=(managed_dir==+1 ? managed_sl>=managed_lock-eps
+                                        : managed_sl<=managed_lock+eps && managed_sl>0);
+            double managed_protect=managed_entry+managed_dir*ProtectR*managed_R;
+            protect_reached=tp1_reached ||
+               (managed_dir==+1 ? managed_sl>=managed_protect-eps
+                                : managed_sl<=managed_protect+eps && managed_sl>0);
+         }
+      }
+      return true;
+   }
+   tp1_reached=false;
+   protect_reached=false;
+   trail_stop_level=0; trail_tp_armed=false; trail_tp_stop_level=0;
+   return false;
+}
+
+bool SafeModifyPosition(ulong ticket,int dir,double desired_sl,double desired_tp,string context)
+{
+   MqlTick q; if(!SymbolInfoTick(_Symbol,q)){ Log(context+"_FAIL","no tick"); return false; }
+   double cushion=MinStopDistance()+_Point;
+   double sl=desired_sl,tp=desired_tp;
+
+   if(dir==+1) // BUY: SL below Bid, TP above Bid
+   {
+      if(sl>0 && sl>q.bid-cushion) sl=q.bid-cushion;
+      if(tp>0 && tp<q.bid+cushion) tp=q.bid+cushion;
+   }
+   else // SELL: SL above Ask, TP below Ask
+   {
+      if(sl>0 && sl<q.ask+cushion) sl=q.ask+cushion;
+      if(tp>0 && tp>q.ask-cushion) tp=q.ask-cushion;
+   }
+
+   sl=(sl>0?NormalizeDouble(sl,_Digits):0.0);
+   tp=(tp>0?NormalizeDouble(tp,_Digits):0.0);
+   if(trade.PositionModify(ticket,sl,tp)) return true;
+
+   Log(context+"_FAIL",IntegerToString((int)trade.ResultRetcode())+" | "+
+       trade.ResultRetcodeDescription()+" | bid="+DoubleToString(q.bid,_Digits)+
+       " ask="+DoubleToString(q.ask,_Digits)+" sl="+DoubleToString(sl,_Digits)+
+       " tp="+DoubleToString(tp,_Digits));
+   return false;
+}
+
+void AddSignal(datetime sig,datetime close_time,int dir,double R,double c,bool bodyTouch,bool prior5Same)
+{
+   if(LatestSignalOnly && ArraySize(setups)>0)
+   {
+      Log("SIGNAL_SUPERSEDES","dropping "+IntegerToString(ArraySize(setups))+" pending setup(s) for newer signal");
+      ArrayResize(setups,0);
+   }
+   int n=ArraySize(setups); ArrayResize(setups,n+1);
+   setups[n].signal_time=sig;
+   setups[n].close_time=close_time;
+   setups[n].extension_time=0;
+   setups[n].sigdir=dir;
+   setups[n].R=R;
+   setups[n].close_price=c;
+   setups[n].target=c+dir*ExtensionR*R;
+   setups[n].extreme=c;
+   setups[n].extension_hit=false;
+   setups[n].bodyTouch=bodyTouch;
+   setups[n].prior5Same=prior5Same;
+   Log("SIGNAL",(dir==1?"BULL":"BEAR")+" R="+DoubleToString(R,_Digits)+
+       " ext="+DoubleToString(setups[n].target,_Digits)+" touch="+(bodyTouch?"BODY":"WICK")+
+       " prior5Same="+(prior5Same?"true":"false"));
+}
+
+void CheckNewM2Bar()
+{
+   datetime t=iTime(_Symbol,Timeframe,0);
+   if(t==0 || t==last_m2_bar) return;
+   last_m2_bar=t;
+
+   double o=iOpen(_Symbol,Timeframe,1),h=iHigh(_Symbol,Timeframe,1);
+   double l=iLow(_Symbol,Timeframe,1),c=iClose(_Symbol,Timeframe,1);
+   datetime sig=iTime(_Symbol,Timeframe,1);
+   if(sig==0) return;
+
+   UpdateSupplyZones(sig,h,l);
+
+   double up20[1],lo20[1],up4[1],lo4[1];
+   if(CopyBuffer(hBB20,1,1,1,up20)!=1 || CopyBuffer(hBB20,2,1,1,lo20)!=1 ||
+      CopyBuffer(hBB4,1,1,1,up4)!=1   || CopyBuffer(hBB4,2,1,1,lo4)!=1) return;
+
+   int dir=0;
+   if(c>o && h>=up20[0] && h>=up4[0]) dir=+1;
+   else if(c<o && l<=lo20[0] && l<=lo4[0]) dir=-1;
+   if(dir==0) return;
+
+   if(UseStochFadeConfirm)
+   {
+      double kbuf[1];
+      if(CopyBuffer(hStoch,0,1,1,kbuf)!=1){ Log("STOCH_FAIL","no stochastic value"); return; }
+      double stochK=kbuf[0];
+      bool fadeConfirmed=(dir==+1) ? (stochK>=StochOverbought) : (stochK<StochOversold);
+      if(!fadeConfirmed)
+      {
+         Log("SIGNAL_SKIPPED","fade not confirmed by Stochastic: stochK="+DoubleToString(stochK,2)+
+             " dir="+(dir==1?"BULL":"BEAR"));
+         return;
+      }
+   }
+
+   double R=MathAbs(c-o);
+   double minR=MathMax(_Point,MinR_Points*_Point);
+   if(R<=minR) return;
+   bool bodyTouch=(dir==+1)?(c>=up20[0]):(c<=lo20[0]);
+
+   // Prior-5-candle-same-direction (diagnostic): were the 5 candles right
+   // before the signal candle (shifts 2-6) ALL in the signal's own
+   // direction (all bullish for dir=+1, all bearish for dir=-1)? Since 005
+   // always fades the signal (dir=-1 signal -> BUY), this directly answers
+   // the question for every one of 005's buy entries, not just a subset.
+   bool prior5Same=true;
+   for(int k=2;k<=6;k++)
+   {
+      double po=iOpen(_Symbol,Timeframe,k), pc=iClose(_Symbol,Timeframe,k);
+      bool thisBarMatches=(dir==+1) ? (pc>po) : (pc<po);
+      if(!thisBarMatches){ prior5Same=false; break; }
+   }
+
+   AddSignal(sig,t,dir,R,c,bodyTouch,prior5Same);
+}
+
+bool OpenCountertrend(Setup &s,MqlTick &tick)
+{
+   // Research-style MAX1 is ONLY for LIVE_005's own strategy.
+   if(EnableLiveOrders)
+   {
+      if(HasOurPosition()){ Log("ENTRY_SKIPPED","LIVE005V8 own-Magic position already exists"); return false; }
+   }
+   else
+   {
+      if(v_open){ Log("VIRTUAL_SKIPPED","virtual MAX1 occupied"); return false; }
+   }
+
+   int dir=-s.sigdir; // bull signal -> SELL, bear signal -> BUY
+   if(dir==-1 && !AllowShort)
+   {
+      Log("ENTRY_SKIPPED","SELL disabled by AllowShort=false (data-driven direction filter)");
+      return false;
+   }
+   datetime entryNow=(datetime)(tick.time_msc/1000);
+   bool skipHour=InSkipHourKST(entryNow);
+   Log("SKIP_HOUR_CHECK","skipHour="+(skipHour?"true":"false")+" kstHour="+IntegerToString(KST_Hour(entryNow)));
+   if(skipHour && SkipEntryHourKST)
+   {
+      Log("ENTRY_SKIPPED","blocked by SkipEntryHourKST=true (KST hour in ["+IntegerToString(SkipHourStartKST)+","+IntegerToString(SkipHourEndKST)+"))");
+      return false;
+   }
+   if(UseFridayNarrowWindow && !InFridayNarrowAllowedWindowKST(entryNow))
+   {
+      Log("ENTRY_SKIPPED","blocked by UseFridayNarrowWindow (Friday, outside 10:30-15:00 KST)");
+      return false;
+   }
+   if(SkipSatEarlyEntry && InSkipSatEarlyKST(entryNow))
+   {
+      Log("ENTRY_SKIPPED","blocked by SkipSatEarlyEntry (Saturday, KST hour in ["+IntegerToString(SkipSatStartKST)+","+IntegerToString(SkipSatEndKST)+"))");
+      return false;
+   }
+   if(SkipThuHour3Entry && InSkipThuHourKST(entryNow))
+   {
+      Log("ENTRY_SKIPPED","blocked by SkipThuHour3Entry (Thursday, KST hour in ["+IntegerToString(SkipThuStartKST)+","+IntegerToString(SkipThuEndKST)+"))");
+      return false;
+   }
+   if(!EnableLiveOrders)
+   {
+      v_open=true; v_tp1=false; v_dir=dir; v_R=s.R;
+      v_entry=(dir==+1 ? tick.ask : tick.bid);
+      v_sl=v_entry-dir*InitialSL_R*v_R;
+      v_tp1px=v_entry+dir*TP1_R*v_R;
+      v_lock=v_entry+dir*Lock_R*v_R;
+      v_tp2=v_entry+dir*TP2_R*v_R;
+      v_entry_time=(datetime)(tick.time_msc/1000);
+      v_entries++;
+      {
+         double atrDiag[1];
+         g_entryZoneDistATR=(CopyBuffer(hATR_Sig,0,1,1,atrDiag)==1) ? DistanceToNearestZone(v_entry,atrDiag[0]) : 999.0;
+      }
+      Log("VIRTUAL_ACCEPT","#"+IntegerToString(v_entries)+" "+(dir==1?"BUY":"SELL")+
+          " entry="+DoubleToString(v_entry,_Digits)+" R="+DoubleToString(v_R,_Digits)+
+          " zoneDistATR="+(g_entryZoneDistATR>=999.0?"n/a":DoubleToString(g_entryZoneDistATR,3)));
+      return true;
+   }
+
+   trade.SetExpertMagicNumber(MagicNumber);
+   trade.SetDeviationInPoints(MaxDeviationPts);
+   trade.SetTypeFillingBySymbol(_Symbol);
+
+   MqlTick q; if(!SymbolInfoTick(_Symbol,q)){ Log("ORDER_FAIL","no current tick"); return false; }
+   double ref=(dir==+1 ? q.ask : q.bid);
+   double sl=ref-dir*InitialSL_R*s.R;
+   double tp=ref+dir*TP2_R*s.R;
+
+   {
+      double atrDiag[1];
+      g_entryZoneDistATR=(CopyBuffer(hATR_Sig,0,1,1,atrDiag)==1) ? DistanceToNearestZone(ref,atrDiag[0]) : 999.0;
+   }
+
+   // Make the initial protection broker-valid before the market order.
+   double cushion=MinStopDistance()+_Point;
+   if(dir==+1)
+   {
+      if(sl>q.bid-cushion) sl=q.bid-cushion;
+      if(tp<q.ask+cushion) tp=q.ask+cushion;
+   }
+   else
+   {
+      if(sl<q.ask+cushion) sl=q.ask+cushion;
+      if(tp>q.bid-cushion) tp=q.bid-cushion;
+   }
+   sl=NormalizeDouble(sl,_Digits); tp=NormalizeDouble(tp,_Digits);
+
+   string tag="LIVE005V8_"+TFPrefix()+(s.bodyTouch?"BODY":"WICK")+(s.prior5Same?"_P5S":"_P5D");
+   bool ok=(dir==+1 ? trade.Buy(Lots,_Symbol,0.0,sl,tp,tag)
+                    : trade.Sell(Lots,_Symbol,0.0,sl,tp,tag));
+   if(!ok)
+   {
+      Log("ORDER_FAIL",IntegerToString((int)trade.ResultRetcode())+" | "+trade.ResultRetcodeDescription());
+      return false;
+   }
+
+   // Give the terminal a chance to expose the new position; later ticks will recover it if needed.
+   if(FindOurPosition())
+   {
+      Log("ENTRY","ticket="+IntegerToString((int)managed_ticket)+" | "+(dir==1?"BUY":"SELL")+
+          " | fill="+DoubleToString(managed_entry,_Digits)+" | R="+DoubleToString(managed_R,_Digits)+
+          " | SL="+DoubleToString(managed_sl,_Digits)+" | TP2="+DoubleToString(managed_tp2,_Digits)+
+          " | zoneDistATR="+(g_entryZoneDistATR>=999.0?"n/a":DoubleToString(g_entryZoneDistATR,3)));
+   }
+   else
+      Log("ORDER_SENT_NO_POSITION","retcode="+IntegerToString((int)trade.ResultRetcode()));
+   return true;
+}
+
+void CheckSetups(MqlTick &tick)
+{
+   datetime now=(datetime)(tick.time_msc/1000);
+
+   for(int i=ArraySize(setups)-1;i>=0;i--)
+   {
+      if(now<setups[i].close_time) continue;
+
+      if(!setups[i].extension_hit)
+      {
+         if(now>setups[i].close_time+MaxExtensionHours*3600)
+         { Log("EXT_EXPIRE",TS(setups[i].signal_time)); RemoveSetup(i); continue; }
+
+         double px=(setups[i].sigdir==+1 ? tick.bid : tick.ask);
+         bool hit=(setups[i].sigdir==+1 ? px>=setups[i].target : px<=setups[i].target);
+         if(!hit) continue;
+
+         setups[i].extension_hit=true;
+         setups[i].extension_time=now;
+         setups[i].extreme=px;
+         Log("EXT_HIT",TS(setups[i].signal_time)+" extreme="+DoubleToString(px,_Digits));
+         // Deliberately do NOT continue: trusted validator can evaluate pullback
+         // in the same tick after extension state is established.
+      }
+
+      if(now>setups[i].extension_time+MaxPullbackHours*3600)
+      { Log("PB_EXPIRE",TS(setups[i].signal_time)); RemoveSetup(i); continue; }
+
+      double px=(setups[i].sigdir==+1 ? tick.bid : tick.ask);
+      if(setups[i].sigdir==+1)
+      {
+         if(px>setups[i].extreme) setups[i].extreme=px;
+         double trigger=setups[i].extreme-PullbackR*setups[i].R;
+         if(px>trigger) continue;
+      }
+      else
+      {
+         if(px<setups[i].extreme) setups[i].extreme=px;
+         double trigger=setups[i].extreme+PullbackR*setups[i].R;
+         if(px<trigger) continue;
+      }
+
+      Log("PB_CONFIRM",TS(setups[i].signal_time)+" R="+DoubleToString(setups[i].R,_Digits));
+      OpenCountertrend(setups[i],tick);
+      // Consume the setup whether live, dry, or MAX1-blocked: one opportunity, matching forward-test discipline.
+      RemoveSetup(i);
+   }
+}
+
+void CloseVirtual(string outcome,double outR,datetime now)
+{
+   v_totalR+=outR;
+   if(outcome=="SL") v_sl_n++;
+   else if(outcome=="LOCK") v_lock_n++;
+   else if(outcome=="TP") v_tp_n++;
+   else if(outcome=="TIMEOUT") v_timeout_n++;
+   Log("VIRTUAL_EXIT_"+outcome,"R="+DoubleToString(outR,3)+" | totalR="+DoubleToString(v_totalR,3)+
+       " | zoneDistATR="+(g_entryZoneDistATR>=999.0?"n/a":DoubleToString(g_entryZoneDistATR,3)));
+   v_open=false; v_tp1=false; v_dir=0; v_R=0; v_entry=0; v_entry_time=0;
+   g_entryZoneDistATR=999.0;
+}
+
+void ManageVirtual(MqlTick &tick)
+{
+   if(EnableLiveOrders || !v_open) return;
+   datetime now=(datetime)(tick.time_msc/1000);
+   if(now<=v_entry_time) return;
+
+   if(now>v_entry_time+MaxVirtualExitHours*3600)
+   {
+      // Validation FIX convention: free MAX1 slot, record TIMEOUT, fabricate no P/L.
+      CloseVirtual("TIMEOUT",0.0,now);
+      return;
+   }
+
+   // Executable close side: BUY closes at Bid, SELL closes at Ask.
+   double px=(v_dir==+1 ? tick.bid : tick.ask);
+
+   if(!v_tp1)
+   {
+      bool slhit=(v_dir==+1 ? px<=v_sl : px>=v_sl);
+      if(slhit){ CloseVirtual("SL",-InitialSL_R,now); return; }
+
+      bool tp1hit=(v_dir==+1 ? px>=v_tp1px : px<=v_tp1px);
+      if(tp1hit)
+      {
+         v_tp1=true;
+         Log("VIRTUAL_TP1","lock now active at "+DoubleToString(v_lock,_Digits));
+      }
+      return;
+   }
+
+   bool finalhit=(v_dir==+1 ? px>=v_tp2 : px<=v_tp2);
+   if(finalhit){ CloseVirtual("TP",0.78,now); return; }
+
+   bool lockhit=(v_dir==+1 ? px<=v_lock : px>=v_lock);
+   if(lockhit){ CloseVirtual("LOCK",0.325,now); return; }
+}
+
+void ManagePosition(MqlTick &tick)
+{
+   if(!FindOurPosition()) return;
+   if(managed_R<=0) return;
+
+   if(UseProtectStop && !protect_reached && !tp1_reached)
+   {
+      double protectTriggerPx=managed_entry+managed_dir*ProtectTriggerR*managed_R;
+      double px0=(managed_dir==+1 ? tick.bid : tick.ask);
+      bool protectHit=(managed_dir==+1 ? px0>=protectTriggerPx : px0<=protectTriggerPx);
+      if(protectHit)
+      {
+         double protectLevel=managed_entry+managed_dir*ProtectR*managed_R;
+         Log("PROTECT_TRIGGER","favR="+DoubleToString(ProtectTriggerR,3));
+         if(!EnableLiveOrders)
+         {
+            protect_reached=true;
+            Log("DRY_PROTECT","would move SL to "+DoubleToString(protectLevel,_Digits));
+         }
+         else if(SafeModifyPosition(managed_ticket,managed_dir,protectLevel,managed_tp2,"PROTECT_MODIFY"))
+         {
+            protect_reached=true;
+            Log("PROTECT_MOVED","SL->"+DoubleToString(protectLevel,_Digits));
+         }
+      }
+   }
+
+   if(!tp1_reached)
+   {
+      double px=(managed_dir==+1 ? tick.bid : tick.ask); // executable close side
+      bool hit=(managed_dir==+1 ? px>=managed_tp1 : px<=managed_tp1);
+      if(!hit) return;
+
+      if(!EnableLiveOrders)
+      {
+         tp1_reached=true;
+         Log("DRY_TP1","would move whole-position SL to +0.25R");
+         return;
+      }
+
+      if(!UseTrailingStop && !UseTrailingTP)
+      {
+         trade.SetExpertMagicNumber(MagicNumber);
+         if(SafeModifyPosition(managed_ticket,managed_dir,managed_lock,managed_tp2,"LOCK_MODIFY"))
+         {
+            tp1_reached=true;
+            Log("TP1_LOCK","TP1 reached; 0.01 lot cannot partial-close 30%, whole SL moved to "+
+                DoubleToString(managed_lock,_Digits));
+         }
+         // If temporarily invalid because price is too close, retry on later ticks.
+         return;
+      }
+
+      // TP1 reached with trailing enabled: arm continuous trailing instead
+      // of the static one-time Lock_R move. Falls through to the trailing
+      // logic below on this same tick.
+      tp1_reached=true;
+      trade.SetExpertMagicNumber(MagicNumber);
+      Log("TP1_TRAIL_ARM","TP1 reached, switching to continuous trailing instead of static Lock_R");
+   }
+
+   // -- post-TP1 continuous trailing (only reached once tp1_reached=true
+   //    AND at least one trailing mode is enabled -- otherwise the static
+   //    Lock_R branch above already handled this position) --
+   if(!UseTrailingStop && !UseTrailingTP) return;
+
+   if(UseTrailingTP && !trail_tp_armed)
+   {
+      if(!EnableLiveOrders)
+      {
+         trail_tp_armed=true;
+         Log("TRAIL_TP_ARM_DRY","would remove TP2 cap and start trailing (EnableLiveOrders=false)");
+      }
+      else if(SafeModifyPosition(managed_ticket,managed_dir,managed_sl,0.0,"TRAIL_TP_ARM"))
+      {
+         trail_tp_armed=true;
+         Log("TRAIL_TP_ARMED","TP2 cap removed, now trailing");
+      }
+   }
+
+   bool tpRemoved=trail_tp_armed;
+   if(!UseTrailingStop && !tpRemoved) return; // TrailingTP not armed yet, TrailingStop off: nothing to do this tick
+
+   double curPrice=(managed_dir==+1 ? tick.bid : tick.ask);
+   double distanceR=(tpRemoved ? TrailTPDistanceR : TrailStopDistanceR);
+   double candidateSL=NormalizeDouble(curPrice-managed_dir*distanceR*managed_R,_Digits);
+   double curSL=PositionGetDouble(POSITION_SL);
+   // POSITION_SL can lag one tick behind a just-accepted modify (local
+   // position cache not yet refreshed), so also floor/ceiling curSL against
+   // this EA's own record of the last level it successfully set -- otherwise
+   // a stale read lets candidateSL "improve" on a SL that's already been
+   // superseded, and the EA requests moving the SL backward. Confirmed live
+   // (this file, ticket #1227805316, 2026.10.15): repeated sl:higher->
+   // sl:lower modify requests right after a successful forward move.
+   double knownSL=(tpRemoved ? trail_tp_stop_level : trail_stop_level);
+   if(knownSL>0) curSL=(managed_dir==+1 ? MathMax(curSL,knownSL) : MathMin(curSL,knownSL));
+   bool improves=(curSL==0) || (managed_dir==+1 ? candidateSL>curSL : candidateSL<curSL);
+   if(!improves) return;
+
+   double desiredTP=(tpRemoved ? 0.0 : managed_tp2);
+   if(!EnableLiveOrders)
+   {
+      Log(tpRemoved?"TRAIL_TP_STOP_DRY":"TRAIL_STOP_DRY","would move SL->"+DoubleToString(candidateSL,_Digits)+
+          " (EnableLiveOrders=false)");
+      return;
+   }
+   if(SafeModifyPosition(managed_ticket,managed_dir,candidateSL,desiredTP,tpRemoved?"TRAIL_TP_STOP_MODIFY":"TRAIL_STOP_MODIFY"))
+   {
+      if(tpRemoved) trail_tp_stop_level=candidateSL; else trail_stop_level=candidateSL;
+      Log(tpRemoved?"TRAIL_TP_STOP_MOVED":"TRAIL_STOP_MOVED","SL->"+DoubleToString(candidateSL,_Digits));
+   }
+}
+
+int OnInit()
+{
+   hBB20=iBands(_Symbol,Timeframe,20,0,2.0,PRICE_CLOSE);
+   hBB4 =iBands(_Symbol,Timeframe,4,0,4.0,PRICE_OPEN);
+   hATR_Sig=iATR(_Symbol,Timeframe,ATRPeriod);
+   hStoch=iStochastic(_Symbol,Timeframe,StochK_Period,StochD_Period,StochSlowing,MODE_LWMA,STO_LOWHIGH);
+   if(hBB20==INVALID_HANDLE || hBB4==INVALID_HANDLE || hATR_Sig==INVALID_HANDLE || hStoch==INVALID_HANDLE) return INIT_FAILED;
+
+   f_log=FileOpen("XAU_"+TFPrefix()+"LIVE_005_RFILTER8_LOG.csv",FILE_READ|FILE_WRITE|FILE_CSV|FILE_ANSI|FILE_SHARE_READ,',');
+   if(f_log!=INVALID_HANDLE)
+   {
+      FileSeek(f_log,0,SEEK_END);
+      if(FileTell(f_log)==0) FileWrite(f_log,"TIME","EVENT","DETAIL");
+   }
+
+   trade.SetExpertMagicNumber(MagicNumber);
+   trade.SetDeviationInPoints(MaxDeviationPts);
+   trade.SetTypeFillingBySymbol(_Symbol);
+   FindOurPosition();
+
+   Log("START","TF="+TFPrefix()+" | PB=0.10R | SL=2R | own-Magic MAX1 | Magic="+
+       IntegerToString((int)MagicNumber)+" | Lots="+DoubleToString(Lots,2)+
+       " | LatestSignalOnly="+(LatestSignalOnly?"true":"false")+
+       " | AllowShort="+(AllowShort?"true":"false")+" | MinR_Points="+DoubleToString(MinR_Points,1)+
+       " | UseStochFadeConfirm="+(UseStochFadeConfirm?"true":"false")+" Stoch("+IntegerToString(StochK_Period)+","+
+       IntegerToString(StochD_Period)+","+IntegerToString(StochSlowing)+") OB="+DoubleToString(StochOverbought,1)+
+       " OS="+DoubleToString(StochOversold,1)+
+       " | ExtensionR="+DoubleToString(ExtensionR,2)+" PullbackR="+DoubleToString(PullbackR,2)+
+       " InitialSL_R="+DoubleToString(InitialSL_R,2)+" TP1_R="+DoubleToString(TP1_R,2)+
+       " Lock_R="+DoubleToString(Lock_R,2)+" TP2_R="+DoubleToString(TP2_R,2)+
+       " | SkipHourStartKST="+IntegerToString(SkipHourStartKST)+" SkipHourEndKST="+IntegerToString(SkipHourEndKST)+
+       " SkipEntryHourKST="+(SkipEntryHourKST?"true":"false")+
+       " | UseFridayNarrowWindow="+(UseFridayNarrowWindow?"true":"false")+
+       " | SkipSatEarlyEntry="+(SkipSatEarlyEntry?"true":"false")+" ["+IntegerToString(SkipSatStartKST)+","+IntegerToString(SkipSatEndKST)+")KST"+
+       " SkipThuHour3Entry="+(SkipThuHour3Entry?"true":"false")+" ["+IntegerToString(SkipThuStartKST)+","+IntegerToString(SkipThuEndKST)+")KST"+
+       " | ProtectTriggerR="+DoubleToString(ProtectTriggerR,2)+" ProtectR="+DoubleToString(ProtectR,2)+
+       " UseProtectStop="+(UseProtectStop?"true":"false")+
+       " | UseTrailingStop="+(UseTrailingStop?"true":"false")+" TrailStopDistanceR="+DoubleToString(TrailStopDistanceR,2)+
+       " | UseTrailingTP="+(UseTrailingTP?"true":"false")+" TrailTPDistanceR="+DoubleToString(TrailTPDistanceR,2)+
+       " | orders="+(EnableLiveOrders?"ENABLED":"DRY")+
+       " | ATRPeriod="+IntegerToString(ATRPeriod)+
+       " UseAsiaBoxZone="+(UseAsiaBoxZone?"true":"false")+" AsiaOpenHourKST="+IntegerToString(AsiaOpenHourKST)+
+       " UseNYBoxZone="+(UseNYBoxZone?"true":"false")+" NYOpenHourKST="+DoubleToString(NYOpenHourKST,2)+
+       " UseTodayHighLowZone="+(UseTodayHighLowZone?"true":"false")+" UsePrevDayHighLowZone="+(UsePrevDayHighLowZone?"true":"false")+
+       " UsePrevNYHighLowZone="+(UsePrevNYHighLowZone?"true":"false")+
+       " NYSessionWindow="+DoubleToString(NYSessionStartHourKST,2)+"-"+DoubleToString(NYSessionEndHourKST,2)+"KST");
+   Log("NOTE","RFILTER8 build: V2 entry engine unchanged, TrailTPDistanceR/MinR_Points jointly re-tuned (see header)");
+   Log("NOTE","zoneDistATR diagnostic ported from 001 M2_v2: logs distance (ATR units) from the actual entry fill to the nearest enabled 매물대 zone on every trade close (MANAGED_EXIT / VIRTUAL_EXIT_*). Diagnostic only, does not block entries.");
+   return INIT_SUCCEEDED;
+}
+
+void OnDeinit(const int reason)
+{
+   if(!EnableLiveOrders)
+      Log("VIRTUAL_SUMMARY","entries="+IntegerToString(v_entries)+" SL="+IntegerToString(v_sl_n)+
+          " LOCK="+IntegerToString(v_lock_n)+" TP="+IntegerToString(v_tp_n)+
+          " TIMEOUT="+IntegerToString(v_timeout_n)+" totalR="+DoubleToString(v_totalR,3)+
+          " open="+(v_open?"1":"0"));
+   if(f_log!=INVALID_HANDLE){ FileFlush(f_log); FileClose(f_log); }
+   if(hBB20!=INVALID_HANDLE) IndicatorRelease(hBB20);
+   if(hBB4!=INVALID_HANDLE) IndicatorRelease(hBB4);
+   if(hATR_Sig!=INVALID_HANDLE) IndicatorRelease(hATR_Sig);
+   if(hStoch!=INVALID_HANDLE) IndicatorRelease(hStoch);
+}
+
+void OnTick()
+{
+   MqlTick tick; if(!SymbolInfoTick(_Symbol,tick)) return;
+
+   bool wasManaged=managed; ulong wasTicket=managed_ticket;
+   int wasDir=managed_dir; double wasEntry=managed_entry;
+   bool wasProtectReached=protect_reached; bool wasTp1Reached=tp1_reached;
+   double wasTrailStopLevel=trail_stop_level; bool wasTrailTPArmed=trail_tp_armed;
+   double wasTrailTPStopLevel=trail_tp_stop_level;
+
+   CheckNewM2Bar();
+   CheckSetups(tick);
+   ManageVirtual(tick);
+   ManagePosition(tick);
+
+   // Detect the real/managed position closing (SL/TP/manual) so the
+   // same zoneDistATR diagnostic logged at entry also gets a matching
+   // close-side outcome line -- this EA has no OnTradeTransaction-based
+   // MAE_OUTCOME log like 001/008, so this is the only point it fires.
+   if(wasManaged && !managed && wasTicket!=0)
+   {
+      double profit=GetClosedPositionProfit(wasTicket);
+      Log("MANAGED_EXIT",(wasDir==1?"BUY":"SELL")+" ticket="+IntegerToString((int)wasTicket)+
+          " entry="+DoubleToString(wasEntry,_Digits)+" profit="+DoubleToString(profit,2)+
+          " zoneDistATR="+(g_entryZoneDistATR>=999.0?"n/a":DoubleToString(g_entryZoneDistATR,3))+
+          " protectTriggered="+(wasProtectReached?"true":"false")+
+          " tp1Reached="+(wasTp1Reached?"true":"false")+
+          " trailStopLevel="+DoubleToString(wasTrailStopLevel,_Digits)+
+          " trailTPArmed="+(wasTrailTPArmed?"true":"false")+
+          " trailTPStopLevel="+DoubleToString(wasTrailTPStopLevel,_Digits));
+      g_entryZoneDistATR=999.0;
+   }
+}
+//+------------------------------------------------------------------+
