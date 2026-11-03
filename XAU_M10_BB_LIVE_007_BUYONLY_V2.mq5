@@ -216,6 +216,27 @@
 //| baseline RF 9.511/NET $17,235.17 vs 0.60 RF 9.749/NET $17,666.42, but |
 //| 0.55 RF 9.296 and 0.65 RF 9.389 both worse than baseline). Kept at    |
 //| 0.50 again, same reasoning as before.                                 |
+//| ProtectTriggerR/TrailTPDistanceR RECONFIRMED 2026-11-03, this time     |
+//| CHANGED to 0.60/0.01 (supersedes "Kept at 0.50" above -- MinR_Points   |
+//| stays 300, unchanged): MT5 Optimizer joint sweep (2025.01.01-          |
+//| 2026.10.31, ProtectTriggerR 0.30-0.65 step 0.05 x TrailTPDistanceR    |
+//| 0.01-0.09 step 0.02 x MinR_Points 150-450 step 50, 280 combos,         |
+//| Recovery Factor objective, genetic algorithm, staying safely under     |
+//| the 0.70 MaxDD-cliff line above) found 0.60/0.01/300 best: NET         |
+//| $18,799.38 (vs $16,711.42 at the then-current 0.50/~0.02/300, +12.5%), |
+//| PF 2.427, RF 10.37, DD 1.72%. Single-run Tester confirmation           |
+//| reproduced the Optimizer pass exactly, and true per-entry accounting   |
+//| (521 entries, grouping PartialTriggerR's 2 exit deals per position)    |
+//| gives WR 87.14% (vs 89.06%, -1.92pp -- a smaller win-rate cost than    |
+//| either prior 0.60 test, which gave up 2.9-3.4pp), avg loss -$186.49    |
+//| (vs -$190.44, actually slightly SMALLER this time), payoff ratio 0.37  |
+//| (vs 0.31). Unlike the two prior 0.60 attempts (isolated spikes vs a    |
+//| worse-than-baseline 0.55/0.65), this time 0.65 ALSO beat the 0.50      |
+//| baseline (NET $18,525.10, RF 10.22) at this TrailTPDistanceR=0.01 --   |
+//| only 0.55 dipped below baseline -- a materially different, more        |
+//| robust-looking shape than the previous two round-trips. User chose    |
+//| to apply 0.60 this time (favorable NET gain with a smaller WR cost     |
+//| and a smaller avg loss, unlike the earlier two revert decisions).     |
 //| PartialTriggerR (CONFIRMED=1.5): a 0.60-2.00 step-0.10 sweep on the    |
 //| confirmed baseline (ProtectTriggerR=0.50, ProtectR=0.25 both swept    |
 //| under the OLD PartialTriggerR=1.0 and not yet re-verified under this  |
@@ -358,7 +379,7 @@ input double PullbackR=0.10; // Pullback (R) from extension extreme to trigger e
 input bool   UseExtensionERFilter = false; // Skip entry if extension-phase efficiency ratio >= ExtensionERThreshold (UNTESTED, see header)
 input double ExtensionERThreshold = 0.70; // Efficiency ratio (net move / total path since signal close) cutoff for UseExtensionERFilter (UNTESTED, see header)
 input double InitialSL_R=2.25; // Initial stop loss (R) (TESTED, kept unchanged, see header)
-input double ProtectTriggerR=0.50; // Break-even/protect trigger (R) (TESTED, kept unchanged, see header)
+input double ProtectTriggerR=0.60; // Break-even/protect trigger (R) (CONFIRMED 2026-11-03, raised from 0.50, see header)
 input double PartialTriggerR=1.5; // Partial close trigger (R) (CONFIRMED, see header)
 input double ProtectR=0.25; // Protect SL level (R) (TESTED, kept unchanged, see header)
 input double SignalOppositeTP_R=1.75; // Final target beyond ENTRY (R) (CONFIRMED, see header -- anchor fixed to entry like every other level, value widened from 0.90 to (ExtensionR-PullbackR)+0.90=1.75 to reproduce the exact same final TP price as before the fix, preserving every other TESTED/CONFIRMED value below)
@@ -396,7 +417,7 @@ input bool UseFridayNarrowWindow=false; // On Friday, only allow entries 10:30-1
 input bool   UseTrailingStop     = true; // After the partial close (PartialTriggerR), continuously trail the runner's SL instead of the static +ProtectR lock (CONFIRMED true live, see header; superseded on any trade where UseTrailingTP arms)
 input double TrailStopDistanceR  = 0.03; // Distance maintained between price and the trailing SL after the partial close, in R (only used when UseTrailingStop=true AND UseTrailingTP hasn't armed)
 input bool   UseTrailingTP       = true; // After the partial close (PartialTriggerR), remove the final TP cap and trail SL on the runner instead of closing at SignalOppositeTP_R (CONFIRMED true live, see header)
-input double TrailTPDistanceR    = 0.02; // Distance maintained between price and the trailing SL once the final TP cap is removed, in R (CONFIRMED, see header; only used when UseTrailingTP=true)
+input double TrailTPDistanceR    = 0.01; // Distance maintained between price and the trailing SL once the final TP cap is removed, in R (CONFIRMED 2026-11-03, tightened from 0.02, see header; only used when UseTrailingTP=true)
 
 // -- 매물대 (supply/demand zone) diagnostic (ported from 001 M2_v2 / 005
 //    RFILTER_V2): logs zoneDistATR on every trade close. Diagnostic
