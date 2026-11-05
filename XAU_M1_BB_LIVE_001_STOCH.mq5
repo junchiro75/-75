@@ -273,6 +273,9 @@ input bool   UseTrailingTP      = true; // Once price reaches TrailTPTriggerR, w
 input double TrailTPTriggerR    = 0.15; // Favorable R to arm the trailing TP -- must be strictly less than TP_R or the broker's own TP fires first (CONFIRMED, see header; only used when UseTrailingTP=true)
 input double TrailTPDistanceR   = 0.04; // Distance maintained between price and the trailing SL once UseTrailingTP arms, in R (CONFIRMED, M1-specific value, see header; only used when UseTrailingTP=true)
 
+input bool   UseTPRLinkedTrailTP = false; // UNTESTED: when true, ignore TrailTPTriggerR and arm UseTrailingTP at (TP_R-TPRLinkOffsetR) instead, so a TP_R optimizer sweep automatically keeps the trail just below the moving target without a second linked input
+input double TPRLinkOffsetR      = 0.01; // UNTESTED: offset subtracted from TP_R to get the effective trail-arm trigger when UseTPRLinkedTrailTP=true -- must stay >0 or the broker's own TP fires first (same race condition TrailTPTriggerR was split out to avoid, see header)
+
 int hBB20=INVALID_HANDLE,hBB4=INVALID_HANDLE,hStoch=INVALID_HANDLE;
 datetime last_m1_bar=0;
 int f_log=INVALID_HANDLE;
@@ -448,7 +451,8 @@ void CheckMAEProgress()
 
       if(UseTrailingTP)
       {
-         if(!g_trailTPArmed[i] && favR>=TrailTPTriggerR)
+         double effTrailTPTriggerR=UseTPRLinkedTrailTP ? (TP_R-TPRLinkOffsetR) : TrailTPTriggerR;
+         if(!g_trailTPArmed[i] && favR>=effTrailTPTriggerR)
          {
             double curSLforArm=PositionGetDouble(POSITION_SL);
             if(!EnableLiveOrders)
