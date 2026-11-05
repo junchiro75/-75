@@ -246,6 +246,12 @@
 //| tighter TrailTPDistanceR, since UseTrailingTP's own earlier arm    |
 //| (TrailTPTriggerR=0.15) already occupies the SL slot by the time    |
 //| TrailStopTriggerR would ever fire -- confirmed OFF changes nothing.|
+//| UPDATE 2026.11 (user-selected override): UseTPRLinkedTrailTP turned|
+//| ON, moving the UseTrailingTP arm from the early 0.15 above to      |
+//| (TP_R-TPRLinkOffsetR)=0.44. An Optimizer sweep of this exact config |
+//| across TP_R=0.30-2.00 found 0.45 is the best point in that sweep,  |
+//| but even its NET ($38,049.85) is WORSE than the 0.15-trigger NET   |
+//| above ($44,534.49, -14.6%) -- kept anyway per explicit user choice.|
 //+------------------------------------------------------------------+
 #property strict
 #include <Trade/Trade.mqh>
@@ -288,7 +294,7 @@ input bool   UseTrailingTP      = true; // Once price reaches TrailTPTriggerR, w
 input double TrailTPTriggerR    = 0.15; // Favorable R to arm the trailing TP -- must be strictly less than TP_R or the broker's own TP fires first (CONFIRMED, see header; only used when UseTrailingTP=true)
 input double TrailTPDistanceR   = 0.04; // Distance maintained between price and the trailing SL once UseTrailingTP arms, in R (CONFIRMED, M1-specific value, see header; only used when UseTrailingTP=true)
 
-input bool   UseTPRLinkedTrailTP = false; // UNTESTED: when true, ignore TrailTPTriggerR and arm UseTrailingTP at (TP_R-TPRLinkOffsetR) instead, so a TP_R optimizer sweep automatically keeps the trail just below the moving target without a second linked input
+input bool   UseTPRLinkedTrailTP = true; // CONFIRMED user-selected for this variant: arm UseTrailingTP at (TP_R-TPRLinkOffsetR)=0.44 instead of the early TrailTPTriggerR=0.15 -- Optimizer sweep showed this is WORSE (NET $38,049.85 vs $44,534.49 at the 0.15 trigger, -14.6%), kept at user's explicit request anyway
 input double TPRLinkOffsetR      = 0.01; // UNTESTED: offset subtracted from TP_R to get the effective trail-arm trigger when UseTPRLinkedTrailTP=true -- must stay >0 or the broker's own TP fires first (same race condition TrailTPTriggerR was split out to avoid, see header)
 
 int hBB20=INVALID_HANDLE,hBB4=INVALID_HANDLE,hStoch=INVALID_HANDLE;

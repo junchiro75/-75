@@ -782,6 +782,14 @@
 //| is on with an equal TrailTPDistanceR (0.04=0.04) -- UseTrailingTP's|
 //| own earlier arm (TrailTPTriggerR=0.15) already occupies the SL     |
 //| slot by the time TrailStopTriggerR would ever fire.                |
+//| UPDATE 2026.11 (user-selected override): UseTPRLinkedTrailTP turned|
+//| ON, moving the UseTrailingTP arm from the early 0.15 above to      |
+//| (TP_R-TPRLinkOffsetR)=0.44. An Optimizer sweep of this exact config |
+//| across TP_R=0.30-2.00 found 0.50 is the best point in that sweep   |
+//| ($43,034.44, almost identical to the 0.15-trigger NET above), but  |
+//| at TP_R=0.45 (unchanged) it's $41,989.08, slightly WORSE than the   |
+//| 0.15-trigger NET above ($43,083.61, -2.5%) -- kept anyway per      |
+//| explicit user choice.                                              |
 //+------------------------------------------------------------------+
 #property strict
 #include <Trade/Trade.mqh>
@@ -888,7 +896,7 @@ input bool   UseTrailingTP      = true; // Once price reaches TrailTPTriggerR, w
 input double TrailTPTriggerR    = 0.15; // Favorable R to arm the trailing TP -- must be strictly less than TP_R or the broker's own TP fires first (CONFIRMED, see header; only used when UseTrailingTP=true)
 input double TrailTPDistanceR   = 0.04; // Distance maintained between price and the trailing SL once UseTrailingTP arms, in R (CONFIRMED, see header; only used when UseTrailingTP=true)
 
-input bool   UseTPRLinkedTrailTP = false; // UNTESTED: when true, ignore TrailTPTriggerR and arm UseTrailingTP at (TP_R-TPRLinkOffsetR) instead, so a TP_R optimizer sweep automatically keeps the trail just below the moving target without a second linked input
+input bool   UseTPRLinkedTrailTP = true; // CONFIRMED user-selected for this variant: arm UseTrailingTP at (TP_R-TPRLinkOffsetR)=0.44 instead of the early TrailTPTriggerR=0.15 -- Optimizer sweep showed this is WORSE (NET $41,989.08 vs $43,083.61 at the 0.15 trigger, -2.5%), kept at user's explicit request anyway
 input double TPRLinkOffsetR      = 0.01; // UNTESTED: offset subtracted from TP_R to get the effective trail-arm trigger when UseTPRLinkedTrailTP=true -- must stay >0 or the broker's own TP fires first (same race condition TrailTPTriggerR was split out to avoid, see header)
 
 input double MildZoneR          = 2.0; // Adverse-R boundary for dwell-time diagnostic (no trading effect)

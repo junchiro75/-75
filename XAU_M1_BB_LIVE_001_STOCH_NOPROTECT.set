@@ -31,5 +31,5 @@ TrailStopDistanceR=0.05
 UseTrailingTP=true
 TrailTPTriggerR=0.15
 TrailTPDistanceR=0.04
-UseTPRLinkedTrailTP=false
+UseTPRLinkedTrailTP=true
 TPRLinkOffsetR=0.01
