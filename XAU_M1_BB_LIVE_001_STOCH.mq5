@@ -231,6 +231,14 @@
 //| "improve" on an already-superseded SL and request moving it backward).  |
 //| Both trailing blocks now floor/ceiling curSL against g_trailStopLevel[i]|
 //| / g_trailTPStopLevel[i] before the improves check.                      |
+//| SkipIfH1TrendAgainst/SkipIfH1NotAgainst (2026.11, UNTESTED, ported from  |
+//| 007 M10): checks the 2 prior closed H1 bars at signal time against the  |
+//| decided entry direction -- if BOTH oppose it, h1Against=true. On 007,   |
+//| keeping ONLY h1Against trades (SkipIfH1NotAgainst=true) was CONFIRMED   |
+//| to improve every metric (NET/PF/RF/WR), on the theory that a genuine    |
+//| H1-aligned extension against a mean-reversion entry reads as real       |
+//| capitulation, not danger. Both default false (no filtering) here until |
+//| backtested on this EA's own signal.                                     |
 //+------------------------------------------------------------------+
 #property strict
 #include <Trade/Trade.mqh>
@@ -257,6 +265,9 @@ input int    SkipHourStartKST   = 14; // Hour-dip window start, KST (see header,
 input int    SkipHourEndKST     = 16; // Hour-dip window end, KST, exclusive (see header, SkipHourEntryKST)
 input bool   SkipHourEntryKST   = true; // Block entries in [SkipHourStartKST,SkipHourEndKST) KST (CONFIRMED, see header)
 input bool   UseFridayNarrowWindow = false; // On Friday, only allow entries 10:30-15:00 KST (ported from M2_v2 where CONFIRMED; REJECTED here, see header)
+
+input bool   SkipIfH1TrendAgainst = false; // UNTESTED, ported from 007 M10: skip entry when the 2 prior closed H1 bars both oppose the entry direction (see 007's header for the ground-truth rationale)
+input bool   SkipIfH1NotAgainst   = false; // UNTESTED, ported from 007 M10: keep ONLY entries where the 2 prior closed H1 bars both oppose the entry direction (007's CONFIRMED finding -- H1-against reads as capitulation, not danger)
 
 input double MildZoneR          = 2.0;  // Adverse-R boundary for dwell-time diagnostic (no trading effect)
 input double ComboExitDangerMin = 10.0; // Danger-zone minutes required, combined with threeBarOneWay (UNTESTED, see header)
@@ -784,6 +795,19 @@ void CheckNewM1Bar()
    }
    tag=tag+touchTag;
 
+   {
+      double h1o1=iOpen(_Symbol,PERIOD_H1,1),h1c1=iClose(_Symbol,PERIOD_H1,1);
+      double h1o2=iOpen(_Symbol,PERIOD_H1,2),h1c2=iClose(_Symbol,PERIOD_H1,2);
+      bool h1Bear1=h1c1<h1o1, h1Bear2=h1c2<h1o2;
+      bool h1Against=(dir==+1) ? (h1Bear1 && h1Bear2) : (!h1Bear1 && !h1Bear2);
+      Log("H1_TREND_CHECK","dir="+(dir==1?"BUY":"SELL")+" h1Against="+(h1Against?"true":"false"));
+      if(h1Against && SkipIfH1TrendAgainst)
+      { Log("SIGNAL_SKIPPED","H1 trend against entry direction (both prior closed H1 bars) by SkipIfH1TrendAgainst=true"); return; }
+      if(!h1Against && SkipIfH1NotAgainst)
+      { Log("SIGNAL_SKIPPED","H1 trend NOT against entry direction by SkipIfH1NotAgainst=true"); return; }
+      tag=tag+(h1Against?"_H1AGAINST":"_H1OK");
+   }
+
    Log("SIGNAL",(sigdir==1?"BULL":"BEAR")+" candle | stochK="+DoubleToString(stochK,2)+
        " | R="+DoubleToString(R,_Digits)+" | touch="+(bodyTouch?"BODY":"WICK")+
        " | decided dir="+(dir==1?"BUY":"SELL")+" | "+tag);
@@ -821,6 +845,7 @@ int OnInit()
        " | SkipHourStartKST="+IntegerToString(SkipHourStartKST)+" SkipHourEndKST="+IntegerToString(SkipHourEndKST)+
        " SkipHourEntryKST="+(SkipHourEntryKST?"true":"false")+
        " | UseFridayNarrowWindow="+(UseFridayNarrowWindow?"true":"false")+
+       " | SkipIfH1TrendAgainst="+(SkipIfH1TrendAgainst?"true":"false")+" SkipIfH1NotAgainst="+(SkipIfH1NotAgainst?"true":"false")+
        " | ProtectTriggerR="+DoubleToString(ProtectTriggerR,2)+" ProtectR="+DoubleToString(ProtectR,2)+
        " UseProtectStop="+(UseProtectStop?"true":"false")+
        " | UseTrailingStop="+(UseTrailingStop?"true":"false")+" TrailStopTriggerR="+DoubleToString(TrailStopTriggerR,2)+

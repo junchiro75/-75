@@ -249,6 +249,15 @@
 //| hours 03/21/23 KST across all weekdays combined (all positive, every     |
 //| EA), and 001 M1/M2/M3's own day-of-week breakdowns (no outlier weekday   |
 //| on any of the three).                                                   |
+//| SkipIfH1TrendAgainst/SkipIfH1NotAgainst (2026.11, UNTESTED, ported        |
+//| from 007 M10): checks the 2 prior closed H1 bars, fixed at SIGNAL         |
+//| time (not re-evaluated at the later countertrend entry time), against     |
+//| the already-known entry direction (-sigdir) -- if BOTH oppose it,         |
+//| h1Against=true. On 007, keeping ONLY h1Against trades                     |
+//| (SkipIfH1NotAgainst=true) was CONFIRMED to improve every metric           |
+//| (NET/PF/RF/WR), on the theory that a genuine H1-aligned extension         |
+//| against a mean-reversion entry reads as real capitulation, not           |
+//| danger. Both default false (no filtering) here until backtested.         |
 //+------------------------------------------------------------------+
 #property strict
 #include <Trade/Trade.mqh>
@@ -288,6 +297,9 @@ input int    SkipSatEndKST         = 6; // Saturday-block window end, KST, exclu
 input bool   SkipThuHour3Entry     = true; // Block entries on Thursday in [SkipThuStartKST,SkipThuEndKST) KST (CONFIRMED 2026-10-23, see header)
 input int    SkipThuStartKST       = 3; // Thursday-block window start, KST
 input int    SkipThuEndKST         = 4; // Thursday-block window end, KST, exclusive
+
+input bool   SkipIfH1TrendAgainst = false; // UNTESTED, ported from 007 M10: skip entry when the 2 prior closed H1 bars (fixed at signal time) both oppose the entry direction (see 007's header for the ground-truth rationale)
+input bool   SkipIfH1NotAgainst   = false; // UNTESTED, ported from 007 M10: keep ONLY entries where the 2 prior closed H1 bars both oppose the entry direction (007's CONFIRMED finding -- H1-against reads as capitulation, not danger)
 
 input double ProtectTriggerR      = 0.25; // Favorable R to arm an early protect-lock stop, before TP1 (REJECTED, see header)
 input double ProtectR             = 0.05; // SL level once armed, in R (REJECTED, see header)
@@ -342,6 +354,7 @@ struct Setup {
    bool extension_hit;
    bool bodyTouch;          // diagnostic: did the signal candle's CLOSE also break the band, or only the high/low (see header)
    bool prior5Same;         // diagnostic: were the 5 candles before the signal candle all in the signal's own direction (see header)
+   bool h1Against;          // fixed at signal time: both prior closed H1 bars oppose the (already-known) entry direction
 };
 Setup setups[];
 
@@ -718,9 +731,16 @@ void AddSignal(datetime sig,datetime close_time,int dir,double R,double c,bool b
    setups[n].extension_hit=false;
    setups[n].bodyTouch=bodyTouch;
    setups[n].prior5Same=prior5Same;
+   {
+      int entryDir=-dir; // countertrend entry direction, already known at signal time
+      double h1o1=iOpen(_Symbol,PERIOD_H1,1),h1c1=iClose(_Symbol,PERIOD_H1,1);
+      double h1o2=iOpen(_Symbol,PERIOD_H1,2),h1c2=iClose(_Symbol,PERIOD_H1,2);
+      bool h1Bear1=h1c1<h1o1, h1Bear2=h1c2<h1o2;
+      setups[n].h1Against=(entryDir==+1) ? (h1Bear1 && h1Bear2) : (!h1Bear1 && !h1Bear2);
+   }
    Log("SIGNAL",(dir==1?"BULL":"BEAR")+" R="+DoubleToString(R,_Digits)+
        " ext="+DoubleToString(setups[n].target,_Digits)+" touch="+(bodyTouch?"BODY":"WICK")+
-       " prior5Same="+(prior5Same?"true":"false"));
+       " prior5Same="+(prior5Same?"true":"false")+" h1Against="+(setups[n].h1Against?"true":"false"));
 }
 
 void CheckNewM2Bar()
@@ -798,6 +818,10 @@ bool OpenCountertrend(Setup &s,MqlTick &tick)
       Log("ENTRY_SKIPPED","SELL disabled by AllowShort=false (data-driven direction filter)");
       return false;
    }
+   if(s.h1Against && SkipIfH1TrendAgainst)
+   { Log("ENTRY_SKIPPED","H1 trend against entry direction (fixed at signal time) by SkipIfH1TrendAgainst=true"); return false; }
+   if(!s.h1Against && SkipIfH1NotAgainst)
+   { Log("ENTRY_SKIPPED","H1 trend NOT against entry direction (fixed at signal time) by SkipIfH1NotAgainst=true"); return false; }
    datetime entryNow=(datetime)(tick.time_msc/1000);
    bool skipHour=InSkipHourKST(entryNow);
    Log("SKIP_HOUR_CHECK","skipHour="+(skipHour?"true":"false")+" kstHour="+IntegerToString(KST_Hour(entryNow)));
