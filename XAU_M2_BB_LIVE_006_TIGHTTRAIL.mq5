@@ -325,12 +325,24 @@
 //| MinR_Points). DO NOT treat any specific value as confirmed until a        |
 //| ground-truth Tester run says otherwise.                                  |
 //|                                                                        |
-//| SellInitialSL_R (UNTESTED, verification-only, default 0=off, see        |
-//| header): same idea as SellMinR_Points, but for InitialSL_R. SELL's SL    |
-//| distance has only ever used the value BUY confirmed (3.5) -- never       |
-//| independently swept. Lets InitialSL_R and SellMinR_Points be grid-       |
-//| optimized TOGETHER for SELL only via the Optimizer (BUY keeps using      |
-//| InitialSL_R unchanged). Default 0 reproduces current behavior exactly.   |
+//| SellInitialSL_R (CONFIRMED 2026-11-10, default 2.50, see header):       |
+//| SELL's SL distance had only ever used the value BUY confirmed (3.5) --   |
+//| never independently swept. A 77-combo Optimizer grid (SellInitialSL_R    |
+//| 2.5-5.0 step 0.25 x SellMinR_Points 200-500 step 50, AllowShort=true,     |
+//| SkipSellEntryHourKST=true) found 2.50/200 (i.e. SellMinR_Points          |
+//| unchanged, only the SL tightened) clearly best and not a lone outlier --  |
+//| RF falls smoothly from 2.50 down to 4.00 (21.96->20.74), then drops       |
+//| sharply past 4.75 (DD% jumps to 3.35-3.65%). Re-confirmed with an         |
+//| isolated single run (InitialSL_R=3.5 for BUY unchanged, only              |
+//| SellInitialSL_R=2.50 overriding SELL): SELL alone improved n=2287->2156,  |
+//| NET $14,740.55->$17,807.98, Recovery Factor 3.45->6.01 (+74%, 2025.01-    |
+//| 2026.09); BUY essentially untouched (RF 32.96->33.36, the tiny residual    |
+//| move is the shared MAX1-slot side effect of fewer SELL entries, not a     |
+//| direct BUY change). Holds on the Apr-Oct 2026 "normal volatility"         |
+//| sub-period too: SELL RF 8.30->14.13 (+70%), BUY RF 28.78->28.23           |
+//| (flat). SellMinR_Points stays at its default 0 (=200, unchanged) --       |
+//| the same grid showed raising it hurts SELL's RF, consistent with the      |
+//| earlier global MinR_Points=300 test.                                      |
 //+------------------------------------------------------------------+
 #property strict
 #include <Trade/Trade.mqh>
@@ -374,7 +386,7 @@ input bool   SkipSellEntryHourKST  = true; // Block SELL entries in [SkipSellHou
 input int    SkipSellHourStartKST  = 4; // SELL-only KST hour skip window start (CONFIRMED 2026-11-10, see header)
 input int    SkipSellHourEndKST    = 8; // SELL-only KST hour skip window end, exclusive (CONFIRMED 2026-11-10, see header)
 input double SellMinR_Points       = 0; // SELL-only min signal-candle body (points) override, 0=use MinR_Points for both directions (UNTESTED, verification-only, see header)
-input double SellInitialSL_R       = 0; // SELL-only initial stop loss (R) override, 0=use InitialSL_R for both directions (UNTESTED, verification-only, see header)
+input double SellInitialSL_R       = 2.50; // SELL-only initial stop loss (R) override, 0=use InitialSL_R for both directions (CONFIRMED 2026-11-10, see header)
 
 input double ProtectTriggerR      = 0.25; // Favorable R to arm an early protect-lock stop, before TP1 (REJECTED, see header)
 input double ProtectR             = 0.05; // SL level once armed, in R (REJECTED, see header)
