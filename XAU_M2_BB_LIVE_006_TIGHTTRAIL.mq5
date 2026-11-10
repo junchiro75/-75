@@ -286,6 +286,44 @@
 //| hours 03/21/23 KST across all weekdays combined (all positive, every     |
 //| EA), and 001 M1/M2/M3's own day-of-week breakdowns (no outlier weekday   |
 //| on any of the three).                                                   |
+//|                                                                        |
+//| SkipSellEntryHourKST (CONFIRMED 2026-11-10, see header): with           |
+//| AllowShort=true, a direction-split hourly breakdown of a real           |
+//| AllowShort=true/MinR_Points=200 log (2025.01-2026.10, n=4930) found      |
+//| SELL specifically (not BUY) loses money in 05:00-07:00 KST (05h: n=54,   |
+//| WR 75.93%, NET -$1,061.83; 06h: n=21, WR 76.19%, NET -$642.31), while    |
+//| the same hours are fine or strong for BUY (e.g. 04-06h BUY: WR 93.63%,   |
+//| NET +$3,017.39) -- the direction-agnostic SkipHourStartKST/EndKST        |
+//| window (20-22 KST) cannot catch this since it only applies to one fixed  |
+//| window shared by both directions. Loss is spread Tue-Sat, not a single-  |
+//| day outlier (Thu heaviest at -$721.41 of the -$1,067.69 04-08h SELL      |
+//| total, but every other weekday Tue/Wed/Fri/Sat also negative). A         |
+//| narrower 05-07h-only SELL block captures slightly more of the gain       |
+//| ($1,704.14 vs $1,067.69 for the full 04-08h, fewer trades removed), but  |
+//| 04-08h was chosen deliberately WIDER (more conservative) per user        |
+//| request, trading a bit of upside for a bigger margin around the         |
+//| exact loss-making hours -- not re-confirmed with a fresh MT5 Tester A/B  |
+//| run under this exact filter compiled in (analysis is post-hoc on the     |
+//| existing log/deal data, same caveat as every other finding in this       |
+//| block until a dedicated run is done).                                    |
+//|                                                                        |
+//| SellMinR_Points (UNTESTED, verification-only, default 0=off, see        |
+//| header): separate MinR_Points override for SELL entries only (BUY       |
+//| keeps using MinR_Points unchanged). Motivated by a post-hoc R-bucket     |
+//| split of the same AllowShort=true log showing SELL's R [2.0,2.5) and     |
+//| [3.5,4.0) buckets are disproportionately weak (avg $1.13 and $1.32/     |
+//| trade vs $6-14/trade in the other buckets) -- but a real MT5 Tester      |
+//| run that actually raised MinR_Points=300 globally (not SELL-only)        |
+//| showed this post-hoc estimate does NOT hold: SELL's own Recovery        |
+//| Factor got WORSE (3.45->3.03), not better, apparently because raising    |
+//| MinR_Points changes which signals are detected in the first place        |
+//| (LatestSignalOnly lets a different setup take a dropped low-R signal's   |
+//| place), not just a static post-trade filter on the final trade list.     |
+//| This input exists ONLY to let a direction-isolated MinR be tested        |
+//| properly in the Strategy Tester (signal-detection time, SELL only) --    |
+//| default 0 reproduces current behavior exactly (BUY and SELL both use     |
+//| MinR_Points). DO NOT treat any specific value as confirmed until a        |
+//| ground-truth Tester run says otherwise.                                  |
 //+------------------------------------------------------------------+
 #property strict
 #include <Trade/Trade.mqh>
@@ -325,6 +363,10 @@ input int    SkipSatEndKST         = 6; // Saturday-block window end, KST, exclu
 input bool   SkipThuHour3Entry     = true; // Block entries on Thursday in [SkipThuStartKST,SkipThuEndKST) KST (CONFIRMED 2026-10-23, see header)
 input int    SkipThuStartKST       = 3; // Thursday-block window start, KST
 input int    SkipThuEndKST         = 4; // Thursday-block window end, KST, exclusive
+input bool   SkipSellEntryHourKST  = true; // Block SELL entries in [SkipSellHourStartKST,SkipSellHourEndKST) KST (CONFIRMED 2026-11-10, see header)
+input int    SkipSellHourStartKST  = 4; // SELL-only KST hour skip window start (CONFIRMED 2026-11-10, see header)
+input int    SkipSellHourEndKST    = 8; // SELL-only KST hour skip window end, exclusive (CONFIRMED 2026-11-10, see header)
+input double SellMinR_Points       = 0; // SELL-only min signal-candle body (points) override, 0=use MinR_Points for both directions (UNTESTED, verification-only, see header)
 
 input double ProtectTriggerR      = 0.25; // Favorable R to arm an early protect-lock stop, before TP1 (REJECTED, see header)
 input double ProtectR             = 0.05; // SL level once armed, in R (REJECTED, see header)
@@ -490,6 +532,15 @@ bool InSkipThuHourKST(datetime server_now)
    MqlDateTime t; TimeToStruct(server_now+offsetHours*3600,t);
    if(t.day_of_week!=4) return false; // Thursday only
    return (t.hour>=SkipThuStartKST && t.hour<SkipThuEndKST);
+}
+
+// -- SELL-only hour block (CONFIRMED 2026-11-10, see header): same
+//    KST_Hour() pattern as InSkipHourKST, applied only when the caller
+//    checks it against a SELL entry (dir==-1 in OpenCountertrend).
+bool InSkipSellHourKST(datetime server_now)
+{
+   int h=KST_Hour(server_now);
+   return (h>=SkipSellHourStartKST && h<SkipSellHourEndKST);
 }
 
 // -- 매물대 (supply/demand zone) tracking, ported verbatim from 001 M2_v2 --
@@ -797,7 +848,12 @@ void CheckNewM2Bar()
    }
 
    double R=MathAbs(c-o);
-   double minR=MathMax(_Point,MinR_Points*_Point);
+   // dir==+1 here is a BULL signal candle, which OpenCountertrend() will fade
+   // into a SELL (dir=-s.sigdir there) -- so this is the SELL-only override
+   // point, before AllowShort is even checked (signal-detection time, see
+   // SellMinR_Points header note).
+   double minRPoints=(dir==+1 && SellMinR_Points>0) ? SellMinR_Points : MinR_Points;
+   double minR=MathMax(_Point,minRPoints*_Point);
    if(R<=minR) return;
    bool bodyTouch=(dir==+1)?(c>=up20[0]):(c<=lo20[0]);
 
@@ -856,6 +912,11 @@ bool OpenCountertrend(Setup &s,MqlTick &tick)
    if(SkipThuHour3Entry && InSkipThuHourKST(entryNow))
    {
       Log("ENTRY_SKIPPED","blocked by SkipThuHour3Entry (Thursday, KST hour in ["+IntegerToString(SkipThuStartKST)+","+IntegerToString(SkipThuEndKST)+"))");
+      return false;
+   }
+   if(dir==-1 && SkipSellEntryHourKST && InSkipSellHourKST(entryNow))
+   {
+      Log("ENTRY_SKIPPED","blocked by SkipSellEntryHourKST=true (SELL, KST hour in ["+IntegerToString(SkipSellHourStartKST)+","+IntegerToString(SkipSellHourEndKST)+"))");
       return false;
    }
    if(!EnableLiveOrders)
@@ -1175,6 +1236,8 @@ int OnInit()
        " | UseFridayNarrowWindow="+(UseFridayNarrowWindow?"true":"false")+
        " | SkipSatEarlyEntry="+(SkipSatEarlyEntry?"true":"false")+" ["+IntegerToString(SkipSatStartKST)+","+IntegerToString(SkipSatEndKST)+")KST"+
        " SkipThuHour3Entry="+(SkipThuHour3Entry?"true":"false")+" ["+IntegerToString(SkipThuStartKST)+","+IntegerToString(SkipThuEndKST)+")KST"+
+       " | SkipSellEntryHourKST="+(SkipSellEntryHourKST?"true":"false")+" ["+IntegerToString(SkipSellHourStartKST)+","+IntegerToString(SkipSellHourEndKST)+")KST"+
+       " SellMinR_Points="+DoubleToString(SellMinR_Points,1)+
        " | ProtectTriggerR="+DoubleToString(ProtectTriggerR,2)+" ProtectR="+DoubleToString(ProtectR,2)+
        " UseProtectStop="+(UseProtectStop?"true":"false")+
        " | UseTrailingStop="+(UseTrailingStop?"true":"false")+" TrailStopDistanceR="+DoubleToString(TrailStopDistanceR,2)+
