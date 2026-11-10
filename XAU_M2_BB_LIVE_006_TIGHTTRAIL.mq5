@@ -8,6 +8,27 @@
 //| SkipSellEntryHourKST header entries below for the underlying        |
 //| SELL-side tuning this decision rests on.                            |
 //+------------------------------------------------------------------+
+//| UseMaxRFilter / MaxR_Points (CONFIRMED on, MaxR_Points=1000,       |
+//| 2026-11-10): caps the signal-candle body (R) the same way           |
+//| MinR_Points/SellMinR_Points floor it, just at the other end --       |
+//| skips the signal (BUY or SELL alike) if R > MaxR_Points*_Point       |
+//| ($10.00 at the default 1000). A real-trade R breakdown (2025.01-     |
+//| 2026.10, BUY+SELL, this file's confirmed live config) found this     |
+//| period-dependent: over the FULL period, R>10 trades contribute a     |
+//| large chunk of NET (removing them: NET $63,099->$45,843, Recovery    |
+//| Factor 46.48->29.23, WORSE) -- most of that R>10 NET comes from the  |
+//| Jan-Mar 2026 volatility spike. Restricted to Apr-Oct 2026 ("normal"  |
+//| volatility), NET barely moves ($26,476->$25,198) but MaxDD drops      |
+//| 16% ($682.69->$575.10), so Recovery Factor still improves (38.78->   |
+//| 43.81) even without 005 M1's single dominant outlier trade -- the     |
+//| removed R>10 losses here are smaller and more spread out (mostly      |
+//| SELL). Defaulted ON (CONFIRMED) on the user's stated view that        |
+//| 2026's elevated volatility (vs 2025) is the new normal going           |
+//| forward, Jan-Mar 2026 was a one-off spike, and the filter should be    |
+//| turned back OFF if/when a similar spike regime returns (it costs       |
+//| NET during exactly those regimes). Toggle via UseMaxRFilter rather      |
+//| than deleting the setting, for that reason.                            |
+//+------------------------------------------------------------------+
 //| Forked from XAU_M2_BB_LIVE_005_RFILTER_V2.mq5 (2026-11-01). Same  |
 //| entry engine, unchanged. Only the post-TP1 exit VALUES differ,    |
 //| per an offline Python tick-replay simulation (NOT an MT5          |
@@ -395,6 +416,8 @@ input int    SkipSellHourStartKST  = 4; // SELL-only KST hour skip window start 
 input int    SkipSellHourEndKST    = 8; // SELL-only KST hour skip window end, exclusive (CONFIRMED 2026-11-10, see header)
 input double SellMinR_Points       = 0; // SELL-only min signal-candle body (points) override, 0=use MinR_Points for both directions (UNTESTED, verification-only, see header)
 input double SellInitialSL_R       = 2.50; // SELL-only initial stop loss (R) override, 0=use InitialSL_R for both directions (CONFIRMED 2026-11-10, see header)
+input bool   UseMaxRFilter         = true; // Skip signals (BUY or SELL) whose R exceeds MaxR_Points (CONFIRMED 2026-11-10, see header)
+input double MaxR_Points           = 1000; // Max signal-candle body (points) to trade when UseMaxRFilter=true (CONFIRMED 2026-11-10, see header)
 
 input double ProtectTriggerR      = 0.25; // Favorable R to arm an early protect-lock stop, before TP1 (REJECTED, see header)
 input double ProtectR             = 0.05; // SL level once armed, in R (REJECTED, see header)
@@ -887,6 +910,11 @@ void CheckNewM2Bar()
    double minRPoints=(dir==+1 && SellMinR_Points>0) ? SellMinR_Points : MinR_Points;
    double minR=MathMax(_Point,minRPoints*_Point);
    if(R<=minR) return;
+   if(UseMaxRFilter)
+   {
+      double maxR=MaxR_Points*_Point;
+      if(R>maxR) return;
+   }
    bool bodyTouch=(dir==+1)?(c>=up20[0]):(c<=lo20[0]);
 
    // Prior-5-candle-same-direction (diagnostic): were the 5 candles right
@@ -1271,6 +1299,7 @@ int OnInit()
        " SkipThuHour3Entry="+(SkipThuHour3Entry?"true":"false")+" ["+IntegerToString(SkipThuStartKST)+","+IntegerToString(SkipThuEndKST)+")KST"+
        " | SkipSellEntryHourKST="+(SkipSellEntryHourKST?"true":"false")+" ["+IntegerToString(SkipSellHourStartKST)+","+IntegerToString(SkipSellHourEndKST)+")KST"+
        " SellMinR_Points="+DoubleToString(SellMinR_Points,1)+" SellInitialSL_R="+DoubleToString(SellInitialSL_R,2)+
+       " | UseMaxRFilter="+(UseMaxRFilter?"true":"false")+" MaxR_Points="+DoubleToString(MaxR_Points,1)+
        " | ProtectTriggerR="+DoubleToString(ProtectTriggerR,2)+" ProtectR="+DoubleToString(ProtectR,2)+
        " UseProtectStop="+(UseProtectStop?"true":"false")+
        " | UseTrailingStop="+(UseTrailingStop?"true":"false")+" TrailStopDistanceR="+DoubleToString(TrailStopDistanceR,2)+

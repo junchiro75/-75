@@ -1,5 +1,24 @@
 //+------------------------------------------------------------------+
 //| XAU_M1_BB_LIVE_005_RFILTER_V2.mq5                                |
+//| UseMaxRFilter / MaxR_Points (CONFIRMED on, MaxR_Points=1000,       |
+//| 2026-11-10): caps the signal-candle body (R) the same way          |
+//| MinR_Points floors it, just at the other end -- skips the signal    |
+//| entirely if R > MaxR_Points*_Point ($10.00 at the default 1000).    |
+//| A real-trade R breakdown (2025.01-2026.10, BUY-only) found this      |
+//| period-dependent: over the FULL period, R>10 trades contribute a     |
+//| large chunk of NET (removing them: NET $54,931->$46,569, Recovery    |
+//| Factor 32.79->22.98, WORSE) -- most of that R>10 NET comes from the  |
+//| Jan-Mar 2026 volatility spike. Restricted to Apr-Oct 2026 ("normal"  |
+//| volatility), it flips: NET is nearly unchanged ($21,334->$21,056)    |
+//| but MaxDD collapses ($1,377.76->$574.50, -58%), driven almost          |
+//| entirely by cutting ONE trade -- the 2026-06-18 -$1,148.87 loss       |
+//| that coincided with that day's FOMC decision (R=32.10, the single      |
+//| largest R in the whole dataset). Defaulted ON (CONFIRMED) on the      |
+//| user's stated view that 2026's elevated volatility (vs 2025) is the   |
+//| new normal going forward, Jan-Mar 2026 was a one-off spike, and the    |
+//| filter should be turned back OFF if/when a similar spike regime        |
+//| returns (it costs NET during exactly those regimes). Toggle via        |
+//| UseMaxRFilter rather than deleting the setting, for that reason.       |
 //| M1 sibling of XAU_M2_BB_LIVE_005_RFILTER_V2.mq5 -- identical      |
 //| engine, just Timeframe default=PERIOD_M1 and a distinct Magic     |
 //| Number so it can run alongside the M2 version. Most ground-truth  |
@@ -123,6 +142,8 @@ input double TP1_R                = 0.65; // Partial/lock trigger (R) (CONFIRMED
 input double Lock_R               = 0.30; // Lock SL level (R) (CONFIRMED on M2, see header)
 input double TP2_R                = 0.90; // Final target (R)
 input double MinR_Points          = 225; // Min signal-candle body (points) to trade, 0=no filter (CONFIRMED on M1 2026-11-03, jointly re-tuned, see header)
+input bool   UseMaxRFilter        = true; // Skip signals whose R exceeds MaxR_Points (CONFIRMED 2026-11-10, see header)
+input double MaxR_Points          = 1000; // Max signal-candle body (points) to trade when UseMaxRFilter=true (CONFIRMED 2026-11-10, see header)
 input bool   LatestSignalOnly     = true; // New signal cancels older pending setups (CONFIRMED on M2, see header)
 input int    MaxExtensionHours    = 72; // Max hours waiting for extension
 input int    MaxPullbackHours     = 72; // Max hours waiting for pullback
@@ -406,6 +427,11 @@ void CheckNewM2Bar()
    double R=MathAbs(c-o);
    double minR=MathMax(_Point,MinR_Points*_Point);
    if(R<=minR) return;
+   if(UseMaxRFilter)
+   {
+      double maxR=MaxR_Points*_Point;
+      if(R>maxR) return;
+   }
    AddSignal(sig,t,dir,R,c);
 }
 
@@ -735,6 +761,7 @@ int OnInit()
        IntegerToString((int)MagicNumber)+" | Lots="+DoubleToString(Lots,2)+
        " | LatestSignalOnly="+(LatestSignalOnly?"true":"false")+
        " | AllowShort="+(AllowShort?"true":"false")+" | MinR_Points="+DoubleToString(MinR_Points,1)+
+       " | UseMaxRFilter="+(UseMaxRFilter?"true":"false")+" MaxR_Points="+DoubleToString(MaxR_Points,1)+
        " | ProtectTriggerR="+DoubleToString(ProtectTriggerR,2)+" ProtectR="+DoubleToString(ProtectR,2)+
        " UseProtectStop="+(UseProtectStop?"true":"false")+
        " | UseTrailingStop="+(UseTrailingStop?"true":"false")+" TrailStopDistanceR="+DoubleToString(TrailStopDistanceR,2)+
