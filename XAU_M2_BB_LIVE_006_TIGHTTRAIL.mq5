@@ -1,5 +1,13 @@
 //+------------------------------------------------------------------+
 //| XAU_M2_BB_LIVE_006_TIGHTTRAIL.mq5                                |
+//| LIVE ROLLOUT (2026-11-10): AllowShort flipped true in the live    |
+//| .set (XAU_M2_BB_LIVE_006_TIGHTTRAIL.set) -- BUY+SELL combined      |
+//| beat BUY-only on both NET and Recovery Factor, full-period AND     |
+//| the Apr-Oct 2026 "normal volatility" sub-period, with MaxDD flat   |
+//| (full period) or only +15% (Apr-Oct). See SellInitialSL_R/         |
+//| SkipSellEntryHourKST header entries below for the underlying        |
+//| SELL-side tuning this decision rests on.                            |
+//+------------------------------------------------------------------+
 //| Forked from XAU_M2_BB_LIVE_005_RFILTER_V2.mq5 (2026-11-01). Same  |
 //| entry engine, unchanged. Only the post-TP1 exit VALUES differ,    |
 //| per an offline Python tick-replay simulation (NOT an MT5          |
