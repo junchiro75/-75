@@ -324,6 +324,13 @@
 //| default 0 reproduces current behavior exactly (BUY and SELL both use     |
 //| MinR_Points). DO NOT treat any specific value as confirmed until a        |
 //| ground-truth Tester run says otherwise.                                  |
+//|                                                                        |
+//| SellInitialSL_R (UNTESTED, verification-only, default 0=off, see        |
+//| header): same idea as SellMinR_Points, but for InitialSL_R. SELL's SL    |
+//| distance has only ever used the value BUY confirmed (3.5) -- never       |
+//| independently swept. Lets InitialSL_R and SellMinR_Points be grid-       |
+//| optimized TOGETHER for SELL only via the Optimizer (BUY keeps using      |
+//| InitialSL_R unchanged). Default 0 reproduces current behavior exactly.   |
 //+------------------------------------------------------------------+
 #property strict
 #include <Trade/Trade.mqh>
@@ -367,6 +374,7 @@ input bool   SkipSellEntryHourKST  = true; // Block SELL entries in [SkipSellHou
 input int    SkipSellHourStartKST  = 4; // SELL-only KST hour skip window start (CONFIRMED 2026-11-10, see header)
 input int    SkipSellHourEndKST    = 8; // SELL-only KST hour skip window end, exclusive (CONFIRMED 2026-11-10, see header)
 input double SellMinR_Points       = 0; // SELL-only min signal-candle body (points) override, 0=use MinR_Points for both directions (UNTESTED, verification-only, see header)
+input double SellInitialSL_R       = 0; // SELL-only initial stop loss (R) override, 0=use InitialSL_R for both directions (UNTESTED, verification-only, see header)
 
 input double ProtectTriggerR      = 0.25; // Favorable R to arm an early protect-lock stop, before TP1 (REJECTED, see header)
 input double ProtectR             = 0.05; // SL level once armed, in R (REJECTED, see header)
@@ -437,7 +445,7 @@ double trail_tp_stop_level=0; // UseTrailingTP: current trailing SL level once a
 // DRY/tester virtual position: reproduces research MAX1 without sending orders.
 bool v_open=false,v_tp1=false;
 int v_dir=0;
-double v_R=0,v_entry=0,v_sl=0,v_tp1px=0,v_lock=0,v_tp2=0;
+double v_R=0,v_entry=0,v_sl=0,v_slR=0,v_tp1px=0,v_lock=0,v_tp2=0;
 datetime v_entry_time=0;
 int v_entries=0,v_sl_n=0,v_lock_n=0,v_tp_n=0,v_timeout_n=0;
 double v_totalR=0;
@@ -728,7 +736,11 @@ bool FindOurPosition()
          managed_R=prevR;
       }
       else if(managed_tp2>0) managed_R=MathAbs(managed_tp2-managed_entry)/TP2_R;
-      else if(managed_sl>0) managed_R=MathAbs(managed_sl-managed_entry)/InitialSL_R;
+      else if(managed_sl>0)
+      {
+         double managedSlR=(managed_dir==-1 && SellInitialSL_R>0) ? SellInitialSL_R : InitialSL_R;
+         managed_R=MathAbs(managed_sl-managed_entry)/managedSlR;
+      }
       else managed_R=0;
 
       if(managed_R>0)
@@ -919,11 +931,12 @@ bool OpenCountertrend(Setup &s,MqlTick &tick)
       Log("ENTRY_SKIPPED","blocked by SkipSellEntryHourKST=true (SELL, KST hour in ["+IntegerToString(SkipSellHourStartKST)+","+IntegerToString(SkipSellHourEndKST)+"))");
       return false;
    }
+   double slR=(dir==-1 && SellInitialSL_R>0) ? SellInitialSL_R : InitialSL_R;
    if(!EnableLiveOrders)
    {
-      v_open=true; v_tp1=false; v_dir=dir; v_R=s.R;
+      v_open=true; v_tp1=false; v_dir=dir; v_R=s.R; v_slR=slR;
       v_entry=(dir==+1 ? tick.ask : tick.bid);
-      v_sl=v_entry-dir*InitialSL_R*v_R;
+      v_sl=v_entry-dir*slR*v_R;
       v_tp1px=v_entry+dir*TP1_R*v_R;
       v_lock=v_entry+dir*Lock_R*v_R;
       v_tp2=v_entry+dir*TP2_R*v_R;
@@ -945,7 +958,7 @@ bool OpenCountertrend(Setup &s,MqlTick &tick)
 
    MqlTick q; if(!SymbolInfoTick(_Symbol,q)){ Log("ORDER_FAIL","no current tick"); return false; }
    double ref=(dir==+1 ? q.ask : q.bid);
-   double sl=ref-dir*InitialSL_R*s.R;
+   double sl=ref-dir*slR*s.R;
    double tp=ref+dir*TP2_R*s.R;
 
    {
@@ -1070,7 +1083,7 @@ void ManageVirtual(MqlTick &tick)
    if(!v_tp1)
    {
       bool slhit=(v_dir==+1 ? px<=v_sl : px>=v_sl);
-      if(slhit){ CloseVirtual("SL",-InitialSL_R,now); return; }
+      if(slhit){ CloseVirtual("SL",-v_slR,now); return; }
 
       bool tp1hit=(v_dir==+1 ? px>=v_tp1px : px<=v_tp1px);
       if(tp1hit)
@@ -1237,7 +1250,7 @@ int OnInit()
        " | SkipSatEarlyEntry="+(SkipSatEarlyEntry?"true":"false")+" ["+IntegerToString(SkipSatStartKST)+","+IntegerToString(SkipSatEndKST)+")KST"+
        " SkipThuHour3Entry="+(SkipThuHour3Entry?"true":"false")+" ["+IntegerToString(SkipThuStartKST)+","+IntegerToString(SkipThuEndKST)+")KST"+
        " | SkipSellEntryHourKST="+(SkipSellEntryHourKST?"true":"false")+" ["+IntegerToString(SkipSellHourStartKST)+","+IntegerToString(SkipSellHourEndKST)+")KST"+
-       " SellMinR_Points="+DoubleToString(SellMinR_Points,1)+
+       " SellMinR_Points="+DoubleToString(SellMinR_Points,1)+" SellInitialSL_R="+DoubleToString(SellInitialSL_R,2)+
        " | ProtectTriggerR="+DoubleToString(ProtectTriggerR,2)+" ProtectR="+DoubleToString(ProtectR,2)+
        " UseProtectStop="+(UseProtectStop?"true":"false")+
        " | UseTrailingStop="+(UseTrailingStop?"true":"false")+" TrailStopDistanceR="+DoubleToString(TrailStopDistanceR,2)+
