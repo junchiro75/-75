@@ -1,5 +1,31 @@
 //+------------------------------------------------------------------+
 //| XAU_M1_BB_LIVE_001_STOCH_NOPROTECT.mq5                              |
+//| UseEntryBarScalpFlip / ScalpFlipTP_R (UNTESTED, default off,       |
+//| 2026-11-12, user-requested idea -- see input comments): an          |
+//| entirely separate entry/exit mode, independent of every other        |
+//| input in this file (Stoch*, AllowSellFade, AllowTrendBull,            |
+//| Protect/Trailing* all go unused when this is on). Every BB signal     |
+//| candle trades its own direction (bull->BUY, bear->SELL, no fade,      |
+//| no Stochastic check at all). Entry is immediate, same as always;      |
+//| SL stays the existing SL_R*R bracket. Instead of the normal TP_R,     |
+//| the position's take-profit is ScalpFlipTP_R*R (default 0.20R). If      |
+//| that TP is reached before the entry bar closes, done (normal win).     |
+//| If the position is STILL OPEN when the NEXT bar starts (TP not hit,    |
+//| SL not hit either), it is closed at market right then and a NEW        |
+//| position is opened in the OPPOSITE direction with its own               |
+//| ScalpFlipTP_R*R target (same SL_R bracket, same R). If that flipped     |
+//| leg also survives ITS OWN entry bar, no second flip happens -- it        |
+//| just keeps riding under its existing SL/TP like an ordinary trade,       |
+//| per the user's spec (only one flip). Implemented via g_scalpOpen/        |
+//| g_scalpDir/g_scalpR/g_scalpIsFlip state checked at the top of every      |
+//| CheckNewM1Bar() call, and OpenScalpTrade()/CloseOurPositionsNow()         |
+//| (parallel to OpenTrade(), not shared with it, so the normal              |
+//| Stochastic/Protect/Trailing path is completely untouched when this       |
+//| toggle is false). Scalp/flip trades skip StartMAETracking() entirely     |
+//| (no Protect-stop or Trailing management, no MAE_MILESTONE/MAE_OUTCOME    |
+//| diagnostic logging for these trades) -- plain bracket SL/TP only.        |
+//| Needs a real MT5 Tester run before trusting any result from it.           |
+//+------------------------------------------------------------------+
 //| M1 sibling of XAU_M2_BB_LIVE_001_STOCH_v2.mq5 -- identical logic,  |
 //| meant to run SIMULTANEOUSLY with the M2 version on the same       |
 //| account (own Magic number, own log file, own chart). Ground-truth |
@@ -279,6 +305,9 @@ input int    SkipHourEndKST     = 16; // Hour-dip window end, KST, exclusive (se
 input bool   SkipHourEntryKST   = true; // Block entries in [SkipHourStartKST,SkipHourEndKST) KST (CONFIRMED, see header)
 input bool   UseFridayNarrowWindow = false; // On Friday, only allow entries 10:30-15:00 KST (ported from M2_v2 where CONFIRMED; REJECTED here, see header)
 
+input bool   UseEntryBarScalpFlip = false; // Ignore Stochastic (trend-only entry); take profit at ScalpFlipTP_R if reached within the entry bar, else close and flip direction once on the next bar (UNTESTED, see header)
+input double ScalpFlipTP_R        = 0.20;  // Target (R) for UseEntryBarScalpFlip mode's scalp/flip take-profit (only used when UseEntryBarScalpFlip=true)
+
 input double MildZoneR          = 2.0;  // Adverse-R boundary for dwell-time diagnostic (no trading effect)
 input double ComboExitDangerMin = 10.0; // Danger-zone minutes required, combined with threeBarOneWay (UNTESTED, see header)
 input bool   UseComboExit       = false; // Close only when BOTH threeBarOneWay AND ComboExitDangerMin are met (REJECTED, see header)
@@ -299,6 +328,14 @@ input double TPRLinkOffsetR      = 0.01; // UNTESTED: offset subtracted from TP_
 
 int hBB20=INVALID_HANDLE,hBB4=INVALID_HANDLE,hStoch=INVALID_HANDLE;
 datetime last_m1_bar=0;
+
+// -- UseEntryBarScalpFlip state (see header): tracks the one scalp/flip
+//    position opened by OpenScalpTrade() across bars, so CheckNewM1Bar can
+//    tell whether it survived its own entry bar.
+bool     g_scalpOpen=false;
+int      g_scalpDir=0;
+double   g_scalpR=0;
+bool     g_scalpIsFlip=false;
 int f_log=INVALID_HANDLE;
 
 // -- ported from XAU_M2_BB_LIVE_001_STOCH_v2.mq5: threeBarOneWay + danger-
@@ -716,11 +753,109 @@ void OpenTrade(int dir,double R,string tag)
    }
 }
 
+// -- UseEntryBarScalpFlip helpers (see header) --------------------------
+void CloseOurPositionsNow()
+{
+   for(int i=PositionsTotal()-1;i>=0;i--)
+   {
+      ulong tk=PositionGetTicket(i);
+      if(tk==0 || !PositionSelectByTicket(tk)) continue;
+      if(PositionGetString(POSITION_SYMBOL)!=_Symbol) continue;
+      if((ulong)PositionGetInteger(POSITION_MAGIC)!=MagicNumber) continue;
+      trade.PositionClose(tk);
+   }
+}
+
+void OpenScalpTrade(int dir,double R,string tag,bool isFlip)
+{
+   if(!isFlip)
+   {
+      if(CountOurPositions()>0){ Log("ENTRY_SKIPPED","own-Magic position already exists (scalp entry)"); return; }
+      int kstHour=KST_Hour(TimeCurrent());
+      bool inSkipHour=(kstHour>=SkipHourStartKST && kstHour<SkipHourEndKST);
+      if(inSkipHour && SkipHourEntryKST)
+      {
+         Log("ENTRY_SKIPPED","KST hour in ["+IntegerToString(SkipHourStartKST)+","+IntegerToString(SkipHourEndKST)+") by SkipHourEntryKST=true (scalp entry)");
+         return;
+      }
+   }
+   tag=TFPrefix()+tag;
+
+   MqlTick q; if(!SymbolInfoTick(_Symbol,q)){ Log("ORDER_FAIL","no current tick (scalp)"); return; }
+   double ref=(dir==+1 ? q.ask : q.bid);
+   double sl=ref-dir*SL_R*R;
+   double tp=ref+dir*ScalpFlipTP_R*R;
+
+   double cushion=MinStopDistance()+_Point;
+   if(dir==+1)
+   {
+      if(sl>q.bid-cushion) sl=q.bid-cushion;
+      if(tp<q.ask+cushion) tp=q.ask+cushion;
+   }
+   else
+   {
+      if(sl<q.ask+cushion) sl=q.ask+cushion;
+      if(tp>q.bid-cushion) tp=q.bid-cushion;
+   }
+   sl=NormalizeDouble(sl,_Digits); tp=NormalizeDouble(tp,_Digits);
+
+   if(!EnableLiveOrders)
+   {
+      Log("DRY_ENTRY",(dir==1?"BUY":"SELL")+string(" @~")+DoubleToString(ref,_Digits)+
+          " R="+DoubleToString(R,_Digits)+" SL="+DoubleToString(sl,_Digits)+" TP="+DoubleToString(tp,_Digits)+" | "+tag);
+      g_scalpOpen=true; g_scalpDir=dir; g_scalpR=R; g_scalpIsFlip=isFlip;
+      return;
+   }
+
+   trade.SetExpertMagicNumber(MagicNumber);
+   trade.SetDeviationInPoints(MaxDeviationPts);
+   trade.SetTypeFillingBySymbol(_Symbol);
+
+   bool ok=(dir==+1 ? trade.Buy(Lots,_Symbol,0.0,sl,tp,tag)
+                    : trade.Sell(Lots,_Symbol,0.0,sl,tp,tag));
+   if(!ok)
+      Log("ORDER_FAIL",IntegerToString((int)trade.ResultRetcode())+" | "+trade.ResultRetcodeDescription());
+   else
+   {
+      Log("ENTRY_OK",(dir==1?"BUY":"SELL")+" R="+DoubleToString(R,_Digits)+
+          " SL="+DoubleToString(sl,_Digits)+" TP="+DoubleToString(tp,_Digits)+" | "+tag);
+      g_scalpOpen=true; g_scalpDir=dir; g_scalpR=R; g_scalpIsFlip=isFlip;
+      // NOTE: deliberately NOT calling StartMAETracking() here -- scalp/flip
+      // trades use a plain bracket SL/ScalpFlipTP_R with no Protect/Trailing
+      // management, so they stay out of the g_track* loop entirely. MAE_
+      // MILESTONE/MAE_OUTCOME diagnostics (no trading effect either way)
+      // simply won't fire for these trades.
+   }
+}
+
 void CheckNewM1Bar()
 {
    datetime t=iTime(_Symbol,Timeframe,0);
    if(t==0 || t==last_m1_bar) return;
    last_m1_bar=t;
+
+   if(UseEntryBarScalpFlip && g_scalpOpen)
+   {
+      if(CountOurPositions()==0)
+      {
+         // resolved on its own (hit ScalpFlipTP_R or SL_R) during its entry bar
+         g_scalpOpen=false;
+      }
+      else if(!g_scalpIsFlip)
+      {
+         Log("SCALP_FLIP","entry bar closed without reaching ScalpFlipTP_R -- closing and flipping direction");
+         CloseOurPositionsNow();
+         int flipDir=-g_scalpDir;
+         OpenScalpTrade(flipDir,g_scalpR,(flipDir==1?"SCALP_FLIP_BUY":"SCALP_FLIP_SELL"),true);
+      }
+      else
+      {
+         // the flipped leg also survived its own entry bar -- stop special-
+         // casing it; it keeps riding under its existing SL_R/ScalpFlipTP_R
+         // bracket like a normal trade (no second flip, per spec).
+         g_scalpOpen=false;
+      }
+   }
 
    double o=iOpen(_Symbol,Timeframe,1),h=iHigh(_Symbol,Timeframe,1);
    double l=iLow(_Symbol,Timeframe,1),c=iClose(_Symbol,Timeframe,1);
@@ -772,6 +907,18 @@ void CheckNewM1Bar()
    double R=MathAbs(c-o);
    double minR=MathMax(_Point,MinR_Points*_Point);
    if(R<=minR){ Log("SIGNAL_SKIPPED","R too small"); return; }
+
+   if(UseEntryBarScalpFlip)
+   {
+      // Stochastic ignored entirely in this mode: trend-only, every signal
+      // candle direction trades (see header).
+      int scalpDir=sigdir;
+      string scalpTag=(scalpDir==+1?"SCALP_TREND_BULL":"SCALP_TREND_BEAR")+touchTag;
+      Log("SIGNAL",(sigdir==1?"BULL":"BEAR")+" candle | R="+DoubleToString(R,_Digits)+
+          " | touch="+(bodyTouch?"BODY":"WICK")+" | decided dir="+(scalpDir==1?"BUY":"SELL")+" | "+scalpTag);
+      OpenScalpTrade(scalpDir,R,scalpTag,false);
+      return;
+   }
 
    double kbuf[1];
    if(CopyBuffer(hStoch,0,1,1,kbuf)!=1){ Log("STOCH_FAIL","no stochastic value"); return; }
@@ -835,6 +982,7 @@ int OnInit()
        " | TP_R="+DoubleToString(TP_R,2)+" | MinR_Points="+DoubleToString(MinR_Points,1)+
        " | AllowSellFade="+(AllowSellFade?"true":"false")+
        " | AllowTrendBull="+(AllowTrendBull?"true":"false")+
+       " | UseEntryBarScalpFlip="+(UseEntryBarScalpFlip?"true":"false")+" ScalpFlipTP_R="+DoubleToString(ScalpFlipTP_R,2)+
        " | SkipFadeBearOSAsiaSession="+(SkipFadeBearOSAsiaSession?"true":"false")+
        " | SkipFadeBearOSWickTouch="+(SkipFadeBearOSWickTouch?"true":"false")+
        " | MildZoneR="+DoubleToString(MildZoneR,2)+" ComboExitDangerMin="+DoubleToString(ComboExitDangerMin,1)+
