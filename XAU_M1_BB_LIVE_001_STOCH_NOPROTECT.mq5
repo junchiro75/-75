@@ -1,5 +1,28 @@
 //+------------------------------------------------------------------+
 //| XAU_M1_BB_LIVE_001_STOCH_NOPROTECT.mq5                              |
+//| UseBB4OnlyFade / BB4OnlyMinR_Points (UNTESTED, default off,          |
+//| 2026-11-12, user-requested idea): an entirely separate signal          |
+//| definition, independent of sigdir/Stochastic/UseEntryBarScalpFlip        |
+//| (takes priority if both toggles are somehow true). Every file in this    |
+//| project calls a candle a "signal candle" only when it touches BOTH       |
+//| BB20(dev2.0,Close) AND BB4(dev4.0,Open) the same bar (sigdir's own         |
+//| condition, still computed right below this block when the mode is         |
+//| off). This mode instead looks for the OPPOSITE case on purpose: a           |
+//| candle whose wick reaches BB4 but NOT BB20 ("BB4-only touch") --              |
+//| bull-candle BB4-only touches trade SELL, bear-candle BB4-only touches         |
+//| trade BUY (countertrend to the candle's own direction, mirrored both           |
+//| ways). A candle that touches BOTH bands (the normal "double-BB" signal           |
+//| this file already trades elsewhere) is explicitly EXCLUDED here --                |
+//| skipped entirely, not given to either logic. R-filter uses its own                 |
+//| BB4OnlyMinR_Points (default 200, distinct from MinR_Points=400 used                 |
+//| elsewhere in this file). Reuses OpenTrade() as-is for the actual entry                |
+//| (same SL_R/TP_R bracket, same MAX1 gating -- "wait for the position to                 |
+//| close before the next touch can enter" falls out of OpenTrade()'s                      |
+//| existing CountOurPositions()>0 check, no new code needed for that part)                 |
+//| -- set SL_R=TP_R=0.5 in the test .set for the symmetric 0.5R/0.5R bracket                |
+//| this idea calls for; this mode does not hardcode that ratio itself. Needs                 |
+//| a real MT5 Tester run before trusting any result from it.                                  |
+//+------------------------------------------------------------------+
 //| UseEntryBarScalpFlip / ScalpFlipTP_R (UNTESTED, default off,       |
 //| 2026-11-12, user-requested idea -- see input comments): an exit-only  |
 //| mode layered ON TOP OF the existing Stochastic-based direction         |
@@ -317,6 +340,9 @@ input bool   UseFridayNarrowWindow = false; // On Friday, only allow entries 10:
 
 input bool   UseEntryBarScalpFlip = false; // Ignore Stochastic (trend-only entry); take profit at ScalpFlipTP_R if reached within the entry bar, else close and flip direction once on the next bar (UNTESTED, see header)
 input double ScalpFlipTP_R        = 0.20;  // Target (R) for UseEntryBarScalpFlip mode's scalp/flip take-profit (only used when UseEntryBarScalpFlip=true)
+
+input bool   UseBB4OnlyFade       = false; // BB4-only countertrend fade mode: ignores Stochastic/sigdir entirely, uses its own signal (UNTESTED, see header; takes priority over UseEntryBarScalpFlip if both are true)
+input double BB4OnlyMinR_Points   = 200;   // Min signal-candle body (points) for UseBB4OnlyFade mode (only used when UseBB4OnlyFade=true; separate from MinR_Points)
 
 input double MildZoneR          = 2.0;  // Adverse-R boundary for dwell-time diagnostic (no trading effect)
 input double ComboExitDangerMin = 10.0; // Danger-zone minutes required, combined with threeBarOneWay (UNTESTED, see header)
@@ -897,6 +923,35 @@ void CheckNewM1Bar()
       return;
    }
 
+   if(UseBB4OnlyFade)
+   {
+      // Own signal definition, completely separate from sigdir below (see
+      // header): a candle whose wick reaches BB4 but NOT BB20 (the "double-
+      // BB" touch the rest of this file calls a signal candle is explicitly
+      // EXCLUDED here), traded countertrend to its own direction.
+      int candleDir=0;
+      if(c>o) candleDir=+1;
+      else if(c<o) candleDir=-1;
+      if(candleDir==0) return;
+
+      bool hitBB4=(candleDir==+1) ? (h>=up4[0]) : (l<=lo4[0]);
+      if(!hitBB4) return;
+      bool hitBB20=(candleDir==+1) ? (h>=up20[0]) : (l<=lo20[0]);
+      if(hitBB20)
+      { Log("SIGNAL_SKIPPED","BB4OnlyFade: double-BB touch (BB20 also hit this bar), skipped"); return; }
+
+      double Rb=MathAbs(c-o);
+      double minRb=MathMax(_Point,BB4OnlyMinR_Points*_Point);
+      if(Rb<=minRb){ Log("SIGNAL_SKIPPED","BB4OnlyFade: R too small"); return; }
+
+      int fadeDir=-candleDir; // countertrend to the candle's own direction
+      string fadeTag=(candleDir==+1?"BB4FADE_FROM_BULL":"BB4FADE_FROM_BEAR");
+      Log("SIGNAL","BB4-only "+(candleDir==1?"BULL":"BEAR")+" candle | R="+DoubleToString(Rb,_Digits)+
+          " | decided dir="+(fadeDir==1?"BUY":"SELL")+" | "+fadeTag);
+      OpenTrade(fadeDir,Rb,fadeTag); // reuses the existing SL_R/TP_R bracket + MAX1 gating
+      return;
+   }
+
    int sigdir=0;
    if(c>o && h>=up20[0] && h>=up4[0]) sigdir=+1;      // bull (up) signal candle
    else if(c<o && l<=lo20[0] && l<=lo4[0]) sigdir=-1; // bear (down) signal candle
@@ -982,6 +1037,7 @@ int OnInit()
        " | AllowSellFade="+(AllowSellFade?"true":"false")+
        " | AllowTrendBull="+(AllowTrendBull?"true":"false")+
        " | UseEntryBarScalpFlip="+(UseEntryBarScalpFlip?"true":"false")+" ScalpFlipTP_R="+DoubleToString(ScalpFlipTP_R,2)+
+       " | UseBB4OnlyFade="+(UseBB4OnlyFade?"true":"false")+" BB4OnlyMinR_Points="+DoubleToString(BB4OnlyMinR_Points,1)+
        " | SkipFadeBearOSAsiaSession="+(SkipFadeBearOSAsiaSession?"true":"false")+
        " | SkipFadeBearOSWickTouch="+(SkipFadeBearOSWickTouch?"true":"false")+
        " | MildZoneR="+DoubleToString(MildZoneR,2)+" ComboExitDangerMin="+DoubleToString(ComboExitDangerMin,1)+
