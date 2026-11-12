@@ -42,6 +42,27 @@
 //| skipped. Only has an effect when UseBB4FadeStochConfirm=true. Both this                           |
 //| and the skip-only behavior (UseBB4TrendOnUnconfirmed=false) are meant to                           |
 //| be tested side by side -- see the two test .set files.                                              |
+//| Ground truth for both (2025.01-2026.10, SL_R=TP_R=0.5): skip-only NET         |
+//| -$5,263.90 (PF 0.828, WR 47.83%, n=2,722); two-way split NET -$38,945.77       |
+//| (PF 0.751, WR 45.72%, n=13,505) -- Stochastic confirmation does NOT turn        |
+//| the fade into an edge (WR still ~47-48% either way), and the TREND-on-           |
+//| unconfirmed branches are the WORST of all (BB4TREND_FROM_BULL -$16,134.29,        |
+//| WR 44.94%; BB4TREND_FROM_BEAR -$17,495.88, WR 45.45%) -- trading WITH the           |
+//| candle's own direction on a non-extreme stochK reading is not a real edge            |
+//| either. Conclusion: BB4-only touch carries no exploitable edge regardless             |
+//| of how Stochastic is combined with it.                                                  |
+//| UseBB4BodyWickSplit (UNTESTED, default off, 2026-11-12, follow-up               |
+//| request): Stochastic ignored entirely again, this time using BODY vs           |
+//| WICK touch of BB4 itself as the discriminator instead (same BODY/WICK            |
+//| distinction already used as a diagnostic tag elsewhere in this file, just         |
+//| checked against BB4 specifically here rather than BB20) -- a candle whose          |
+//| CLOSE also closes beyond BB4 ("body touch") trades WITH its own direction           |
+//| (tagged BB4BODY_TREND_BULL/BEAR); one where only the high/low wicks beyond            |
+//| BB4 without the close following ("wick-only touch") trades countertrend               |
+//| (tagged BB4WICK_FADE_BULL/BEAR). Takes priority over UseBB4FadeStochConfirm/            |
+//| UseBB4TrendOnUnconfirmed if more than one of these BB4-related toggles is                |
+//| somehow true at once. Needs a real MT5 Tester run before trusting any result               |
+//| from it.                                                                                    |
 //+------------------------------------------------------------------+
 //| UseEntryBarScalpFlip / ScalpFlipTP_R (UNTESTED, default off,       |
 //| 2026-11-12, user-requested idea -- see input comments): an exit-only  |
@@ -365,6 +386,7 @@ input bool   UseBB4OnlyFade       = false; // BB4-only countertrend fade mode: i
 input double BB4OnlyMinR_Points   = 200;   // Min signal-candle body (points) for UseBB4OnlyFade mode (only used when UseBB4OnlyFade=true; separate from MinR_Points)
 input bool   UseBB4FadeStochConfirm = false; // Require Stochastic to confirm the fade (same StochOverbought/StochOversold levels as the normal FADE_BULL_OB/FADE_BEAR_OS logic) before taking a UseBB4OnlyFade trade (UNTESTED, see header)
 input bool   UseBB4TrendOnUnconfirmed = false; // When UseBB4FadeStochConfirm=true and Stochastic does NOT confirm the fade, trade WITH the candle's own direction instead of skipping (two-way split, UNTESTED, see header; no effect if UseBB4FadeStochConfirm=false)
+input bool   UseBB4BodyWickSplit = false; // Ignore Stochastic entirely: BB4 BODY touch (close beyond BB4) trades WITH the candle's own direction, WICK-only touch trades countertrend (UNTESTED, see header; takes priority over UseBB4FadeStochConfirm/UseBB4TrendOnUnconfirmed if also true)
 
 input double MildZoneR          = 2.0;  // Adverse-R boundary for dwell-time diagnostic (no trading effect)
 input double ComboExitDangerMin = 10.0; // Danger-zone minutes required, combined with threeBarOneWay (UNTESTED, see header)
@@ -966,6 +988,21 @@ void CheckNewM1Bar()
       double minRb=MathMax(_Point,BB4OnlyMinR_Points*_Point);
       if(Rb<=minRb){ Log("SIGNAL_SKIPPED","BB4OnlyFade: R too small"); return; }
 
+      if(UseBB4BodyWickSplit)
+      {
+         // Stochastic ignored entirely (see header): the discriminator is
+         // whether the CLOSE (body), not just the wick, also beyond BB4.
+         bool bodyTouchBB4=(candleDir==+1) ? (c>=up4[0]) : (c<=lo4[0]);
+         int bwDir=bodyTouchBB4 ? candleDir : -candleDir; // body->trend, wick-only->fade
+         string bwTag=bodyTouchBB4
+            ? (candleDir==+1?"BB4BODY_TREND_BULL":"BB4BODY_TREND_BEAR")
+            : (candleDir==+1?"BB4WICK_FADE_BULL":"BB4WICK_FADE_BEAR");
+         Log("SIGNAL","BB4-only "+(candleDir==1?"BULL":"BEAR")+" candle | R="+DoubleToString(Rb,_Digits)+
+             " | touch="+(bodyTouchBB4?"BODY":"WICK")+" | decided dir="+(bwDir==1?"BUY":"SELL")+" | "+bwTag);
+         OpenTrade(bwDir,Rb,bwTag);
+         return;
+      }
+
       if(UseBB4FadeStochConfirm)
       {
          double kbufB[1];
@@ -1087,6 +1124,7 @@ int OnInit()
        " | UseBB4OnlyFade="+(UseBB4OnlyFade?"true":"false")+" BB4OnlyMinR_Points="+DoubleToString(BB4OnlyMinR_Points,1)+
        " UseBB4FadeStochConfirm="+(UseBB4FadeStochConfirm?"true":"false")+
        " UseBB4TrendOnUnconfirmed="+(UseBB4TrendOnUnconfirmed?"true":"false")+
+       " UseBB4BodyWickSplit="+(UseBB4BodyWickSplit?"true":"false")+
        " | SkipFadeBearOSAsiaSession="+(SkipFadeBearOSAsiaSession?"true":"false")+
        " | SkipFadeBearOSWickTouch="+(SkipFadeBearOSWickTouch?"true":"false")+
        " | MildZoneR="+DoubleToString(MildZoneR,2)+" ComboExitDangerMin="+DoubleToString(ComboExitDangerMin,1)+
