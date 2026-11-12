@@ -64,6 +64,25 @@
 //| somehow true at once. Needs a real MT5 Tester run before trusting any result               |
 //| from it.                                                                                    |
 //+------------------------------------------------------------------+
+//| UseMADistanceDir / MADistancePeriod / MADistanceThresholdR              |
+//| (UNTESTED, default off, 2026-11-12, user-requested idea): applies to     |
+//| the NORMAL double-BB signal (sigdir, both BB20 AND BB4 touched the        |
+//| same bar -- the opposite case from every UseBB4* mode above, which         |
+//| all require BB4-only). Stochastic ignored entirely: direction is            |
+//| decided instead by the distance from the signal candle's own CLOSE to       |
+//| a moving average (SMA(MADistancePeriod) on Close, a dedicated hMA           |
+//| handle, period configurable -- default 20, set 17 for the 17-period          |
+//| variant the user also asked for), measured in R (same R = signal             |
+//| candle body used everywhere else). distR < MADistanceThresholdR                |
+//| (default 0.5) -- signal candle still close to its average -- trades            |
+//| WITH sigdir (trend, tagged MADIST_BULL_NEAR_TREND/MADIST_BEAR_NEAR_TREND);        |
+//| distR >= threshold -- already extended away from its average -- trades            |
+//| AGAINST sigdir (fade, tagged MADIST_BULL_FAR_FADE/MADIST_BEAR_FAR_FADE).            |
+//| Reuses OpenTrade() as-is (same SL_R/TP_R bracket, same MAX1 gating). Two              |
+//| variants requested: MADistancePeriod=20 and =17, same SL_R/TP_R otherwise               |
+//| (test .set files use SL_R=2.0, TP_R=0.5 per the user's explicit request).                |
+//| Needs a real MT5 Tester run before trusting any result from it.                            |
+//+------------------------------------------------------------------+
 //| UseEntryBarScalpFlip / ScalpFlipTP_R (UNTESTED, default off,       |
 //| 2026-11-12, user-requested idea -- see input comments): an exit-only  |
 //| mode layered ON TOP OF the existing Stochastic-based direction         |
@@ -388,6 +407,10 @@ input bool   UseBB4FadeStochConfirm = false; // Require Stochastic to confirm th
 input bool   UseBB4TrendOnUnconfirmed = false; // When UseBB4FadeStochConfirm=true and Stochastic does NOT confirm the fade, trade WITH the candle's own direction instead of skipping (two-way split, UNTESTED, see header; no effect if UseBB4FadeStochConfirm=false)
 input bool   UseBB4BodyWickSplit = false; // Ignore Stochastic entirely: BB4 BODY touch (close beyond BB4) trades WITH the candle's own direction, WICK-only touch trades countertrend (UNTESTED, see header; takes priority over UseBB4FadeStochConfirm/UseBB4TrendOnUnconfirmed if also true)
 
+input bool   UseMADistanceDir    = false; // On the normal double-BB signal (sigdir), decide direction by distance (R) from the signal candle's close to a moving average instead of Stochastic (UNTESTED, see header)
+input int    MADistancePeriod    = 20;    // Moving average period for UseMADistanceDir (SMA on Close; set 17 for the 17-period variant)
+input double MADistanceThresholdR = 0.5;  // Distance (R) threshold for UseMADistanceDir: below this, trade WITH sigdir (trend); at/above, trade AGAINST sigdir (fade)
+
 input double MildZoneR          = 2.0;  // Adverse-R boundary for dwell-time diagnostic (no trading effect)
 input double ComboExitDangerMin = 10.0; // Danger-zone minutes required, combined with threeBarOneWay (UNTESTED, see header)
 input bool   UseComboExit       = false; // Close only when BOTH threeBarOneWay AND ComboExitDangerMin are met (REJECTED, see header)
@@ -406,7 +429,7 @@ input double TrailTPDistanceR   = 0.04; // Distance maintained between price and
 input bool   UseTPRLinkedTrailTP = true; // CONFIRMED user-selected for this variant: arm UseTrailingTP at (TP_R-TPRLinkOffsetR)=0.44 instead of the early TrailTPTriggerR=0.15 -- Optimizer sweep showed this is WORSE (NET $38,049.85 vs $44,534.49 at the 0.15 trigger, -14.6%), kept at user's explicit request anyway
 input double TPRLinkOffsetR      = 0.01; // UNTESTED: offset subtracted from TP_R to get the effective trail-arm trigger when UseTPRLinkedTrailTP=true -- must stay >0 or the broker's own TP fires first (same race condition TrailTPTriggerR was split out to avoid, see header)
 
-int hBB20=INVALID_HANDLE,hBB4=INVALID_HANDLE,hStoch=INVALID_HANDLE;
+int hBB20=INVALID_HANDLE,hBB4=INVALID_HANDLE,hStoch=INVALID_HANDLE,hMA=INVALID_HANDLE;
 datetime last_m1_bar=0;
 
 // -- UseEntryBarScalpFlip state (see header): tracks the one scalp/flip
@@ -1057,6 +1080,25 @@ void CheckNewM1Bar()
    double minR=MathMax(_Point,MinR_Points*_Point);
    if(R<=minR){ Log("SIGNAL_SKIPPED","R too small"); return; }
 
+   if(UseMADistanceDir)
+   {
+      // Normal double-BB signal (sigdir), but direction decided by distance
+      // from the signal candle's close to a moving average instead of
+      // Stochastic (see header).
+      double maBuf[1];
+      if(CopyBuffer(hMA,0,1,1,maBuf)!=1){ Log("MA_FAIL","no MA value"); return; }
+      double maVal=maBuf[0];
+      double distR=MathAbs(c-maVal)/R;
+      bool near=(distR<MADistanceThresholdR);
+      int maDir=near?sigdir:-sigdir; // near MA -> trend (WITH sigdir); far -> fade (AGAINST sigdir)
+      string maTag=(sigdir==+1?"MADIST_BULL":"MADIST_BEAR")+(near?"_NEAR_TREND":"_FAR_FADE");
+      Log("SIGNAL","MA-distance | sigdir="+(sigdir==1?"BULL":"BEAR")+" R="+DoubleToString(R,_Digits)+
+          " MA="+DoubleToString(maVal,_Digits)+" distR="+DoubleToString(distR,3)+
+          " | decided dir="+(maDir==1?"BUY":"SELL")+" | "+maTag);
+      OpenTrade(maDir,R,maTag); // reuses the existing SL_R/TP_R bracket + MAX1 gating
+      return;
+   }
+
    double kbuf[1];
    if(CopyBuffer(hStoch,0,1,1,kbuf)!=1){ Log("STOCH_FAIL","no stochastic value"); return; }
    double stochK=kbuf[0];
@@ -1101,7 +1143,8 @@ int OnInit()
    hBB20=iBands(_Symbol,Timeframe,20,0,2.0,PRICE_CLOSE);
    hBB4 =iBands(_Symbol,Timeframe,4,0,4.0,PRICE_OPEN);
    hStoch=iStochastic(_Symbol,Timeframe,StochK_Period,StochD_Period,StochSlowing,MODE_LWMA,STO_LOWHIGH);
-   if(hBB20==INVALID_HANDLE || hBB4==INVALID_HANDLE || hStoch==INVALID_HANDLE) return INIT_FAILED;
+   hMA  =iMA(_Symbol,Timeframe,MADistancePeriod,0,MODE_SMA,PRICE_CLOSE);
+   if(hBB20==INVALID_HANDLE || hBB4==INVALID_HANDLE || hStoch==INVALID_HANDLE || hMA==INVALID_HANDLE) return INIT_FAILED;
 
    f_log=FileOpen("XAU_M1_BB_LIVE_001_STOCH_NOPROTECT_LOG.csv",FILE_READ|FILE_WRITE|FILE_CSV|FILE_ANSI|FILE_SHARE_READ,',');
    if(f_log!=INVALID_HANDLE)
@@ -1125,6 +1168,8 @@ int OnInit()
        " UseBB4FadeStochConfirm="+(UseBB4FadeStochConfirm?"true":"false")+
        " UseBB4TrendOnUnconfirmed="+(UseBB4TrendOnUnconfirmed?"true":"false")+
        " UseBB4BodyWickSplit="+(UseBB4BodyWickSplit?"true":"false")+
+       " | UseMADistanceDir="+(UseMADistanceDir?"true":"false")+" MADistancePeriod="+IntegerToString(MADistancePeriod)+
+       " MADistanceThresholdR="+DoubleToString(MADistanceThresholdR,2)+
        " | SkipFadeBearOSAsiaSession="+(SkipFadeBearOSAsiaSession?"true":"false")+
        " | SkipFadeBearOSWickTouch="+(SkipFadeBearOSWickTouch?"true":"false")+
        " | MildZoneR="+DoubleToString(MildZoneR,2)+" ComboExitDangerMin="+DoubleToString(ComboExitDangerMin,1)+
