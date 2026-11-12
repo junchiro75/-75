@@ -22,6 +22,17 @@
 //| -- set SL_R=TP_R=0.5 in the test .set for the symmetric 0.5R/0.5R bracket                |
 //| this idea calls for; this mode does not hardcode that ratio itself. Needs                 |
 //| a real MT5 Tester run before trusting any result from it.                                  |
+//| Ground-truth backtest WITHOUT Stochastic confirmation (2025.01-2026.10,     |
+//| SL_R=TP_R=0.5, BB4OnlyMinR_Points=200): NET -$27,958.10, PF 0.815,            |
+//| Recovery Factor -1.0, MaxDD 27.97%, n=13,506, WR 47.82% -- a 0.5R/0.5R         |
+//| symmetric bracket has a ~50% breakeven WR before costs, and this mode          |
+//| landed right at that line (47.82%), i.e. the BB4-only-touch condition            |
+//| alone carries NO real edge; the loss is basically just spread/commission          |
+//| drag over 13,506 trades. UseBB4FadeStochConfirm (UNTESTED, default off)            |
+//| added per follow-up request: gates the fade on the SAME StochOverbought/            |
+//| StochOversold confirmation the normal FADE_BULL_OB/FADE_BEAR_OS branches             |
+//| already require, to see whether adding that filter turns the coin-flip               |
+//| into a real edge. See UseBB4FadeStochConfirm's own comment.                            |
 //+------------------------------------------------------------------+
 //| UseEntryBarScalpFlip / ScalpFlipTP_R (UNTESTED, default off,       |
 //| 2026-11-12, user-requested idea -- see input comments): an exit-only  |
@@ -341,8 +352,9 @@ input bool   UseFridayNarrowWindow = false; // On Friday, only allow entries 10:
 input bool   UseEntryBarScalpFlip = false; // Ignore Stochastic (trend-only entry); take profit at ScalpFlipTP_R if reached within the entry bar, else close and flip direction once on the next bar (UNTESTED, see header)
 input double ScalpFlipTP_R        = 0.20;  // Target (R) for UseEntryBarScalpFlip mode's scalp/flip take-profit (only used when UseEntryBarScalpFlip=true)
 
-input bool   UseBB4OnlyFade       = false; // BB4-only countertrend fade mode: ignores Stochastic/sigdir entirely, uses its own signal (UNTESTED, see header; takes priority over UseEntryBarScalpFlip if both are true)
+input bool   UseBB4OnlyFade       = false; // BB4-only countertrend fade mode: ignores sigdir entirely, uses its own signal (UNTESTED, see header; takes priority over UseEntryBarScalpFlip if both are true)
 input double BB4OnlyMinR_Points   = 200;   // Min signal-candle body (points) for UseBB4OnlyFade mode (only used when UseBB4OnlyFade=true; separate from MinR_Points)
+input bool   UseBB4FadeStochConfirm = false; // Require Stochastic to confirm the fade (same StochOverbought/StochOversold levels as the normal FADE_BULL_OB/FADE_BEAR_OS logic) before taking a UseBB4OnlyFade trade (UNTESTED, see header)
 
 input double MildZoneR          = 2.0;  // Adverse-R boundary for dwell-time diagnostic (no trading effect)
 input double ComboExitDangerMin = 10.0; // Danger-zone minutes required, combined with threeBarOneWay (UNTESTED, see header)
@@ -944,6 +956,19 @@ void CheckNewM1Bar()
       double minRb=MathMax(_Point,BB4OnlyMinR_Points*_Point);
       if(Rb<=minRb){ Log("SIGNAL_SKIPPED","BB4OnlyFade: R too small"); return; }
 
+      if(UseBB4FadeStochConfirm)
+      {
+         double kbufB[1];
+         if(CopyBuffer(hStoch,0,1,1,kbufB)!=1){ Log("STOCH_FAIL","no stochastic value (BB4OnlyFade)"); return; }
+         double stochKb=kbufB[0];
+         bool stochConfirmed=(candleDir==+1) ? (stochKb>=StochOverbought) : (stochKb<StochOversold);
+         if(!stochConfirmed)
+         {
+            Log("SIGNAL_SKIPPED","BB4OnlyFade: Stochastic not confirming fade (stochK="+DoubleToString(stochKb,2)+")");
+            return;
+         }
+      }
+
       int fadeDir=-candleDir; // countertrend to the candle's own direction
       string fadeTag=(candleDir==+1?"BB4FADE_FROM_BULL":"BB4FADE_FROM_BEAR");
       Log("SIGNAL","BB4-only "+(candleDir==1?"BULL":"BEAR")+" candle | R="+DoubleToString(Rb,_Digits)+
@@ -1038,6 +1063,7 @@ int OnInit()
        " | AllowTrendBull="+(AllowTrendBull?"true":"false")+
        " | UseEntryBarScalpFlip="+(UseEntryBarScalpFlip?"true":"false")+" ScalpFlipTP_R="+DoubleToString(ScalpFlipTP_R,2)+
        " | UseBB4OnlyFade="+(UseBB4OnlyFade?"true":"false")+" BB4OnlyMinR_Points="+DoubleToString(BB4OnlyMinR_Points,1)+
+       " UseBB4FadeStochConfirm="+(UseBB4FadeStochConfirm?"true":"false")+
        " | SkipFadeBearOSAsiaSession="+(SkipFadeBearOSAsiaSession?"true":"false")+
        " | SkipFadeBearOSWickTouch="+(SkipFadeBearOSWickTouch?"true":"false")+
        " | MildZoneR="+DoubleToString(MildZoneR,2)+" ComboExitDangerMin="+DoubleToString(ComboExitDangerMin,1)+
