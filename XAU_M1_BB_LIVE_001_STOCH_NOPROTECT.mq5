@@ -1,30 +1,40 @@
 //+------------------------------------------------------------------+
 //| XAU_M1_BB_LIVE_001_STOCH_NOPROTECT.mq5                              |
 //| UseEntryBarScalpFlip / ScalpFlipTP_R (UNTESTED, default off,       |
-//| 2026-11-12, user-requested idea -- see input comments): an          |
-//| entirely separate entry/exit mode, independent of every other        |
-//| input in this file (Stoch*, AllowSellFade, AllowTrendBull,            |
-//| Protect/Trailing* all go unused when this is on). Every BB signal     |
-//| candle trades its own direction (bull->BUY, bear->SELL, no fade,      |
-//| no Stochastic check at all). Entry is immediate, same as always;      |
-//| SL stays the existing SL_R*R bracket. Instead of the normal TP_R,     |
-//| the position's take-profit is ScalpFlipTP_R*R (default 0.20R). If      |
-//| that TP is reached before the entry bar closes, done (normal win).     |
-//| If the position is STILL OPEN when the NEXT bar starts (TP not hit,    |
-//| SL not hit either), it is closed at market right then and a NEW        |
-//| position is opened in the OPPOSITE direction with its own               |
-//| ScalpFlipTP_R*R target (same SL_R bracket, same R). If that flipped     |
-//| leg also survives ITS OWN entry bar, no second flip happens -- it        |
-//| just keeps riding under its existing SL/TP like an ordinary trade,       |
-//| per the user's spec (only one flip). Implemented via g_scalpOpen/        |
-//| g_scalpDir/g_scalpR/g_scalpIsFlip state checked at the top of every      |
-//| CheckNewM1Bar() call, and OpenScalpTrade()/CloseOurPositionsNow()         |
-//| (parallel to OpenTrade(), not shared with it, so the normal              |
-//| Stochastic/Protect/Trailing path is completely untouched when this       |
-//| toggle is false). Scalp/flip trades skip StartMAETracking() entirely     |
-//| (no Protect-stop or Trailing management, no MAE_MILESTONE/MAE_OUTCOME    |
-//| diagnostic logging for these trades) -- plain bracket SL/TP only.        |
-//| Needs a real MT5 Tester run before trusting any result from it.           |
+//| 2026-11-12, user-requested idea -- see input comments): an exit-only  |
+//| mode layered ON TOP OF the existing Stochastic-based direction         |
+//| decision (FADE_BULL_OB/TREND_BULL/FADE_BEAR_OS/TREND_BEAR, same         |
+//| AllowSellFade/AllowTrendBull/SkipFadeBearOS* gates, all unchanged) --    |
+//| only the ENTRY/EXIT MECHANICS differ once dir/tag are decided. SL        |
+//| stays the existing SL_R*R bracket. Instead of the normal TP_R, the       |
+//| position's take-profit is ScalpFlipTP_R*R (default 0.20R). If that       |
+//| TP is reached before the entry bar closes, done (normal win). If the      |
+//| position is STILL OPEN when the NEXT bar starts (TP not hit, SL not       |
+//| hit either), it is closed at market right then and a NEW position is      |
+//| opened in the OPPOSITE direction with its own ScalpFlipTP_R*R target       |
+//| (same SL_R bracket, same R). If that flipped leg also survives ITS         |
+//| OWN entry bar, no second flip happens -- it just keeps riding under        |
+//| its existing SL/TP like an ordinary trade, per the user's spec (only       |
+//| one flip). An EARLIER version of this toggle (2026-11-12, same day)        |
+//| also bypassed Stochastic entirely (trend-only, every signal traded) --     |
+//| ground-truth backtest of THAT version (2025.01-2026.10): NET               |
+//| -$23,076.31, PF 0.737, Recovery Factor -0.98, MaxDD 23.24%, n=6,022,        |
+//| WR 71.37% -- a clear loss (the 1st-leg entries alone were NET               |
+//| -$22,417 at only 60% WR once the Stochastic fade/trend filter was           |
+//| removed; the 2nd-leg/flip entries were WR 95.48% but barely broke           |
+//| even, avg win $14.80 vs avg loss -$320.81 -- a vivid real example of        |
+//| why near-100% win rate alone says nothing about profitability). Per         |
+//| this finding, REVERTED to using the existing Stochastic-based dir           |
+//| decision instead of sigdir directly -- see OpenScalpTrade() call site        |
+//| at the end of CheckNewM1Bar(). Implemented via g_scalpOpen/g_scalpDir/       |
+//| g_scalpR/g_scalpIsFlip state checked at the top of every CheckNewM1Bar()     |
+//| call, and OpenScalpTrade()/CloseOurPositionsNow() (parallel to               |
+//| OpenTrade(), not shared with it, so the normal Protect/Trailing path is       |
+//| completely untouched when this toggle is false). Scalp/flip trades skip      |
+//| StartMAETracking() entirely (no Protect-stop or Trailing management, no      |
+//| MAE_MILESTONE/MAE_OUTCOME diagnostic logging for these trades) -- plain       |
+//| bracket SL/TP only. Needs a real MT5 Tester run before trusting any            |
+//| result from it.                                                                |
 //+------------------------------------------------------------------+
 //| M1 sibling of XAU_M2_BB_LIVE_001_STOCH_v2.mq5 -- identical logic,  |
 //| meant to run SIMULTANEOUSLY with the M2 version on the same       |
@@ -908,18 +918,6 @@ void CheckNewM1Bar()
    double minR=MathMax(_Point,MinR_Points*_Point);
    if(R<=minR){ Log("SIGNAL_SKIPPED","R too small"); return; }
 
-   if(UseEntryBarScalpFlip)
-   {
-      // Stochastic ignored entirely in this mode: trend-only, every signal
-      // candle direction trades (see header).
-      int scalpDir=sigdir;
-      string scalpTag=(scalpDir==+1?"SCALP_TREND_BULL":"SCALP_TREND_BEAR")+touchTag;
-      Log("SIGNAL",(sigdir==1?"BULL":"BEAR")+" candle | R="+DoubleToString(R,_Digits)+
-          " | touch="+(bodyTouch?"BODY":"WICK")+" | decided dir="+(scalpDir==1?"BUY":"SELL")+" | "+scalpTag);
-      OpenScalpTrade(scalpDir,R,scalpTag,false);
-      return;
-   }
-
    double kbuf[1];
    if(CopyBuffer(hStoch,0,1,1,kbuf)!=1){ Log("STOCH_FAIL","no stochastic value"); return; }
    double stochK=kbuf[0];
@@ -955,7 +953,8 @@ void CheckNewM1Bar()
    Log("SIGNAL",(sigdir==1?"BULL":"BEAR")+" candle | stochK="+DoubleToString(stochK,2)+
        " | R="+DoubleToString(R,_Digits)+" | touch="+(bodyTouch?"BODY":"WICK")+
        " | decided dir="+(dir==1?"BUY":"SELL")+" | "+tag);
-   OpenTrade(dir,R,tag);
+   if(UseEntryBarScalpFlip) OpenScalpTrade(dir,R,"SCALP_"+tag,false);
+   else                     OpenTrade(dir,R,tag);
 }
 
 int OnInit()
