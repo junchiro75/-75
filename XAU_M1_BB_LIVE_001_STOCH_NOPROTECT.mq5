@@ -33,6 +33,15 @@
 //| StochOversold confirmation the normal FADE_BULL_OB/FADE_BEAR_OS branches             |
 //| already require, to see whether adding that filter turns the coin-flip               |
 //| into a real edge. See UseBB4FadeStochConfirm's own comment.                            |
+//| UseBB4TrendOnUnconfirmed (UNTESTED, default off, follow-up request):                     |
+//| user clarified the intent was a FULL two-way split mirroring the main                     |
+//| FADE_BULL_OB/TREND_BULL (and FADE_BEAR_OS/TREND_BEAR) branches, not a                       |
+//| skip-if-not-confirmed gate -- stochK confirming (overbought/oversold per                     |
+//| direction) still fades countertrend; NOT confirming now trades WITH the                        |
+//| candle's own direction (tagged BB4TREND_FROM_BULL/BEAR) instead of being                         |
+//| skipped. Only has an effect when UseBB4FadeStochConfirm=true. Both this                           |
+//| and the skip-only behavior (UseBB4TrendOnUnconfirmed=false) are meant to                           |
+//| be tested side by side -- see the two test .set files.                                              |
 //+------------------------------------------------------------------+
 //| UseEntryBarScalpFlip / ScalpFlipTP_R (UNTESTED, default off,       |
 //| 2026-11-12, user-requested idea -- see input comments): an exit-only  |
@@ -355,6 +364,7 @@ input double ScalpFlipTP_R        = 0.20;  // Target (R) for UseEntryBarScalpFli
 input bool   UseBB4OnlyFade       = false; // BB4-only countertrend fade mode: ignores sigdir entirely, uses its own signal (UNTESTED, see header; takes priority over UseEntryBarScalpFlip if both are true)
 input double BB4OnlyMinR_Points   = 200;   // Min signal-candle body (points) for UseBB4OnlyFade mode (only used when UseBB4OnlyFade=true; separate from MinR_Points)
 input bool   UseBB4FadeStochConfirm = false; // Require Stochastic to confirm the fade (same StochOverbought/StochOversold levels as the normal FADE_BULL_OB/FADE_BEAR_OS logic) before taking a UseBB4OnlyFade trade (UNTESTED, see header)
+input bool   UseBB4TrendOnUnconfirmed = false; // When UseBB4FadeStochConfirm=true and Stochastic does NOT confirm the fade, trade WITH the candle's own direction instead of skipping (two-way split, UNTESTED, see header; no effect if UseBB4FadeStochConfirm=false)
 
 input double MildZoneR          = 2.0;  // Adverse-R boundary for dwell-time diagnostic (no trading effect)
 input double ComboExitDangerMin = 10.0; // Danger-zone minutes required, combined with threeBarOneWay (UNTESTED, see header)
@@ -964,7 +974,19 @@ void CheckNewM1Bar()
          bool stochConfirmed=(candleDir==+1) ? (stochKb>=StochOverbought) : (stochKb<StochOversold);
          if(!stochConfirmed)
          {
-            Log("SIGNAL_SKIPPED","BB4OnlyFade: Stochastic not confirming fade (stochK="+DoubleToString(stochKb,2)+")");
+            if(!UseBB4TrendOnUnconfirmed)
+            {
+               Log("SIGNAL_SKIPPED","BB4OnlyFade: Stochastic not confirming fade (stochK="+DoubleToString(stochKb,2)+")");
+               return;
+            }
+            // Two-way split (UNTESTED, see header): not confirmed for the fade ->
+            // trade WITH the candle's own direction instead of skipping.
+            int trendDir=candleDir;
+            string trendTag=(candleDir==+1?"BB4TREND_FROM_BULL":"BB4TREND_FROM_BEAR");
+            Log("SIGNAL","BB4-only "+(candleDir==1?"BULL":"BEAR")+" candle | R="+DoubleToString(Rb,_Digits)+
+                " | stochK="+DoubleToString(stochKb,2)+" not confirming fade -> trend | decided dir="+
+                (trendDir==1?"BUY":"SELL")+" | "+trendTag);
+            OpenTrade(trendDir,Rb,trendTag);
             return;
          }
       }
@@ -1064,6 +1086,7 @@ int OnInit()
        " | UseEntryBarScalpFlip="+(UseEntryBarScalpFlip?"true":"false")+" ScalpFlipTP_R="+DoubleToString(ScalpFlipTP_R,2)+
        " | UseBB4OnlyFade="+(UseBB4OnlyFade?"true":"false")+" BB4OnlyMinR_Points="+DoubleToString(BB4OnlyMinR_Points,1)+
        " UseBB4FadeStochConfirm="+(UseBB4FadeStochConfirm?"true":"false")+
+       " UseBB4TrendOnUnconfirmed="+(UseBB4TrendOnUnconfirmed?"true":"false")+
        " | SkipFadeBearOSAsiaSession="+(SkipFadeBearOSAsiaSession?"true":"false")+
        " | SkipFadeBearOSWickTouch="+(SkipFadeBearOSWickTouch?"true":"false")+
        " | MildZoneR="+DoubleToString(MildZoneR,2)+" ComboExitDangerMin="+DoubleToString(ComboExitDangerMin,1)+
