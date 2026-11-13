@@ -96,7 +96,18 @@
 //| UseBearFarFadeOnly (UNTESTED, default off, follow-up request) isolates                      |
 //| just the BEAR_FAR_FADE case, skipping BULL_FAR_FADE and both NEAR_TREND                      |
 //| cases entirely, to see whether dropping the losing/negligible branches                        |
-//| turns this into a cleaner standalone edge.                                                      |
+//| turns this into a cleaner standalone edge. Ground truth (2025.01-2026.10,                      |
+//| SL_R=2.0, TP_R=0.5, UseBearFarFadeOnly=true): NET $9,671.66, PF 1.145,                           |
+//| Recovery Factor 2.385 (>1, the first positive risk-adjusted result among                          |
+//| every BB4/MA-distance variant tried so far), MaxDD 3.82%, n=2,388, WR                              |
+//| 82.62%. UseMADistStochConfirm (UNTESTED, default off, follow-up request)                            |
+//| adds one more layer on top: for the FAR_FADE cases only (no effect on                                |
+//| NEAR_TREND), also requires Stochastic to confirm using the same                                      |
+//| StochOverbought/StochOversold levels the normal FADE_BULL_OB/FADE_BEAR_OS                              |
+//| branches use -- testing whether stacking this independently-validated                                  |
+//| extreme-reading condition on top of "far from its MA" tightens the edge                                 |
+//| further (expect n to drop noticeably; watch whether PF/RF improve enough                                 |
+//| to be worth the smaller sample).                                                                          |
 //+------------------------------------------------------------------+
 //| UseEntryBarScalpFlip / ScalpFlipTP_R (UNTESTED, default off,       |
 //| 2026-11-12, user-requested idea -- see input comments): an exit-only  |
@@ -426,6 +437,7 @@ input bool   UseMADistanceDir    = false; // On the normal double-BB signal (sig
 input int    MADistancePeriod    = 20;    // Moving average period for UseMADistanceDir (SMA on Close; set 17 for the 17-period variant)
 input double MADistanceThresholdR = 0.5;  // Distance (R) threshold for UseMADistanceDir: below this, trade WITH sigdir (trend); at/above, trade AGAINST sigdir (fade)
 input bool   UseBearFarFadeOnly  = false; // Restrict UseMADistanceDir to ONLY the BEAR signal + far-from-MA (fade/BUY) case, skipping BULL_FAR_FADE and both NEAR_TREND cases entirely (UNTESTED, see header; no effect if UseMADistanceDir=false)
+input bool   UseMADistStochConfirm = false; // On top of UseMADistanceDir's FAR_FADE cases, also require Stochastic to confirm (same StochOverbought/StochOversold levels as FADE_BULL_OB/FADE_BEAR_OS) before entering (UNTESTED, see header; no effect on NEAR_TREND cases or if UseMADistanceDir=false)
 
 input double MildZoneR          = 2.0;  // Adverse-R boundary for dwell-time diagnostic (no trading effect)
 input double ComboExitDangerMin = 10.0; // Danger-zone minutes required, combined with threeBarOneWay (UNTESTED, see header)
@@ -1114,6 +1126,23 @@ void CheckNewM1Bar()
          Log("SIGNAL_SKIPPED","UseBearFarFadeOnly: not a BEAR_FAR_FADE case ("+maTag+"), skipped");
          return;
       }
+
+      if(UseMADistStochConfirm && !near)
+      {
+         // Only meaningful for the FAR_FADE cases: confirm with the SAME
+         // overbought/oversold levels the normal FADE_BULL_OB/FADE_BEAR_OS
+         // logic uses, matched to the candle's own direction (sigdir).
+         double kbufM[1];
+         if(CopyBuffer(hStoch,0,1,1,kbufM)!=1){ Log("STOCH_FAIL","no stochastic value (MADistanceDir)"); return; }
+         double stochKm=kbufM[0];
+         bool stochOk=(sigdir==+1) ? (stochKm>=StochOverbought) : (stochKm<StochOversold);
+         if(!stochOk)
+         {
+            Log("SIGNAL_SKIPPED","UseMADistStochConfirm: Stochastic not confirming (stochK="+DoubleToString(stochKm,2)+")");
+            return;
+         }
+      }
+
       Log("SIGNAL","MA-distance | sigdir="+(sigdir==1?"BULL":"BEAR")+" R="+DoubleToString(R,_Digits)+
           " MA="+DoubleToString(maVal,_Digits)+" distR="+DoubleToString(distR,3)+
           " | decided dir="+(maDir==1?"BUY":"SELL")+" | "+maTag);
@@ -1192,6 +1221,7 @@ int OnInit()
        " UseBB4BodyWickSplit="+(UseBB4BodyWickSplit?"true":"false")+
        " | UseMADistanceDir="+(UseMADistanceDir?"true":"false")+" MADistancePeriod="+IntegerToString(MADistancePeriod)+
        " MADistanceThresholdR="+DoubleToString(MADistanceThresholdR,2)+" UseBearFarFadeOnly="+(UseBearFarFadeOnly?"true":"false")+
+       " UseMADistStochConfirm="+(UseMADistStochConfirm?"true":"false")+
        " | SkipFadeBearOSAsiaSession="+(SkipFadeBearOSAsiaSession?"true":"false")+
        " | SkipFadeBearOSWickTouch="+(SkipFadeBearOSWickTouch?"true":"false")+
        " | MildZoneR="+DoubleToString(MildZoneR,2)+" ComboExitDangerMin="+DoubleToString(ComboExitDangerMin,1)+
