@@ -254,6 +254,13 @@ input double StochOversold      = 25.0; // Stoch oversold level
 input double SL_R               = 5.0;  // Stop loss (R)
 input double TP_R               = 0.45; // Take profit (R)
 input double MinR_Points        = 400;  // Min signal-candle body (points) to trade, 0=no filter
+input bool   UseEntryBarScalpFlip = false; // Ignore Stochastic (trend-only entry); take profit at ScalpFlipTP_R if reached within the entry bar, else close and flip direction once on the next bar (ported from NOPROTECT variant)
+input double ScalpFlipTP_R        = 0.20;  // Target (R) for UseEntryBarScalpFlip mode's scalp/flip take-profit (only used when UseEntryBarScalpFlip=true)
+input bool   UseBB4OnlyFade       = false; // BB4-only countertrend fade mode: ignores sigdir entirely, uses its own signal (ported from NOPROTECT variant; takes priority over UseEntryBarScalpFlip if both are true)
+input double BB4OnlyMinR_Points   = 200;   // Min signal-candle body (points) for UseBB4OnlyFade mode (only used when UseBB4OnlyFade=true; separate from MinR_Points)
+input bool   UseBB4FadeStochConfirm = false; // Require Stochastic to confirm the fade (same StochOverbought/StochOversold levels as the normal FADE_BULL_OB/FADE_BEAR_OS logic) before taking a UseBB4OnlyFade trade
+input bool   UseBB4TrendOnUnconfirmed = false; // When UseBB4FadeStochConfirm=true and Stochastic does NOT confirm the fade, trade WITH the candle's own direction instead of skipping (two-way split; no effect if UseBB4FadeStochConfirm=false)
+input bool   UseBB4BodyWickSplit = false; // Ignore Stochastic entirely: BB4 BODY touch (close beyond BB4) trades WITH the candle's own direction, WICK-only touch trades countertrend (takes priority over UseBB4FadeStochConfirm/UseBB4TrendOnUnconfirmed if also true)
 input bool   UseMADistanceDir    = false; // On the normal double-BB signal (sigdir), decide direction by distance (R) from the signal candle's close to a moving average instead of Stochastic (ported from NOPROTECT variant)
 input int    MADistancePeriod    = 20;    // Moving average period for UseMADistanceDir (SMA on Close)
 input double MADistanceThresholdR = 0.5;  // Distance (R) threshold for UseMADistanceDir: below this, trade WITH sigdir (trend); at/above, trade AGAINST sigdir (fade)
@@ -293,6 +300,12 @@ input bool   UseTPRLinkedTrailTP = false; // UNTESTED: when true, ignore TrailTP
 input double TPRLinkOffsetR      = 0.01; // UNTESTED: offset subtracted from TP_R to get the effective trail-arm trigger when UseTPRLinkedTrailTP=true -- must stay >0 or the broker's own TP fires first (same race condition TrailTPTriggerR was split out to avoid, see header)
 
 int hBB20=INVALID_HANDLE,hBB4=INVALID_HANDLE,hStoch=INVALID_HANDLE,hMA=INVALID_HANDLE;
+// -- UseEntryBarScalpFlip state (ported from NOPROTECT variant): tracks the
+//    one scalp/flip position opened by OpenScalpTrade() across bars.
+bool     g_scalpOpen=false;
+int      g_scalpDir=0;
+double   g_scalpR=0;
+bool     g_scalpIsFlip=false;
 datetime last_m1_bar=0;
 int f_log=INVALID_HANDLE;
 
@@ -711,11 +724,107 @@ void OpenTrade(int dir,double R,string tag)
    }
 }
 
+// -- UseEntryBarScalpFlip helpers (ported from NOPROTECT variant) ------
+void CloseOurPositionsNow()
+{
+   for(int i=PositionsTotal()-1;i>=0;i--)
+   {
+      ulong tk=PositionGetTicket(i);
+      if(tk==0 || !PositionSelectByTicket(tk)) continue;
+      if(PositionGetString(POSITION_SYMBOL)!=_Symbol) continue;
+      if((ulong)PositionGetInteger(POSITION_MAGIC)!=MagicNumber) continue;
+      trade.PositionClose(tk);
+   }
+}
+
+void OpenScalpTrade(int dir,double R,string tag,bool isFlip)
+{
+   if(!isFlip)
+   {
+      if(CountOurPositions()>0){ Log("ENTRY_SKIPPED","own-Magic position already exists (scalp entry)"); return; }
+      int kstHour=KST_Hour(TimeCurrent());
+      bool inSkipHour=(kstHour>=SkipHourStartKST && kstHour<SkipHourEndKST);
+      if(inSkipHour && SkipHourEntryKST)
+      {
+         Log("ENTRY_SKIPPED","KST hour in ["+IntegerToString(SkipHourStartKST)+","+IntegerToString(SkipHourEndKST)+") by SkipHourEntryKST=true (scalp entry)");
+         return;
+      }
+   }
+   tag=TFPrefix()+tag;
+
+   MqlTick q; if(!SymbolInfoTick(_Symbol,q)){ Log("ORDER_FAIL","no current tick (scalp)"); return; }
+   double ref=(dir==+1 ? q.ask : q.bid);
+   double sl=ref-dir*SL_R*R;
+   double tp=ref+dir*ScalpFlipTP_R*R;
+
+   double cushion=MinStopDistance()+_Point;
+   if(dir==+1)
+   {
+      if(sl>q.bid-cushion) sl=q.bid-cushion;
+      if(tp<q.ask+cushion) tp=q.ask+cushion;
+   }
+   else
+   {
+      if(sl<q.ask+cushion) sl=q.ask+cushion;
+      if(tp>q.bid-cushion) tp=q.bid-cushion;
+   }
+   sl=NormalizeDouble(sl,_Digits); tp=NormalizeDouble(tp,_Digits);
+
+   if(!EnableLiveOrders)
+   {
+      Log("DRY_ENTRY",(dir==1?"BUY":"SELL")+string(" @~")+DoubleToString(ref,_Digits)+
+          " R="+DoubleToString(R,_Digits)+" SL="+DoubleToString(sl,_Digits)+" TP="+DoubleToString(tp,_Digits)+" | "+tag);
+      g_scalpOpen=true; g_scalpDir=dir; g_scalpR=R; g_scalpIsFlip=isFlip;
+      return;
+   }
+
+   trade.SetExpertMagicNumber(MagicNumber);
+   trade.SetDeviationInPoints(MaxDeviationPts);
+   trade.SetTypeFillingBySymbol(_Symbol);
+
+   bool ok=(dir==+1 ? trade.Buy(Lots,_Symbol,0.0,sl,tp,tag)
+                    : trade.Sell(Lots,_Symbol,0.0,sl,tp,tag));
+   if(!ok)
+      Log("ORDER_FAIL",IntegerToString((int)trade.ResultRetcode())+" | "+trade.ResultRetcodeDescription());
+   else
+   {
+      Log("ENTRY_OK",(dir==1?"BUY":"SELL")+" R="+DoubleToString(R,_Digits)+
+          " SL="+DoubleToString(sl,_Digits)+" TP="+DoubleToString(tp,_Digits)+" | "+tag);
+      g_scalpOpen=true; g_scalpDir=dir; g_scalpR=R; g_scalpIsFlip=isFlip;
+      // NOTE: deliberately NOT calling StartMAETracking() here -- scalp/flip
+      // trades use a plain bracket SL/ScalpFlipTP_R with no Protect/Trailing
+      // management, so they stay out of the g_track* loop entirely.
+   }
+}
+
 void CheckNewM1Bar()
 {
    datetime t=iTime(_Symbol,Timeframe,0);
    if(t==0 || t==last_m1_bar) return;
    last_m1_bar=t;
+
+   if(UseEntryBarScalpFlip && g_scalpOpen)
+   {
+      if(CountOurPositions()==0)
+      {
+         // resolved on its own (hit ScalpFlipTP_R or SL_R) during its entry bar
+         g_scalpOpen=false;
+      }
+      else if(!g_scalpIsFlip)
+      {
+         Log("SCALP_FLIP","entry bar closed without reaching ScalpFlipTP_R -- closing and flipping direction");
+         CloseOurPositionsNow();
+         int flipDir=-g_scalpDir;
+         OpenScalpTrade(flipDir,g_scalpR,(flipDir==1?"SCALP_FLIP_BUY":"SCALP_FLIP_SELL"),true);
+      }
+      else
+      {
+         // the flipped leg also survived its own entry bar -- stop special-
+         // casing it; it keeps riding under its existing SL_R/ScalpFlipTP_R
+         // bracket like a normal trade (no second flip, per spec).
+         g_scalpOpen=false;
+      }
+   }
 
    double o=iOpen(_Symbol,Timeframe,1),h=iHigh(_Symbol,Timeframe,1);
    double l=iLow(_Symbol,Timeframe,1),c=iClose(_Symbol,Timeframe,1);
@@ -744,6 +853,71 @@ void CheckNewM1Bar()
       Log("COPYBUFFER_FAIL","BB20up="+IntegerToString(r1)+" BB20lo="+IntegerToString(r2)+
           " BB4up="+IntegerToString(r3)+" BB4lo="+IntegerToString(r4)+
           " err="+IntegerToString(GetLastError()));
+      return;
+   }
+
+   if(UseBB4OnlyFade)
+   {
+      // Own signal definition, completely separate from sigdir below (ported
+      // from NOPROTECT variant): a candle whose wick reaches BB4 but NOT BB20
+      // (the "double-BB" touch the rest of this file calls a signal candle is
+      // explicitly EXCLUDED here), traded countertrend to its own direction.
+      int candleDir=0;
+      if(c>o) candleDir=+1;
+      else if(c<o) candleDir=-1;
+      if(candleDir==0) return;
+
+      bool hitBB4=(candleDir==+1) ? (h>=up4[0]) : (l<=lo4[0]);
+      if(!hitBB4) return;
+      bool hitBB20=(candleDir==+1) ? (h>=up20[0]) : (l<=lo20[0]);
+      if(hitBB20)
+      { Log("SIGNAL_SKIPPED","BB4OnlyFade: double-BB touch (BB20 also hit this bar), skipped"); return; }
+
+      double Rb=MathAbs(c-o);
+      double minRb=MathMax(_Point,BB4OnlyMinR_Points*_Point);
+      if(Rb<=minRb){ Log("SIGNAL_SKIPPED","BB4OnlyFade: R too small"); return; }
+
+      if(UseBB4BodyWickSplit)
+      {
+         bool bodyTouchBB4=(candleDir==+1) ? (c>=up4[0]) : (c<=lo4[0]);
+         int bwDir=bodyTouchBB4 ? candleDir : -candleDir; // body->trend, wick-only->fade
+         string bwTag=bodyTouchBB4
+            ? (candleDir==+1?"BB4BODY_TREND_BULL":"BB4BODY_TREND_BEAR")
+            : (candleDir==+1?"BB4WICK_FADE_BULL":"BB4WICK_FADE_BEAR");
+         Log("SIGNAL","BB4-only "+(candleDir==1?"BULL":"BEAR")+" candle | R="+DoubleToString(Rb,_Digits)+
+             " | touch="+(bodyTouchBB4?"BODY":"WICK")+" | decided dir="+(bwDir==1?"BUY":"SELL")+" | "+bwTag);
+         OpenTrade(bwDir,Rb,bwTag);
+         return;
+      }
+
+      if(UseBB4FadeStochConfirm)
+      {
+         double kbufB[1];
+         if(CopyBuffer(hStoch,0,1,1,kbufB)!=1){ Log("STOCH_FAIL","no stochastic value (BB4OnlyFade)"); return; }
+         double stochKb=kbufB[0];
+         bool stochConfirmed=(candleDir==+1) ? (stochKb>=StochOverbought) : (stochKb<StochOversold);
+         if(!stochConfirmed)
+         {
+            if(!UseBB4TrendOnUnconfirmed)
+            {
+               Log("SIGNAL_SKIPPED","BB4OnlyFade: Stochastic not confirming fade (stochK="+DoubleToString(stochKb,2)+")");
+               return;
+            }
+            int trendDir=candleDir;
+            string trendTag=(candleDir==+1?"BB4TREND_FROM_BULL":"BB4TREND_FROM_BEAR");
+            Log("SIGNAL","BB4-only "+(candleDir==1?"BULL":"BEAR")+" candle | R="+DoubleToString(Rb,_Digits)+
+                " | stochK="+DoubleToString(stochKb,2)+" not confirming fade -> trend | decided dir="+
+                (trendDir==1?"BUY":"SELL")+" | "+trendTag);
+            OpenTrade(trendDir,Rb,trendTag);
+            return;
+         }
+      }
+
+      int fadeDir=-candleDir; // countertrend to the candle's own direction
+      string fadeTag=(candleDir==+1?"BB4FADE_FROM_BULL":"BB4FADE_FROM_BEAR");
+      Log("SIGNAL","BB4-only "+(candleDir==1?"BULL":"BEAR")+" candle | R="+DoubleToString(Rb,_Digits)+
+          " | decided dir="+(fadeDir==1?"BUY":"SELL")+" | "+fadeTag);
+      OpenTrade(fadeDir,Rb,fadeTag); // reuses the existing SL_R/TP_R bracket + MAX1 gating
       return;
    }
 
@@ -855,7 +1029,8 @@ void CheckNewM1Bar()
    Log("SIGNAL",(sigdir==1?"BULL":"BEAR")+" candle | stochK="+DoubleToString(stochK,2)+
        " | R="+DoubleToString(R,_Digits)+" | touch="+(bodyTouch?"BODY":"WICK")+
        " | decided dir="+(dir==1?"BUY":"SELL")+" | "+tag);
-   OpenTrade(dir,R,tag);
+   if(UseEntryBarScalpFlip) OpenScalpTrade(dir,R,"SCALP_"+tag,false);
+   else                     OpenTrade(dir,R,tag);
 }
 
 int OnInit()
@@ -881,6 +1056,11 @@ int OnInit()
        ","+IntegerToString(StochSlowing)+") | OB="+DoubleToString(StochOverbought,1)+
        " OS="+DoubleToString(StochOversold,1)+" | SL_R="+DoubleToString(SL_R,2)+
        " | TP_R="+DoubleToString(TP_R,2)+" | MinR_Points="+DoubleToString(MinR_Points,1)+
+       " | UseEntryBarScalpFlip="+(UseEntryBarScalpFlip?"true":"false")+" ScalpFlipTP_R="+DoubleToString(ScalpFlipTP_R,2)+
+       " | UseBB4OnlyFade="+(UseBB4OnlyFade?"true":"false")+" BB4OnlyMinR_Points="+DoubleToString(BB4OnlyMinR_Points,1)+
+       " UseBB4FadeStochConfirm="+(UseBB4FadeStochConfirm?"true":"false")+
+       " UseBB4TrendOnUnconfirmed="+(UseBB4TrendOnUnconfirmed?"true":"false")+
+       " UseBB4BodyWickSplit="+(UseBB4BodyWickSplit?"true":"false")+
        " | UseMADistanceDir="+(UseMADistanceDir?"true":"false")+" MADistancePeriod="+IntegerToString(MADistancePeriod)+
        " MADistanceThresholdR="+DoubleToString(MADistanceThresholdR,2)+" UseBearFarFadeOnly="+(UseBearFarFadeOnly?"true":"false")+
        " UseMADistStochConfirm="+(UseMADistStochConfirm?"true":"false")+
