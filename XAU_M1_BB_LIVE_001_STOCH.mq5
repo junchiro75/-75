@@ -254,6 +254,11 @@ input double StochOversold      = 25.0; // Stoch oversold level
 input double SL_R               = 5.0;  // Stop loss (R)
 input double TP_R               = 0.45; // Take profit (R)
 input double MinR_Points        = 400;  // Min signal-candle body (points) to trade, 0=no filter
+input bool   UseMADistanceDir    = false; // On the normal double-BB signal (sigdir), decide direction by distance (R) from the signal candle's close to a moving average instead of Stochastic (ported from NOPROTECT variant)
+input int    MADistancePeriod    = 20;    // Moving average period for UseMADistanceDir (SMA on Close)
+input double MADistanceThresholdR = 0.5;  // Distance (R) threshold for UseMADistanceDir: below this, trade WITH sigdir (trend); at/above, trade AGAINST sigdir (fade)
+input bool   UseBearFarFadeOnly  = false; // Restrict UseMADistanceDir to ONLY the BEAR signal + far-from-MA (fade/BUY) case, skipping BULL_FAR_FADE and both NEAR_TREND cases entirely (no effect if UseMADistanceDir=false)
+input bool   UseMADistStochConfirm = false; // On top of UseMADistanceDir's FAR_FADE cases, also require Stochastic to confirm (same StochOverbought/StochOversold levels as FADE_BULL_OB/FADE_BEAR_OS) before entering (no effect on NEAR_TREND cases or if UseMADistanceDir=false)
 input ulong  MagicNumber        = 95016102; // Magic number
 input int    MaxDeviationPts    = 50; // Max price deviation (points)
 input bool   EnableLiveOrders   = false; // Enable live orders
@@ -287,7 +292,7 @@ input double TrailTPDistanceR   = 0.04; // Distance maintained between price and
 input bool   UseTPRLinkedTrailTP = false; // UNTESTED: when true, ignore TrailTPTriggerR and arm UseTrailingTP at (TP_R-TPRLinkOffsetR) instead, so a TP_R optimizer sweep automatically keeps the trail just below the moving target without a second linked input
 input double TPRLinkOffsetR      = 0.01; // UNTESTED: offset subtracted from TP_R to get the effective trail-arm trigger when UseTPRLinkedTrailTP=true -- must stay >0 or the broker's own TP fires first (same race condition TrailTPTriggerR was split out to avoid, see header)
 
-int hBB20=INVALID_HANDLE,hBB4=INVALID_HANDLE,hStoch=INVALID_HANDLE;
+int hBB20=INVALID_HANDLE,hBB4=INVALID_HANDLE,hStoch=INVALID_HANDLE,hMA=INVALID_HANDLE;
 datetime last_m1_bar=0;
 int f_log=INVALID_HANDLE;
 
@@ -763,6 +768,45 @@ void CheckNewM1Bar()
    double minR=MathMax(_Point,MinR_Points*_Point);
    if(R<=minR){ Log("SIGNAL_SKIPPED","R too small"); return; }
 
+   if(UseMADistanceDir)
+   {
+      // Normal double-BB signal (sigdir), but direction decided by distance
+      // from the signal candle's close to a moving average instead of
+      // Stochastic (ported from NOPROTECT variant).
+      double maBuf[1];
+      if(CopyBuffer(hMA,0,1,1,maBuf)!=1){ Log("MA_FAIL","no MA value"); return; }
+      double maVal=maBuf[0];
+      double distR=MathAbs(c-maVal)/R;
+      bool near=(distR<MADistanceThresholdR);
+      int maDir=near?sigdir:-sigdir; // near MA -> trend (WITH sigdir); far -> fade (AGAINST sigdir)
+      string maTag=(sigdir==+1?"MADIST_BULL":"MADIST_BEAR")+(near?"_NEAR_TREND":"_FAR_FADE");
+
+      if(UseBearFarFadeOnly && !(sigdir==-1 && !near))
+      {
+         Log("SIGNAL_SKIPPED","UseBearFarFadeOnly: not a BEAR_FAR_FADE case ("+maTag+"), skipped");
+         return;
+      }
+
+      if(UseMADistStochConfirm && !near)
+      {
+         double kbufM[1];
+         if(CopyBuffer(hStoch,0,1,1,kbufM)!=1){ Log("STOCH_FAIL","no stochastic value (MADistanceDir)"); return; }
+         double stochKm=kbufM[0];
+         bool stochOk=(sigdir==+1) ? (stochKm>=StochOverbought) : (stochKm<StochOversold);
+         if(!stochOk)
+         {
+            Log("SIGNAL_SKIPPED","UseMADistStochConfirm: Stochastic not confirming (stochK="+DoubleToString(stochKm,2)+")");
+            return;
+         }
+      }
+
+      Log("SIGNAL","MA-distance | sigdir="+(sigdir==1?"BULL":"BEAR")+" R="+DoubleToString(R,_Digits)+
+          " MA="+DoubleToString(maVal,_Digits)+" distR="+DoubleToString(distR,3)+
+          " | decided dir="+(maDir==1?"BUY":"SELL")+" | "+maTag);
+      OpenTrade(maDir,R,maTag); // reuses the existing SL_R/TP_R bracket + MAX1 gating
+      return;
+   }
+
    double kbuf[1];
    if(CopyBuffer(hStoch,0,1,1,kbuf)!=1){ Log("STOCH_FAIL","no stochastic value"); return; }
    double stochK=kbuf[0];
@@ -819,7 +863,8 @@ int OnInit()
    hBB20=iBands(_Symbol,Timeframe,20,0,2.0,PRICE_CLOSE);
    hBB4 =iBands(_Symbol,Timeframe,4,0,4.0,PRICE_OPEN);
    hStoch=iStochastic(_Symbol,Timeframe,StochK_Period,StochD_Period,StochSlowing,MODE_LWMA,STO_LOWHIGH);
-   if(hBB20==INVALID_HANDLE || hBB4==INVALID_HANDLE || hStoch==INVALID_HANDLE) return INIT_FAILED;
+   hMA  =iMA(_Symbol,Timeframe,MADistancePeriod,0,MODE_SMA,PRICE_CLOSE);
+   if(hBB20==INVALID_HANDLE || hBB4==INVALID_HANDLE || hStoch==INVALID_HANDLE || hMA==INVALID_HANDLE) return INIT_FAILED;
 
    f_log=FileOpen("XAU_M1_BB_LIVE_001_STOCH_LOG.csv",FILE_READ|FILE_WRITE|FILE_CSV|FILE_ANSI|FILE_SHARE_READ,',');
    if(f_log!=INVALID_HANDLE)
@@ -836,6 +881,9 @@ int OnInit()
        ","+IntegerToString(StochSlowing)+") | OB="+DoubleToString(StochOverbought,1)+
        " OS="+DoubleToString(StochOversold,1)+" | SL_R="+DoubleToString(SL_R,2)+
        " | TP_R="+DoubleToString(TP_R,2)+" | MinR_Points="+DoubleToString(MinR_Points,1)+
+       " | UseMADistanceDir="+(UseMADistanceDir?"true":"false")+" MADistancePeriod="+IntegerToString(MADistancePeriod)+
+       " MADistanceThresholdR="+DoubleToString(MADistanceThresholdR,2)+" UseBearFarFadeOnly="+(UseBearFarFadeOnly?"true":"false")+
+       " UseMADistStochConfirm="+(UseMADistStochConfirm?"true":"false")+
        " | AllowSellFade="+(AllowSellFade?"true":"false")+
        " | AllowTrendBull="+(AllowTrendBull?"true":"false")+
        " | SkipFadeBearOSAsiaSession="+(SkipFadeBearOSAsiaSession?"true":"false")+
