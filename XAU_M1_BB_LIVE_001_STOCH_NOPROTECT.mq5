@@ -82,6 +82,21 @@
 //| variants requested: MADistancePeriod=20 and =17, same SL_R/TP_R otherwise               |
 //| (test .set files use SL_R=2.0, TP_R=0.5 per the user's explicit request).                |
 //| Needs a real MT5 Tester run before trusting any result from it.                            |
+//| Ground truth (2025.01-2026.10, SL_R=2.0, TP_R=0.5): MADistancePeriod=20         |
+//| and =17 landed almost identically (NET $4,687.58 / $4,685.48, RF 0.885         |
+//| both, n=4,050 both) -- NEAR_TREND fires on only 10-13 trades out of 4,050        |
+//| (a double-BB signal is almost always already extended well past either            |
+//| MA by the time it fires, so MA period barely matters). Of the dominant             |
+//| FAR_FADE case: BEAR_FAR_FADE (bear signal, far from MA, fades BUY) is                |
+//| clearly profitable alone (NET +$9,073.99/+$9,118.39, WR 82.54%, n~2,342),             |
+//| consistent with gold's persistent uptrend bias found elsewhere in this                 |
+//| project; BULL_FAR_FADE (bull signal, far from MA, fades SELL) is a drag                 |
+//| (NET -$4,320.58/-$4,299.28, WR ~78.7%, n~1,684). Holds on the Apr-Oct 2026                |
+//| sub-period too (BEAR_FAR_FADE +$2,675-2,720, BULL_FAR_FADE -$1,378 both).                  |
+//| UseBearFarFadeOnly (UNTESTED, default off, follow-up request) isolates                      |
+//| just the BEAR_FAR_FADE case, skipping BULL_FAR_FADE and both NEAR_TREND                      |
+//| cases entirely, to see whether dropping the losing/negligible branches                        |
+//| turns this into a cleaner standalone edge.                                                      |
 //+------------------------------------------------------------------+
 //| UseEntryBarScalpFlip / ScalpFlipTP_R (UNTESTED, default off,       |
 //| 2026-11-12, user-requested idea -- see input comments): an exit-only  |
@@ -410,6 +425,7 @@ input bool   UseBB4BodyWickSplit = false; // Ignore Stochastic entirely: BB4 BOD
 input bool   UseMADistanceDir    = false; // On the normal double-BB signal (sigdir), decide direction by distance (R) from the signal candle's close to a moving average instead of Stochastic (UNTESTED, see header)
 input int    MADistancePeriod    = 20;    // Moving average period for UseMADistanceDir (SMA on Close; set 17 for the 17-period variant)
 input double MADistanceThresholdR = 0.5;  // Distance (R) threshold for UseMADistanceDir: below this, trade WITH sigdir (trend); at/above, trade AGAINST sigdir (fade)
+input bool   UseBearFarFadeOnly  = false; // Restrict UseMADistanceDir to ONLY the BEAR signal + far-from-MA (fade/BUY) case, skipping BULL_FAR_FADE and both NEAR_TREND cases entirely (UNTESTED, see header; no effect if UseMADistanceDir=false)
 
 input double MildZoneR          = 2.0;  // Adverse-R boundary for dwell-time diagnostic (no trading effect)
 input double ComboExitDangerMin = 10.0; // Danger-zone minutes required, combined with threeBarOneWay (UNTESTED, see header)
@@ -1092,6 +1108,12 @@ void CheckNewM1Bar()
       bool near=(distR<MADistanceThresholdR);
       int maDir=near?sigdir:-sigdir; // near MA -> trend (WITH sigdir); far -> fade (AGAINST sigdir)
       string maTag=(sigdir==+1?"MADIST_BULL":"MADIST_BEAR")+(near?"_NEAR_TREND":"_FAR_FADE");
+
+      if(UseBearFarFadeOnly && !(sigdir==-1 && !near))
+      {
+         Log("SIGNAL_SKIPPED","UseBearFarFadeOnly: not a BEAR_FAR_FADE case ("+maTag+"), skipped");
+         return;
+      }
       Log("SIGNAL","MA-distance | sigdir="+(sigdir==1?"BULL":"BEAR")+" R="+DoubleToString(R,_Digits)+
           " MA="+DoubleToString(maVal,_Digits)+" distR="+DoubleToString(distR,3)+
           " | decided dir="+(maDir==1?"BUY":"SELL")+" | "+maTag);
@@ -1169,7 +1191,7 @@ int OnInit()
        " UseBB4TrendOnUnconfirmed="+(UseBB4TrendOnUnconfirmed?"true":"false")+
        " UseBB4BodyWickSplit="+(UseBB4BodyWickSplit?"true":"false")+
        " | UseMADistanceDir="+(UseMADistanceDir?"true":"false")+" MADistancePeriod="+IntegerToString(MADistancePeriod)+
-       " MADistanceThresholdR="+DoubleToString(MADistanceThresholdR,2)+
+       " MADistanceThresholdR="+DoubleToString(MADistanceThresholdR,2)+" UseBearFarFadeOnly="+(UseBearFarFadeOnly?"true":"false")+
        " | SkipFadeBearOSAsiaSession="+(SkipFadeBearOSAsiaSession?"true":"false")+
        " | SkipFadeBearOSWickTouch="+(SkipFadeBearOSWickTouch?"true":"false")+
        " | MildZoneR="+DoubleToString(MildZoneR,2)+" ComboExitDangerMin="+DoubleToString(ComboExitDangerMin,1)+
