@@ -21,3 +21,5 @@ TrailStopDistanceR=0.05
 UseTrailingTP=true
 TrailTPTriggerR=0.15
 TrailTPDistanceR=0.04
+MinCushionPointsStop=20
+MinCushionPointsTP=16

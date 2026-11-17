@@ -37,6 +37,20 @@
 //| running both live would double-expose the same signal rather than   |
 //| diversify, so this model is meant to REPLACE 011, not run beside    |
 //| it.                                                                  |
+//|                                                                     |
+//| MinCushionPointsStop/MinCushionPointsTP ADDED (2026-11-17), PENDING |
+//| MT5 VERIFICATION (not yet backtested on this file -- values carried |
+//| over from 012's own confirmed result, not independently tested      |
+//| here). Same mechanism as 012: floors TrailStopDistanceR*R /         |
+//| TrailTPDistanceR*R at a minimum absolute point distance, since      |
+//| small-R trades near MinR_Points=300 have a real-price cushion only  |
+//| a few cents wide, vulnerable to live slippage. This file's own      |
+//| order-level R distribution (3,982 confirmed-live trades, same       |
+//| TrailStopDistanceR=0.05/TrailTPDistanceR=0.04 ratios as 012):        |
+//| median R=432, 41.0% of trades have R<400. 20/16 floor both exactly  |
+//| at R=400 (same reasoning as 012), but this specific combination     |
+//| has NOT been run through MT5 yet on this model -- verify before     |
+//| treating these as CONFIRMED.                                        |
 //+------------------------------------------------------------------+
 #property strict
 #include <Trade/Trade.mqh>
@@ -69,6 +83,8 @@ input double TrailStopDistanceR = 0.05; // Distance maintained between price and
 input bool   UseTrailingTP      = true; // Once price reaches TrailTPTriggerR, widen the broker TP and trail SL instead (CONFIRMED, ported from 001)
 input double TrailTPTriggerR    = 0.15; // Favorable R to arm the trailing TP -- must be strictly less than TP_R or the broker's own TP fires first
 input double TrailTPDistanceR   = 0.04; // Distance maintained between price and the trailing SL once UseTrailingTP arms, in R
+input double MinCushionPointsStop = 20; // Floor under TrailStopDistanceR*R, in absolute points (PROPOSED, pending MT5 verification -- see header)
+input double MinCushionPointsTP   = 16; // Floor under TrailTPDistanceR*R, in absolute points (PROPOSED, pending MT5 verification -- see header)
 
 int hBB20=INVALID_HANDLE,hBB4=INVALID_HANDLE,hMA=INVALID_HANDLE;
 datetime last_m1_bar=0;
@@ -179,7 +195,8 @@ void CheckMAEProgress()
       if(UseTrailingStop && favR>=TrailStopTriggerR)
       {
          double curPrice=(g_trackDir[i]==+1)?q.bid:q.ask;
-         double candidateSL=NormalizeDouble(curPrice-g_trackDir[i]*TrailStopDistanceR*g_trackR[i],_Digits);
+         double effDist1=MathMax(TrailStopDistanceR*g_trackR[i],MinCushionPointsStop*_Point);
+         double candidateSL=NormalizeDouble(curPrice-g_trackDir[i]*effDist1,_Digits);
          double curSL=PositionGetDouble(POSITION_SL);
          if(g_trailStopLevel[i]>0) curSL=(g_trackDir[i]==+1 ? MathMax(curSL,g_trailStopLevel[i]) : MathMin(curSL,g_trailStopLevel[i]));
          bool improves=(curSL==0) || (g_trackDir[i]==+1 ? candidateSL>curSL : candidateSL<curSL);
@@ -225,7 +242,8 @@ void CheckMAEProgress()
          if(g_trailTPArmed[i])
          {
             double curPriceTP=(g_trackDir[i]==+1)?q.bid:q.ask;
-            double candidateSL2=NormalizeDouble(curPriceTP-g_trackDir[i]*TrailTPDistanceR*g_trackR[i],_Digits);
+            double effDist2=MathMax(TrailTPDistanceR*g_trackR[i],MinCushionPointsTP*_Point);
+            double candidateSL2=NormalizeDouble(curPriceTP-g_trackDir[i]*effDist2,_Digits);
             double curSL2=PositionGetDouble(POSITION_SL);
             if(g_trailTPStopLevel[i]>0) curSL2=(g_trackDir[i]==+1 ? MathMax(curSL2,g_trailTPStopLevel[i]) : MathMin(curSL2,g_trailTPStopLevel[i]));
             bool improves2=(curSL2==0) || (g_trackDir[i]==+1 ? candidateSL2>curSL2 : candidateSL2<curSL2);

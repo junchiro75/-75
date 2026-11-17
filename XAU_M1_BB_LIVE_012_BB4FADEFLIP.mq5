@@ -25,6 +25,29 @@
 //| 012 wins on NET, PF, RF, DD, win rate, avg loss, max loss, and     |
 //| win/loss ratio; 010 wins only on Sharpe and avg win size, both     |
 //| likely diluted by 012's ~2x trade count (6,332 vs 3,330).          |
+//|                                                                     |
+//| MinCushionPointsStop/MinCushionPointsTP ADDED + CONFIRMED           |
+//| (2026-11-17): floors, in absolute points, under                     |
+//| TrailStopDistanceR*R and TrailTPDistanceR*R respectively (separate  |
+//| since the two distances differ, 0.05 vs 0.04). Motivated by live    |
+//| trading: on small-R signal candles (near BB4OnlyMinR_Points=300),   |
+//| the R-based trailing cushion is only a few cents wide in real price |
+//| terms, so live fill slippage on the stop was eating the whole      |
+//| cushion and turning intended small-profit locks into breakeven/    |
+//| small-loss exits. An order-level R distribution on this file's own  |
+//| confirmed-live backtest found 48.0% of 6,332 trades have R<400      |
+//| points (median R=405), so MinCushionPointsStop=20/MinCushionPointsTP|
+//| =16 were picked to floor exactly at R=400 (0.05*400=20,             |
+//| 0.04*400=16) -- wide enough to cover that whole near-minimum         |
+//| cluster without touching the R-based behavior above it. MT5-        |
+//| verified single-run result (2025.01-2026.10): NET $73,802.63        |
+//| (+4.1% vs $70,864.69), PF 2.501 (vs 2.359), RF 95.76 (vs 89.48),     |
+//| Sharpe 115.43 (vs 100.64), Equity DD 0.77% (vs 0.79%), win rate      |
+//| 89.54% (vs 87.07%), same max loss (-$312.00) and nearly identical   |
+//| trade count (6,359 vs 6,332). Essentially a strict improvement, not |
+//| just a slippage workaround -- even in this no-slippage backtest,    |
+//| the wider cushion on thin-R trades converts some would-be           |
+//| premature-trail losses into wins.                                   |
 //+------------------------------------------------------------------+
 #property strict
 #include <Trade/Trade.mqh>
@@ -58,6 +81,8 @@ input double TrailStopDistanceR = 0.05; // Distance maintained between price and
 input bool   UseTrailingTP      = true; // Once price reaches TrailTPTriggerR, widen the broker TP and trail SL instead (CONFIRMED, ported from 001)
 input double TrailTPTriggerR    = 0.15; // Favorable R to arm the trailing TP -- must be strictly less than TP_R or the broker's own TP fires first
 input double TrailTPDistanceR   = 0.04; // Distance maintained between price and the trailing SL once UseTrailingTP arms, in R
+input double MinCushionPointsStop = 20; // Floor under TrailStopDistanceR*R, in absolute points (CONFIRMED, see header)
+input double MinCushionPointsTP   = 16; // Floor under TrailTPDistanceR*R, in absolute points (CONFIRMED, see header)
 
 int hBB20=INVALID_HANDLE,hBB4=INVALID_HANDLE;
 datetime last_m1_bar=0;
@@ -171,7 +196,8 @@ void CheckMAEProgress()
       if(UseTrailingStop && favR>=TrailStopTriggerR)
       {
          double curPrice=(g_trackDir[i]==+1)?q.bid:q.ask;
-         double candidateSL=NormalizeDouble(curPrice-g_trackDir[i]*TrailStopDistanceR*g_trackR[i],_Digits);
+         double effDist1=MathMax(TrailStopDistanceR*g_trackR[i],MinCushionPointsStop*_Point);
+         double candidateSL=NormalizeDouble(curPrice-g_trackDir[i]*effDist1,_Digits);
          double curSL=PositionGetDouble(POSITION_SL);
          if(g_trailStopLevel[i]>0) curSL=(g_trackDir[i]==+1 ? MathMax(curSL,g_trailStopLevel[i]) : MathMin(curSL,g_trailStopLevel[i]));
          bool improves=(curSL==0) || (g_trackDir[i]==+1 ? candidateSL>curSL : candidateSL<curSL);
@@ -218,7 +244,8 @@ void CheckMAEProgress()
          if(g_trailTPArmed[i])
          {
             double curPriceTP=(g_trackDir[i]==+1)?q.bid:q.ask;
-            double candidateSL2=NormalizeDouble(curPriceTP-g_trackDir[i]*TrailTPDistanceR*g_trackR[i],_Digits);
+            double effDist2=MathMax(TrailTPDistanceR*g_trackR[i],MinCushionPointsTP*_Point);
+            double candidateSL2=NormalizeDouble(curPriceTP-g_trackDir[i]*effDist2,_Digits);
             double curSL2=PositionGetDouble(POSITION_SL);
             if(g_trailTPStopLevel[i]>0) curSL2=(g_trackDir[i]==+1 ? MathMax(curSL2,g_trailTPStopLevel[i]) : MathMin(curSL2,g_trailTPStopLevel[i]));
             bool improves2=(curSL2==0) || (g_trackDir[i]==+1 ? candidateSL2>curSL2 : candidateSL2<curSL2);
