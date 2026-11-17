@@ -275,6 +275,10 @@ input bool   UseMADistanceDir    = false; // On the normal double-BB signal (sig
 input int    MADistancePeriod    = 20;    // Moving average period for UseMADistanceDir (SMA on Close)
 input double MADistanceThresholdR = 0.5;  // Distance (R) threshold for UseMADistanceDir: below this, trade WITH sigdir (trend); at/above, trade AGAINST sigdir (fade)
 input bool   UseBearFarFadeOnly  = false; // Restrict UseMADistanceDir to ONLY the BEAR signal + far-from-MA (fade/BUY) case, skipping BULL_FAR_FADE and both NEAR_TREND cases entirely (no effect if UseMADistanceDir=false)
+input bool   AllowBearFarFade    = true; // TEST: per-case toggle, skip BEAR_FAR_FADE trades if false (no effect if UseMADistanceDir=false or UseBearFarFadeOnly=true)
+input bool   AllowBullFarFade    = true; // TEST: per-case toggle, skip BULL_FAR_FADE trades if false (no effect if UseMADistanceDir=false or UseBearFarFadeOnly=true)
+input bool   AllowBearNearTrend  = true; // TEST: per-case toggle, skip BEAR_NEAR_TREND trades if false (no effect if UseMADistanceDir=false or UseBearFarFadeOnly=true)
+input bool   AllowBullNearTrend  = true; // TEST: per-case toggle, skip BULL_NEAR_TREND trades if false (no effect if UseMADistanceDir=false or UseBearFarFadeOnly=true)
 input bool   UseMADistStochConfirm = false; // On top of UseMADistanceDir's FAR_FADE cases, also require Stochastic to confirm (same StochOverbought/StochOversold levels as FADE_BULL_OB/FADE_BEAR_OS) before entering (no effect on NEAR_TREND cases or if UseMADistanceDir=false)
 input ulong  MagicNumber        = 95016140; // Magic number
 input int    MaxDeviationPts    = 50; // Max price deviation (points)
@@ -968,6 +972,15 @@ void CheckNewM1Bar()
       if(UseBearFarFadeOnly && !(sigdir==-1 && !near))
       {
          Log("SIGNAL_SKIPPED","UseBearFarFadeOnly: not a BEAR_FAR_FADE case ("+maTag+"), skipped");
+         return;
+      }
+
+      bool isBearFarFade=(sigdir==-1 && !near), isBullFarFade=(sigdir==+1 && !near);
+      bool isBearNearTrend=(sigdir==-1 && near), isBullNearTrend=(sigdir==+1 && near);
+      if((isBearFarFade && !AllowBearFarFade) || (isBullFarFade && !AllowBullFarFade) ||
+         (isBearNearTrend && !AllowBearNearTrend) || (isBullNearTrend && !AllowBullNearTrend))
+      {
+         Log("SIGNAL_SKIPPED","per-case toggle disabled this case ("+maTag+")");
          return;
       }
 
