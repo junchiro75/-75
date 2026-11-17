@@ -2,18 +2,23 @@
 //| XAU_M1_BB_LIVE_012_BB4FADEFLIP_MINCUSHION_test.mq5                 |
 //+------------------------------------------------------------------+
 //| TEST VARIANT of XAU_M1_BB_LIVE_012_BB4FADEFLIP.mq5 (2026-11-17),   |
-//| NOT LIVE. Adds MinCushionPoints: a floor, in absolute points, under|
-//| BOTH TrailStopDistanceR*R and TrailTPDistanceR*R. On a small-R     |
+//| NOT LIVE. Adds MinCushionPointsStop/MinCushionPointsTP: separate    |
+//| floors, in absolute points, under TrailStopDistanceR*R and          |
+//| TrailTPDistanceR*R respectively (split in two since the two         |
+//| distances differ, 0.05 vs 0.04, so one shared floor would cover     |
+//| different R ranges for each). On a small-R                         |
 //| signal candle (just above MinR_Points), the R-based cushion between|
 //| a trailing-stop arm point and its distance can be a few cents wide |
 //| in real price terms -- live slippage on the stop fill then eats    |
 //| the whole cushion, turning an intended small-profit lock into a    |
 //| breakeven or small-loss exit (the same failure mode 001 M1's own    |
 //| header documents fixing by revising TrailStopTriggerR 0.05->0.09). |
-//| MinCushionPoints widens only the thin-cushion trades without       |
+//| MinCushionPointsStop/TP widen only the thin-cushion trades without  |
 //| touching the R-based behavior on normal/larger-R trades. 0 disables|
-//| it (reproduces 012 exactly). MagicNumber/log filename changed so   |
-//| this never collides with the live 012 EA.                          |
+//| each (reproduces 012 exactly). Test values 20/16 both floor exactly |
+//| at R=400 points (R distribution check on 012's own confirmed-live   |
+//| backtest: 48.0% of its 6,332 trades have R<400). MagicNumber/log    |
+//| filename changed so this never collides with the live 012 EA.      |
 //+------------------------------------------------------------------+
 //| New dedicated model (2026-11-16), split out of the FLIPTEST        |
 //| variant of XAU_M1_BB_LIVE_010_BB4FADE.mq5. Same double-BB-         |
@@ -72,7 +77,8 @@ input double TrailStopDistanceR = 0.05; // Distance maintained between price and
 input bool   UseTrailingTP      = true; // Once price reaches TrailTPTriggerR, widen the broker TP and trail SL instead (CONFIRMED, ported from 001)
 input double TrailTPTriggerR    = 0.15; // Favorable R to arm the trailing TP -- must be strictly less than TP_R or the broker's own TP fires first
 input double TrailTPDistanceR   = 0.04; // Distance maintained between price and the trailing SL once UseTrailingTP arms, in R
-input double MinCushionPoints   = 0; // TEST: floor under both trailing distances in absolute points (max of distanceR*R and this) -- 0 disables, protects small-R trades from slippage eating a too-thin R-based cushion (NOT LIVE)
+input double MinCushionPointsStop = 0; // TEST: floor under TrailStopDistanceR*R, in absolute points -- 0 disables, protects small-R trades from slippage eating a too-thin R-based cushion (NOT LIVE)
+input double MinCushionPointsTP   = 0; // TEST: floor under TrailTPDistanceR*R, in absolute points -- 0 disables, same purpose as MinCushionPointsStop but for the TrailingTP distance (NOT LIVE)
 
 int hBB20=INVALID_HANDLE,hBB4=INVALID_HANDLE;
 datetime last_m1_bar=0;
@@ -186,7 +192,7 @@ void CheckMAEProgress()
       if(UseTrailingStop && favR>=TrailStopTriggerR)
       {
          double curPrice=(g_trackDir[i]==+1)?q.bid:q.ask;
-         double effDist1=MathMax(TrailStopDistanceR*g_trackR[i],MinCushionPoints*_Point);
+         double effDist1=MathMax(TrailStopDistanceR*g_trackR[i],MinCushionPointsStop*_Point);
          double candidateSL=NormalizeDouble(curPrice-g_trackDir[i]*effDist1,_Digits);
          double curSL=PositionGetDouble(POSITION_SL);
          if(g_trailStopLevel[i]>0) curSL=(g_trackDir[i]==+1 ? MathMax(curSL,g_trailStopLevel[i]) : MathMin(curSL,g_trailStopLevel[i]));
@@ -234,7 +240,7 @@ void CheckMAEProgress()
          if(g_trailTPArmed[i])
          {
             double curPriceTP=(g_trackDir[i]==+1)?q.bid:q.ask;
-            double effDist2=MathMax(TrailTPDistanceR*g_trackR[i],MinCushionPoints*_Point);
+            double effDist2=MathMax(TrailTPDistanceR*g_trackR[i],MinCushionPointsTP*_Point);
             double candidateSL2=NormalizeDouble(curPriceTP-g_trackDir[i]*effDist2,_Digits);
             double curSL2=PositionGetDouble(POSITION_SL);
             if(g_trailTPStopLevel[i]>0) curSL2=(g_trackDir[i]==+1 ? MathMax(curSL2,g_trailTPStopLevel[i]) : MathMin(curSL2,g_trailTPStopLevel[i]));
