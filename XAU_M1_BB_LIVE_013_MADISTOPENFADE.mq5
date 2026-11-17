@@ -38,19 +38,18 @@
 //| diversify, so this model is meant to REPLACE 011, not run beside    |
 //| it.                                                                  |
 //|                                                                     |
-//| MinCushionPointsStop/MinCushionPointsTP ADDED (2026-11-17), PENDING |
-//| MT5 VERIFICATION (not yet backtested on this file -- values carried |
-//| over from 012's own confirmed result, not independently tested      |
-//| here). Same mechanism as 012: floors TrailStopDistanceR*R /         |
-//| TrailTPDistanceR*R at a minimum absolute point distance, since      |
-//| small-R trades near MinR_Points=300 have a real-price cushion only  |
-//| a few cents wide, vulnerable to live slippage. This file's own      |
-//| order-level R distribution (3,982 confirmed-live trades, same       |
-//| TrailStopDistanceR=0.05/TrailTPDistanceR=0.04 ratios as 012):        |
-//| median R=432, 41.0% of trades have R<400. 20/16 floor both exactly  |
-//| at R=400 (same reasoning as 012), but this specific combination     |
-//| has NOT been run through MT5 yet on this model -- verify before     |
-//| treating these as CONFIRMED.                                        |
+//| MinCushionPointsStop/MinCushionPointsTP ADDED + CONFIRMED           |
+//| (2026-11-17): floors TrailStopDistanceR*R / TrailTPDistanceR*R at a |
+//| minimum absolute point distance (20/16, both floor exactly at      |
+//| R=400 -- see 012's header for the full reasoning, identical here    |
+//| since both files share TrailStopDistanceR=0.05/TrailTPDistanceR=    |
+//| 0.04). This file's own order-level R distribution (3,982 trades):   |
+//| median R=432, 41.0% of trades have R<400. MT5-verified single-run   |
+//| result (2025.01-2026.10): NET $47,308.90 (+2.8% vs $46,027.50), PF  |
+//| 2.565 (vs 2.448), RF 52.76 (vs 50.49), Sharpe 140.01 (vs 124.00),    |
+//| Equity DD 0.89% (vs 0.91%), win rate 86.19% (vs 84.00%), same max    |
+//| loss (-$260.50), nearly identical trade count (3,984 vs 3,982).     |
+//| Same improvement pattern as 012, smaller magnitude.                 |
 //+------------------------------------------------------------------+
 #property strict
 #include <Trade/Trade.mqh>
@@ -83,8 +82,8 @@ input double TrailStopDistanceR = 0.05; // Distance maintained between price and
 input bool   UseTrailingTP      = true; // Once price reaches TrailTPTriggerR, widen the broker TP and trail SL instead (CONFIRMED, ported from 001)
 input double TrailTPTriggerR    = 0.15; // Favorable R to arm the trailing TP -- must be strictly less than TP_R or the broker's own TP fires first
 input double TrailTPDistanceR   = 0.04; // Distance maintained between price and the trailing SL once UseTrailingTP arms, in R
-input double MinCushionPointsStop = 20; // Floor under TrailStopDistanceR*R, in absolute points (PROPOSED, pending MT5 verification -- see header)
-input double MinCushionPointsTP   = 16; // Floor under TrailTPDistanceR*R, in absolute points (PROPOSED, pending MT5 verification -- see header)
+input double MinCushionPointsStop = 20; // Floor under TrailStopDistanceR*R, in absolute points (CONFIRMED, see header)
+input double MinCushionPointsTP   = 16; // Floor under TrailTPDistanceR*R, in absolute points (CONFIRMED, see header)
 
 int hBB20=INVALID_HANDLE,hBB4=INVALID_HANDLE,hMA=INVALID_HANDLE;
 datetime last_m1_bar=0;
