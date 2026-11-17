@@ -773,6 +773,20 @@
 //| H1-aligned extension against a mean-reversion entry reads as real       |
 //| capitulation, not danger. Both default false (no filtering) here until |
 //| backtested on this EA's own signal.                                     |
+//| MinCushionPointsStop/MinCushionPointsTP (2026-11-17, UNTESTED, both      |
+//| default 0/disabled): same idea CONFIRMED on 010/012/013 -- floors        |
+//| TrailStopDistanceR*R / TrailTPDistanceR*R at a minimum absolute point   |
+//| distance, since small-R trades near MinR_Points=350 have a real-price   |
+//| cushion only a few cents wide, vulnerable to live slippage. On THIS     |
+//| file, TrailStopTriggerR==TrailTPTriggerR (both 0.15) and                |
+//| TrailStopDistanceR==TrailTPDistanceR (both 0.04) -- TrailingTP always   |
+//| arms the instant TrailingStop would, with an equal distance, so         |
+//| MinCushionPointsStop is dead code here regardless of its value (see     |
+//| UseTrailingStop/TrailStopDistanceR note above); only MinCushionPointsTP |
+//| can do anything. SL_R=1.0's own order-level R distribution (3,372       |
+//| confirmed-live trades): median R=543, 41.8% of trades have R<500, so    |
+//| MinCushionPointsTP=20 (0.04*500=20) was picked to floor at R=500 if     |
+//| testing this -- NOT yet run through MT5 on this file.                   |
 //+------------------------------------------------------------------+
 #property strict
 #include <Trade/Trade.mqh>
@@ -880,6 +894,8 @@ input double TrailStopDistanceR = 0.04; // Distance maintained between price and
 input bool   UseTrailingTP      = true; // Once price reaches TrailTPTriggerR, widen the broker TP and trail SL behind price instead of closing there (CONFIRMED, see header)
 input double TrailTPTriggerR    = 0.15; // Favorable R to arm the trailing TP -- must be strictly less than TP_R or the broker's own TP fires first (CONFIRMED, see header; only used when UseTrailingTP=true)
 input double TrailTPDistanceR   = 0.04; // Distance maintained between price and the trailing SL once UseTrailingTP arms, in R (CONFIRMED, see header; only used when UseTrailingTP=true)
+input double MinCushionPointsStop = 0; // TEST: floor under TrailStopDistanceR*R, in absolute points -- 0 disables (dead code here anyway since TrailStopTriggerR==TrailTPTriggerR and both distances are equal, see header)
+input double MinCushionPointsTP   = 0; // TEST: floor under TrailTPDistanceR*R, in absolute points -- 0 disables; same idea CONFIRMED on 012/013, protects small-R trades from slippage eating a too-thin R-based cushion (NOT LIVE yet on this file)
 
 input bool   UseTPRLinkedTrailTP = false; // UNTESTED: when true, ignore TrailTPTriggerR and arm UseTrailingTP at (TP_R-TPRLinkOffsetR) instead, so a TP_R optimizer sweep automatically keeps the trail just below the moving target without a second linked input
 input double TPRLinkOffsetR      = 0.01; // UNTESTED: offset subtracted from TP_R to get the effective trail-arm trigger when UseTPRLinkedTrailTP=true -- must stay >0 or the broker's own TP fires first (same race condition TrailTPTriggerR was split out to avoid, see header)
@@ -1537,7 +1553,8 @@ void CheckMAEProgress()
       if(UseTrailingStop && favR>=TrailStopTriggerR)
       {
          double curPrice=(g_trackDir[i]==+1)?q.bid:q.ask;
-         double candidateSL=NormalizeDouble(curPrice-g_trackDir[i]*TrailStopDistanceR*g_trackR[i],_Digits);
+         double effDist1=MathMax(TrailStopDistanceR*g_trackR[i],MinCushionPointsStop*_Point);
+         double candidateSL=NormalizeDouble(curPrice-g_trackDir[i]*effDist1,_Digits);
          double curSL=PositionGetDouble(POSITION_SL);
          // POSITION_SL can read one tick stale right after an accepted modify
          // (local cache lag) -- floor/ceiling against our own last-set level
@@ -1588,7 +1605,8 @@ void CheckMAEProgress()
          if(g_trailTPArmed[i])
          {
             double curPriceTP=(g_trackDir[i]==+1)?q.bid:q.ask;
-            double candidateSL2=NormalizeDouble(curPriceTP-g_trackDir[i]*TrailTPDistanceR*g_trackR[i],_Digits);
+            double effDist2=MathMax(TrailTPDistanceR*g_trackR[i],MinCushionPointsTP*_Point);
+            double candidateSL2=NormalizeDouble(curPriceTP-g_trackDir[i]*effDist2,_Digits);
             double curSL2=PositionGetDouble(POSITION_SL);
             // Same stale-read guard as the TrailingStop block above.
             if(g_trailTPStopLevel[i]>0) curSL2=(g_trackDir[i]==+1 ? MathMax(curSL2,g_trailTPStopLevel[i]) : MathMin(curSL2,g_trailTPStopLevel[i]));
