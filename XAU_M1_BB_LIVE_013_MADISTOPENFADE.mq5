@@ -50,6 +50,13 @@
 //| Equity DD 0.89% (vs 0.91%), win rate 86.19% (vs 84.00%), same max    |
 //| loss (-$260.50), nearly identical trade count (3,984 vs 3,982).     |
 //| Same improvement pattern as 012, smaller magnitude.                 |
+//|                                                                     |
+//| BUGFIX (2026-11-18): ProtectStop (0.25) was unconditionally          |
+//| dragging SL back to +0.05R even after TrailingStop(0.09)/            |
+//| TrailingTP(0.15) had already moved it further ahead -- found live    |
+//| on 012 (same bug, same trigger ordering here). Fixed by only          |
+//| applying the ProtectR lock if it actually improves on the current     |
+//| best-known SL; see 012's header for the full writeup.                 |
 //+------------------------------------------------------------------+
 #property strict
 #include <Trade/Trade.mqh>
@@ -179,7 +186,19 @@ void CheckMAEProgress()
          {
             double curTP=PositionGetDouble(POSITION_TP);
             double lock=NormalizeDouble(g_trackEntry[i]+g_trackDir[i]*ProtectR*g_trackR[i],_Digits);
-            if(!EnableLiveOrders)
+            // BUGFIX (2026-11-18): TrailStopTriggerR/TrailTPTriggerR are both
+            // below ProtectTriggerR, so TrailingStop/TrailingTP have usually
+            // already moved SL further than this one-time lock by the time
+            // Protect fires. Without this guard, Protect would unconditionally
+            // drag the SL BACKWARD to only +ProtectR, discarding the trailing
+            // progress -- see 012's header for the live report that found this.
+            double curSLforProtect=PositionGetDouble(POSITION_SL);
+            if(g_trailStopLevel[i]>0) curSLforProtect=(g_trackDir[i]==+1 ? MathMax(curSLforProtect,g_trailStopLevel[i]) : MathMin(curSLforProtect,g_trailStopLevel[i]));
+            if(g_trailTPStopLevel[i]>0) curSLforProtect=(g_trackDir[i]==+1 ? MathMax(curSLforProtect,g_trailTPStopLevel[i]) : MathMin(curSLforProtect,g_trailTPStopLevel[i]));
+            bool protectImproves=(curSLforProtect==0) || (g_trackDir[i]==+1 ? lock>curSLforProtect : lock<curSLforProtect);
+            if(!protectImproves)
+               Log("PROTECT_SKIPPED_WORSE","lock="+DoubleToString(lock,_Digits)+" curSL="+DoubleToString(curSLforProtect,_Digits)+" (trailing already ahead) | "+g_trackTag[i]);
+            else if(!EnableLiveOrders)
                Log("PROTECT_MOVE_DRY","would move SL->"+DoubleToString(lock,_Digits)+" (EnableLiveOrders=false) | "+g_trackTag[i]);
             else if(trade.PositionModify(g_trackTicket[i],lock,curTP))
             {

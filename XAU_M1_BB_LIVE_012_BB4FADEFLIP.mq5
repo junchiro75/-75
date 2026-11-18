@@ -48,6 +48,23 @@
 //| just a slippage workaround -- even in this no-slippage backtest,    |
 //| the wider cushion on thin-R trades converts some would-be           |
 //| premature-trail losses into wins.                                   |
+//|                                                                     |
+//| BUGFIX (2026-11-18): ProtectStop (fires at ProtectTriggerR=0.25)     |
+//| was unconditionally moving SL to entry+ProtectR*R even when          |
+//| TrailingStop (arms at 0.09) or TrailingTP (arms at 0.15) had         |
+//| already moved SL much further ahead -- since both trailing          |
+//| triggers are below ProtectTriggerR, this happened on every trade     |
+//| that reached 0.25R favorable, dragging a well-advanced trailing SL   |
+//| back down to a thin +0.05R lock and discarding the trailing          |
+//| progress. Found from a live report (user, 2026-11-18): a trade on    |
+//| an R<400 candle, past 0.25R favorable, closed for a small real loss   |
+//| (-$1.20) instead of the solid profit the trailing distance should    |
+//| have locked in -- not a slippage/cushion issue, this bug. Fixed by    |
+//| comparing the ProtectR lock against the current best-known SL        |
+//| (PositionGetDouble(POSITION_SL), g_trailStopLevel[i],                 |
+//| g_trailTPStopLevel[i]) and skipping the move (PROTECT_SKIPPED_WORSE   |
+//| in the log) when the lock would be LESS favorable. Same bug and fix   |
+//| applied to 001 M2/011/013 (all share this trigger ordering).          |
 //+------------------------------------------------------------------+
 #property strict
 #include <Trade/Trade.mqh>
@@ -181,7 +198,21 @@ void CheckMAEProgress()
          {
             double curTP=PositionGetDouble(POSITION_TP);
             double lock=NormalizeDouble(g_trackEntry[i]+g_trackDir[i]*ProtectR*g_trackR[i],_Digits);
-            if(!EnableLiveOrders)
+            // BUGFIX (2026-11-18): TrailStopTriggerR/TrailTPTriggerR are both
+            // below ProtectTriggerR, so TrailingStop/TrailingTP have usually
+            // already moved SL further than this one-time lock by the time
+            // Protect fires. Without this guard, Protect would unconditionally
+            // drag the SL BACKWARD to only +ProtectR, discarding the trailing
+            // progress -- confirmed live (user report, 2026-11-18): a trade
+            // past 0.25R that should have been solidly locked in by trailing
+            // closed for a small loss instead, exactly this pattern.
+            double curSLforProtect=PositionGetDouble(POSITION_SL);
+            if(g_trailStopLevel[i]>0) curSLforProtect=(g_trackDir[i]==+1 ? MathMax(curSLforProtect,g_trailStopLevel[i]) : MathMin(curSLforProtect,g_trailStopLevel[i]));
+            if(g_trailTPStopLevel[i]>0) curSLforProtect=(g_trackDir[i]==+1 ? MathMax(curSLforProtect,g_trailTPStopLevel[i]) : MathMin(curSLforProtect,g_trailTPStopLevel[i]));
+            bool protectImproves=(curSLforProtect==0) || (g_trackDir[i]==+1 ? lock>curSLforProtect : lock<curSLforProtect);
+            if(!protectImproves)
+               Log("PROTECT_SKIPPED_WORSE","lock="+DoubleToString(lock,_Digits)+" curSL="+DoubleToString(curSLforProtect,_Digits)+" (trailing already ahead) | "+g_trackTag[i]);
+            else if(!EnableLiveOrders)
                Log("PROTECT_MOVE_DRY","would move SL->"+DoubleToString(lock,_Digits)+" (EnableLiveOrders=false) | "+g_trackTag[i]);
             else if(trade.PositionModify(g_trackTicket[i],lock,curTP))
             {
