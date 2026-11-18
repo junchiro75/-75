@@ -1,5 +1,24 @@
 //+------------------------------------------------------------------+
 //| XAU_M2_BB_LIVE_006_TIGHTTRAIL.mq5                                |
+//| MinCushionPointsStop/MinCushionPointsTP (2026-11-18, UNTESTED,    |
+//| both default 0/disabled): same idea CONFIRMED on 001/010/012/013  |
+//| -- floors the post-TP1 trailing distance (TrailTPDistanceR*R, or   |
+//| TrailStopDistanceR*R while UseTrailingStop=true and TP not yet     |
+//| removed) at a minimum absolute point distance, since small-R      |
+//| trades near MinR_Points=200 have a real-price cushion only a few   |
+//| cents wide, vulnerable to live slippage. 006 is a stronger          |
+//| candidate for this than 001/012/013 were: TrailTPDistanceR=0.02    |
+//| is tighter than their 0.04-0.05, and this file's own BUY-only       |
+//| order-level R distribution (2,546 confirmed-live trades) has        |
+//| median R=343 with 62.7% of trades R<400 -- a much thinner, more     |
+//| front-loaded cluster than 001's 41.8%<500 or 012's 48.0%<400.       |
+//| NOTE: an earlier TrailTPDistanceR sweep (0.005-0.06) on this file    |
+//| found near-ZERO backtest sensitivity (NET/trade-count essentially   |
+//| flat across the whole range) -- that result is about frictionless   |
+//| backtest fills, NOT about live slippage vulnerability, and does    |
+//| NOT mean this floor is pointless; the two are different questions.  |
+//| MinCushionPointsTP=8 (0.02*400=8) floors at R=400, matching          |
+//| 001/012/013's own target -- NOT yet run through MT5 on this file.   |
 //| LIVE ROLLOUT (2026-11-10): AllowShort flipped true in the live    |
 //| .set (XAU_M2_BB_LIVE_006_TIGHTTRAIL.set) -- BUY+SELL combined      |
 //| beat BUY-only on both NET and Recovery Factor, full-period AND     |
@@ -427,6 +446,8 @@ input bool   UseTrailingStop      = false; // After TP1 reached, continuously tr
 input double TrailStopDistanceR   = 0.04; // Distance maintained between price and the trailing SL after TP1, in R (CONFIRMED-but-unused value, see header; only used when UseTrailingStop=true AND UseTrailingTP hasn't armed)
 input bool   UseTrailingTP        = true; // After TP1 reached, remove the TP2 cap and trail SL instead of closing at TP2 (CONFIRMED on 005, carried over unchanged, see header)
 input double TrailTPDistanceR     = 0.02; // Distance maintained between price and the trailing SL once TP2 cap removed, in R (SIMULATED on 006, tightened from 005's 0.09, see header; only used when UseTrailingTP=true)
+input double MinCushionPointsStop = 0; // TEST: floor under TrailStopDistanceR*R, in absolute points -- 0 disables; dead code while UseTrailingStop=false (see header)
+input double MinCushionPointsTP   = 0; // TEST: floor under TrailTPDistanceR*R, in absolute points -- 0 disables; same idea CONFIRMED on 001/010/012/013, protects small-R trades from slippage eating a too-thin R-based cushion (NOT LIVE yet on this file)
 
 // -- 매물대 (supply/demand zone) diagnostic (ported from 001 M2_v2): logs
 //    zoneDistATR (distance from the actual entry fill to the nearest
@@ -1234,7 +1255,9 @@ void ManagePosition(MqlTick &tick)
 
    double curPrice=(managed_dir==+1 ? tick.bid : tick.ask);
    double distanceR=(tpRemoved ? TrailTPDistanceR : TrailStopDistanceR);
-   double candidateSL=NormalizeDouble(curPrice-managed_dir*distanceR*managed_R,_Digits);
+   double minCushion=(tpRemoved ? MinCushionPointsTP : MinCushionPointsStop);
+   double effDist=MathMax(distanceR*managed_R,minCushion*_Point);
+   double candidateSL=NormalizeDouble(curPrice-managed_dir*effDist,_Digits);
    double curSL=PositionGetDouble(POSITION_SL);
    // POSITION_SL can lag one tick behind a just-accepted modify (local
    // position cache not yet refreshed), so also floor/ceiling curSL against
