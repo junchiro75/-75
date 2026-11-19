@@ -65,6 +65,24 @@
 //| g_trailTPStopLevel[i]) and skipping the move (PROTECT_SKIPPED_WORSE   |
 //| in the log) when the lock would be LESS favorable. Same bug and fix   |
 //| applied to 001 M2/011/013 (all share this trigger ordering).          |
+//|                                                                        |
+//| TrailTPTriggerR/TrailTPDistanceR REVISED 0.15/0.04 -> 0.25/0.01        |
+//| (2026-11-19, CONFIRMED): manual single-run comparison, all with        |
+//| MinCushionPointsStop=20/MinCushionPointsTP=16 already applied, found   |
+//| 0.25/0.01 beats the previous 0.15/0.04 pick on every metric: NET       |
+//| $77,729.73 (vs $73,802.63, +5.3%), PF 2.602 (vs 2.501), RF 103.19      |
+//| (vs 95.76), Sharpe 118.60 (vs 115.43), DD 0.75% (vs 0.77%), win rate   |
+//| 90.26% (vs 89.54%), same max loss (-$312.00). TrailTPDistanceR=0.01    |
+//| is now almost always dominated by MinCushionPointsTP=16 (0.01*R<16     |
+//| for any R<1600 points, ~98-99% of trades), so this change effectively  |
+//| flattens the post-arm trail from "proportional to R" into "~always    |
+//| 16 points" -- tighter on large-R trades than the old 0.04*R, which     |
+//| apparently locks in profit faster/more often than it costs in         |
+//| premature exits. Also tested 0.25/0.04 (NET $73,201.73, worse, about   |
+//| flat vs the old pick) and 0.15/0.01 (NET $79,354.83, PF 2.607,         |
+//| slightly higher NET than 0.25/0.01 but lower RF 100.93 and WR 88.79%)  |
+//| -- 0.25/0.01 was chosen over 0.15/0.01 for the better RF/WR/DD         |
+//| despite marginally lower NET; 0.15/0.01 remains a close second choice. |
 //+------------------------------------------------------------------+
 #property strict
 #include <Trade/Trade.mqh>
@@ -96,8 +114,8 @@ input bool   UseTrailingStop    = true; // Continuously trail SL behind price on
 input double TrailStopTriggerR  = 0.09; // Favorable R to arm the trailing stop (CONFIRMED, ported from 001)
 input double TrailStopDistanceR = 0.05; // Distance maintained between price and the trailing SL, in R (CONFIRMED, ported from 001)
 input bool   UseTrailingTP      = true; // Once price reaches TrailTPTriggerR, widen the broker TP and trail SL instead (CONFIRMED, ported from 001)
-input double TrailTPTriggerR    = 0.15; // Favorable R to arm the trailing TP -- must be strictly less than TP_R or the broker's own TP fires first
-input double TrailTPDistanceR   = 0.04; // Distance maintained between price and the trailing SL once UseTrailingTP arms, in R
+input double TrailTPTriggerR    = 0.25; // Favorable R to arm the trailing TP -- must be strictly less than TP_R or the broker's own TP fires first (CONFIRMED, see header)
+input double TrailTPDistanceR   = 0.01; // Distance maintained between price and the trailing SL once UseTrailingTP arms, in R (CONFIRMED, see header -- effectively dominated by MinCushionPointsTP for nearly all trades)
 input double MinCushionPointsStop = 20; // Floor under TrailStopDistanceR*R, in absolute points (CONFIRMED, see header)
 input double MinCushionPointsTP   = 16; // Floor under TrailTPDistanceR*R, in absolute points (CONFIRMED, see header)
 
