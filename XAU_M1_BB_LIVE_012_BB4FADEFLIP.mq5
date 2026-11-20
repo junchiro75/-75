@@ -100,6 +100,28 @@
 //| 006's existing check verbatim. Defaults to UseMaxRFilter=false/          |
 //| MaxR_Points=1000 so live M1 behavior is UNCHANGED until tested and       |
 //| explicitly confirmed -- not yet validated by backtest on this file.      |
+//|                                                                        |
+//| UseMaxRFilter TESTED on M1 (2026-11-20, REJECTED): swept MaxR_Points     |
+//| 1000-3600 (confirmed M1 settings otherwise). NET/RF/PF rose              |
+//| monotonically across the whole range, peaking at MaxR_Points=3600       |
+//| (effectively no filter, since M1's own max R is 3,520) -- unlike M2,     |
+//| M1 has no fat-tail cluster worth cutting. Keep UseMaxRFilter=false on    |
+//| M1.                                                                      |
+//|                                                                        |
+//| BB4OnlyMinR_Points REVISED 300 -> 350 (2026-11-20, CONFIRMED): a finer   |
+//| sweep between the already-tested 300/400 grid points (MT5-verified       |
+//| single runs, ProtectTriggerR=0.25/TrailStopTriggerR=0.09 confirmed       |
+//| throughout) found 350 beats 300 on every metric except NET and trade     |
+//| count: RF 114.45 (vs 300's 103.19, +10.9%), DD 0.57% (vs 0.75%, -24%),   |
+//| Sharpe 125.61 (vs 118.60), PF 2.727 (vs 2.602), Expected Payoff 14.36    |
+//| (vs 12.25, +17.2%), same max loss (-$312.00). NET is lower ($65,067.66   |
+//| vs $77,729.73, -16.3%) on 4,531 trades (vs 6,345, -28.6%). User-         |
+//| selected 350 for the DD/RF/Sharpe/Expected-Payoff improvement over the   |
+//| NET cost, also reducing trade-frequency commission drag (fewer, larger  |
+//| trades) that was raised as a separate concern. TP_R=1.0/                 |
+//| TrailTPTriggerR=0.5 tested alongside 350 and REJECTED (worse NET/PF/RF/  |
+//| DD/Expected Payoff than TP_R=0.5/TrailTPTriggerR=0.25, only Sharpe/win   |
+//| rate marginally better) -- TP_R/TrailTPTriggerR stay at 0.5/0.25.        |
 //+------------------------------------------------------------------+
 #property strict
 #include <Trade/Trade.mqh>
@@ -109,7 +131,7 @@ input ENUM_TIMEFRAMES Timeframe = PERIOD_M1; // signal-candle timeframe
 input double Lots               = 0.1; // Lot size
 input double SL_R               = 1.75;  // Stop loss (R) (CONFIRMED, see header)
 input double TP_R               = 0.5; // Take profit (R) (structurally inert once UseTrailingTP arms, CONFIRMED, see header)
-input double BB4OnlyMinR_Points = 300;  // Min signal-candle body (points) to trade (CONFIRMED, see header)
+input double BB4OnlyMinR_Points = 350;  // Min signal-candle body (points) to trade (CONFIRMED, revised from 300, see header)
 input bool   UseMaxRFilter      = false; // Skip signals (BUY or SELL) whose R exceeds MaxR_Points (NEW, ported from 006_TIGHTTRAIL, UNTESTED on this file)
 input double MaxR_Points        = 1000;  // Max signal-candle body (points) to trade when UseMaxRFilter=true (NEW, ported from 006_TIGHTTRAIL, UNTESTED on this file)
 input ulong  MagicNumber        = 95016122; // Magic number
