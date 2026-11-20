@@ -83,6 +83,23 @@
 //| slightly higher NET than 0.25/0.01 but lower RF 100.93 and WR 88.79%)  |
 //| -- 0.25/0.01 was chosen over 0.15/0.01 for the better RF/WR/DD         |
 //| despite marginally lower NET; 0.15/0.01 remains a close second choice. |
+//|                                                                        |
+//| UseMaxRFilter/MaxR_Points ADDED (2026-11-20, UNTESTED): ported from    |
+//| 006_TIGHTTRAIL's own confirmed UseMaxRFilter/MaxR_Points=1000 (there    |
+//| caps the SELL side's elevated tail risk). Motivated by a Timeframe=2    |
+//| (M2) comparison test on this file: switching Timeframe=1->2 with all    |
+//| other inputs unchanged dropped NET $77,729.73->$52,677.52 and raised    |
+//| Equity DD 0.75%->2.88%, max loss trade -$312.00->-$729.50. An R          |
+//| distribution on that M2 run's trades found the median R barely moved    |
+//| (405->429.8) but the right tail got much fatter (max R 5,185.3 points    |
+//| vs the M1 run's much smaller max), and max-loss-trade growth tracks      |
+//| that tail directly (loss $ = R_points * SL_R * point value). Since       |
+//| BB4OnlyMinR_Points only floors R from below, there was no way to cap     |
+//| this tail -- UseMaxRFilter/MaxR_Points adds the missing upper bound,     |
+//| skipping the signal (BUY or SELL) if R>MaxR_Points*_Point, mirroring     |
+//| 006's existing check verbatim. Defaults to UseMaxRFilter=false/          |
+//| MaxR_Points=1000 so live M1 behavior is UNCHANGED until tested and       |
+//| explicitly confirmed -- not yet validated by backtest on this file.      |
 //+------------------------------------------------------------------+
 #property strict
 #include <Trade/Trade.mqh>
@@ -93,6 +110,8 @@ input double Lots               = 0.1; // Lot size
 input double SL_R               = 1.75;  // Stop loss (R) (CONFIRMED, see header)
 input double TP_R               = 0.5; // Take profit (R) (structurally inert once UseTrailingTP arms, CONFIRMED, see header)
 input double BB4OnlyMinR_Points = 300;  // Min signal-candle body (points) to trade (CONFIRMED, see header)
+input bool   UseMaxRFilter      = false; // Skip signals (BUY or SELL) whose R exceeds MaxR_Points (NEW, ported from 006_TIGHTTRAIL, UNTESTED on this file)
+input double MaxR_Points        = 1000;  // Max signal-candle body (points) to trade when UseMaxRFilter=true (NEW, ported from 006_TIGHTTRAIL, UNTESTED on this file)
 input ulong  MagicNumber        = 95016122; // Magic number
 input int    MaxDeviationPts    = 50; // Max price deviation (points)
 input bool   EnableLiveOrders   = false; // Enable live orders
@@ -497,6 +516,11 @@ void CheckNewM1Bar()
    double R=MathAbs(c-o);
    double minR=MathMax(_Point,BB4OnlyMinR_Points*_Point);
    if(R<=minR){ Log("SIGNAL_SKIPPED","R too small"); return; }
+   if(UseMaxRFilter)
+   {
+      double maxR=MaxR_Points*_Point;
+      if(R>maxR){ Log("SIGNAL_SKIPPED","R too large"); return; }
+   }
 
    {
       double h1o1=iOpen(_Symbol,PERIOD_H1,1),h1c1=iClose(_Symbol,PERIOD_H1,1);
@@ -541,6 +565,7 @@ int OnInit()
 
    Log("START",string("TF=")+EnumToString(Timeframe)+" | SL_R="+DoubleToString(SL_R,2)+
        " | TP_R="+DoubleToString(TP_R,2)+" | BB4OnlyMinR_Points="+DoubleToString(BB4OnlyMinR_Points,1)+
+       " | UseMaxRFilter="+(UseMaxRFilter?"true":"false")+" MaxR_Points="+DoubleToString(MaxR_Points,1)+
        " | SkipHourStartKST="+IntegerToString(SkipHourStartKST)+" SkipHourEndKST="+IntegerToString(SkipHourEndKST)+
        " SkipHourEntryKST="+(SkipHourEntryKST?"true":"false")+
        " | SkipIfH1TrendAgainst="+(SkipIfH1TrendAgainst?"true":"false")+" SkipIfH1NotAgainst="+(SkipIfH1NotAgainst?"true":"false")+
