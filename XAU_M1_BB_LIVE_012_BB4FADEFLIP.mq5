@@ -122,6 +122,29 @@
 //| TrailTPTriggerR=0.5 tested alongside 350 and REJECTED (worse NET/PF/RF/  |
 //| DD/Expected Payoff than TP_R=0.5/TrailTPTriggerR=0.25, only Sharpe/win   |
 //| rate marginally better) -- TP_R/TrailTPTriggerR stay at 0.5/0.25.        |
+//|                                                                        |
+//| SkipHourStartServer/EndServer/EntryServer ADDED + CONFIRMED (2026-11-20):|
+//| a weekday/hour-of-day vulnerability check (entry-time breakdown on the   |
+//| confirmed 350 run) found server hour 22 (22:00-22:59) distinctly weak    |
+//| (n=166, avg $6.49/trade, WR 86.14% -- worst among hours with meaningful   |
+//| volume). The existing SkipHourStartKST/EndKST window is KST-denominated   |
+//| with DST-aware conversion, so it can't isolate a single server hour       |
+//| without seasonal drift; this adds a second window in raw server time      |
+//| instead. First tried converting the server-22 finding into a KST 02-07    |
+//| window (02:00-06:59 KST), but that window's DST-variable mapping back to  |
+//| server time (~19:00-00:00) swept up 012's STRONGEST hours (20:00, 21:00)  |
+//| along with the one weak hour -- NET $65,067.66->$58,398.40 (-10.3%), RF    |
+//| 114.45->89.35 (-21.9%), DD 0.57%->0.65%, all worse. Blocking server hour   |
+//| 22 directly instead (alongside the existing KST 14-16 window, both        |
+//| active): NET $65,067.66->$63,990.26 (-1.65%), RF 114.45->108.88 (-4.9%),   |
+//| but PF 2.727->2.797, Sharpe 125.61->128.55, win rate 90.77%->90.95%,       |
+//| Expected Payoff 14.36->14.66, avg win/loss both improved, same max loss    |
+//| (-$312.00). Also confirmed the untested KST 14-16 window itself still      |
+//| earns its place: removing it (server-22 skip alone) raises NET to          |
+//| $67,736.46 but DD back up to 0.67% and RF down to 98.18 -- the 14-16        |
+//| window's own marginal contribution is -5.9% NET for -14.9% DD/+10.9% RF,   |
+//| the same NET-for-risk tradeoff pattern as the BB4OnlyMinR_Points revision   |
+//| above. Keep both windows active.                                           |
 //+------------------------------------------------------------------+
 #property strict
 #include <Trade/Trade.mqh>
@@ -141,6 +164,10 @@ input bool   EnableLiveOrders   = false; // Enable live orders
 input int    SkipHourStartKST   = 14; // KST hour skip window start (ported from 001, UNTESTED on this signal)
 input int    SkipHourEndKST     = 16; // KST hour skip window end, exclusive
 input bool   SkipHourEntryKST   = true; // Block entries in [SkipHourStartKST,SkipHourEndKST) KST
+
+input int    SkipHourStartServer = 22; // Server-time hour skip window start -- no KST/DST conversion (CONFIRMED, see header)
+input int    SkipHourEndServer   = 23; // Server-time hour skip window end, exclusive (CONFIRMED, see header)
+input bool   SkipHourEntryServer = true; // Block entries in [SkipHourStartServer,SkipHourEndServer) server time (CONFIRMED, see header)
 
 input bool   SkipIfH1TrendAgainst = false; // ported from 007/001, UNTESTED here
 input bool   SkipIfH1NotAgainst   = false; // ported from 007/001, UNTESTED here
@@ -428,6 +455,13 @@ void OpenTrade(int dir,double R,string tag)
       Log("ENTRY_SKIPPED","KST hour in ["+IntegerToString(SkipHourStartKST)+","+IntegerToString(SkipHourEndKST)+") by SkipHourEntryKST=true");
       return;
    }
+   MqlDateTime srvT; TimeToStruct(TimeCurrent(),srvT);
+   bool inSkipHourServer=(srvT.hour>=SkipHourStartServer && srvT.hour<SkipHourEndServer);
+   if(inSkipHourServer && SkipHourEntryServer)
+   {
+      Log("ENTRY_SKIPPED","server hour in ["+IntegerToString(SkipHourStartServer)+","+IntegerToString(SkipHourEndServer)+") by SkipHourEntryServer=true");
+      return;
+   }
    tag="M1_"+tag;
 
    MqlTick q; if(!SymbolInfoTick(_Symbol,q)){ Log("ORDER_FAIL","no current tick"); return; }
@@ -590,6 +624,8 @@ int OnInit()
        " | UseMaxRFilter="+(UseMaxRFilter?"true":"false")+" MaxR_Points="+DoubleToString(MaxR_Points,1)+
        " | SkipHourStartKST="+IntegerToString(SkipHourStartKST)+" SkipHourEndKST="+IntegerToString(SkipHourEndKST)+
        " SkipHourEntryKST="+(SkipHourEntryKST?"true":"false")+
+       " | SkipHourStartServer="+IntegerToString(SkipHourStartServer)+" SkipHourEndServer="+IntegerToString(SkipHourEndServer)+
+       " SkipHourEntryServer="+(SkipHourEntryServer?"true":"false")+
        " | SkipIfH1TrendAgainst="+(SkipIfH1TrendAgainst?"true":"false")+" SkipIfH1NotAgainst="+(SkipIfH1NotAgainst?"true":"false")+
        " | ProtectTriggerR="+DoubleToString(ProtectTriggerR,2)+" ProtectR="+DoubleToString(ProtectR,2)+
        " UseProtectStop="+(UseProtectStop?"true":"false")+
