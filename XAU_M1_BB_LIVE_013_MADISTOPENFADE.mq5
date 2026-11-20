@@ -87,6 +87,18 @@
 //| 006. Defaults to UseMaxRFilter=false/MaxR_Points=1000 so live M1          |
 //| behavior is UNCHANGED until tested and explicitly confirmed -- not yet    |
 //| validated by backtest on this file.                                       |
+//|                                                                        |
+//| MinR_Points REVISED 300 -> 350 (2026-11-20, CONFIRMED): same fine        |
+//| sweep done on 012 (MT5-verified single runs, ProtectTriggerR=0.25/       |
+//| TrailStopTriggerR=0.09 confirmed throughout) found 350 is a non-          |
+//| monotonic RF peak across the whole 300-1000 range: RF 61.28 (vs 300's    |
+//| 57.69, +6.2%, and higher than every other tested point including         |
+//| 500's 59.91), DD 0.72% (vs 0.88%, -17.9%), PF 2.819 (vs 2.702), Sharpe    |
+//| 155.52 (vs 145.15), Expected Payoff 14.87 (vs 12.78, +16.3%), same max   |
+//| loss (-$260.50). NET is lower ($44,813.10 vs $50,925.90, -12.0%) on      |
+//| 3,014 trades (vs 3,984, -24.4%). User-selected 350 to match 012's        |
+//| revision for the same reasoning (DD/RF/Sharpe/Expected-Payoff            |
+//| improvement over the NET cost, fewer trades reducing commission drag).   |
 //+------------------------------------------------------------------+
 #property strict
 #include <Trade/Trade.mqh>
@@ -96,7 +108,7 @@ input ENUM_TIMEFRAMES Timeframe = PERIOD_M1; // signal-candle timeframe
 input double Lots               = 0.1; // Lot size
 input double SL_R               = 1.0;  // Stop loss (R) (CONFIRMED, see header)
 input double TP_R               = 0.5; // Take profit (R) (structurally inert once UseTrailingTP arms, CONFIRMED, see header)
-input double MinR_Points        = 300;  // Min signal-candle body (points) to trade (CONFIRMED, see header)
+input double MinR_Points        = 350;  // Min signal-candle body (points) to trade (CONFIRMED, revised from 300, see header)
 input bool   UseMaxRFilter      = false; // Skip signals (BUY or SELL) whose R exceeds MaxR_Points (NEW, ported from 006_TIGHTTRAIL, UNTESTED on this file)
 input double MaxR_Points        = 1000;  // Max signal-candle body (points) to trade when UseMaxRFilter=true (NEW, ported from 006_TIGHTTRAIL, UNTESTED on this file)
 input int    MADistancePeriod   = 20;    // Moving average period (SMA on Close) (CONFIRMED, see header)
