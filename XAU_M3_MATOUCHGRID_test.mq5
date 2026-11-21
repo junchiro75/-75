@@ -249,6 +249,20 @@
 //| direction, not the raw M3 cross direction. hMAHtfSlow (H1's 120MA)         |
 //| removed -- H1's own cross is no longer used, only price-vs-20MA. Not yet   |
 //| backtested.                                                              |
+//|                                                                     |
+//| TENTH REVISION (2026-11-21, per user request, confirmed theory         |
+//| "기본비를 맞으면 보통 반대방향으로 간다"): UseHtfBB4Exhaustion added --        |
+//| TAKES PRIORITY over the 9th revision's price-vs-20MA override. At a      |
+//| golden cross, if HigherTFAlignment's last CLOSED candle is bullish AND    |
+//| its high touches the upper BB4(4,4,PRICE_OPEN) band ("상단 기본비", the    |
+//| SAME construct as 010-013's signal), the exhaustion fade overrides to     |
+//| SELL regardless of what price-vs-20MA would say; symmetric for a dead     |
+//| cross + bearish candle touching the lower band -> BUY. When it fires,     |
+//| this still counts as counter-trend if it disagrees with the M3 cross's    |
+//| own direction (CounterTrendTPShrink applies the same way). If it does     |
+//| NOT fire, falls through to the 9th revision's price-vs-20MA override      |
+//| unchanged. New hBB4Htf handle (iBands on HigherTFAlignment). Not yet       |
+//| backtested.                                                              |
 //+------------------------------------------------------------------+
 #property strict
 #include <Trade/Trade.mqh>
@@ -285,6 +299,9 @@ input group "=== H1 price-vs-MA direction override (REVISED 2026-11-21, REPLACES
 input bool   UseHigherTFAlignment   = true;      // at the moment of entry, HigherTFAlignment's CURRENT price vs its own MAFastPeriod(20) MA DETERMINES the final trade direction -- overrides the M3 cross's direction when they disagree, rather than skipping (TEST, untested, user-specified logic)
 input ENUM_TIMEFRAMES HigherTFAlignment = PERIOD_H1; // the timeframe read for this override (TEST, CONFIRMED as a cross-alignment skip-gate in the 7th backtest at NET $18,986/PF 1.089; now repurposed, not yet backtested in this new form)
 input double CounterTrendTPShrink   = 0.5;       // when the override disagrees with the M3 cross direction (counter-trend trade), shrink the swing-TP favorable distance from P0 by this fraction ("기존보다 다소 적은 범위로 익절") (TEST, untested, user-specified logic)
+
+input group "=== H1 BB4(4,4) exhaustion override (NEW 2026-11-21, per user request -- TAKES PRIORITY over the price-vs-20MA override above when it fires; theory confirmed by user: '기본비를 맞으면 보통 반대방향으로 간다' -- touching the band is itself a fade signal) ==="
+input bool   UseHtfBB4Exhaustion = true; // at a golden cross, if HigherTFAlignment's last CLOSED candle is bullish AND its high touches the upper BB4(4,4,PRICE_OPEN) band ("상단 기본비"), override to SELL; at a dead cross, a bearish candle touching the lower band overrides to BUY. Same "기본비" construct as 010-013 in this repo. Counts as counter-trend (CounterTrendTPShrink applies) whenever it disagrees with the M3 cross direction (TEST, untested, user-specified logic)
 
 input group "=== Second higher-timeframe alignment filter (NEW 2026-11-21, per user request -- UNCHANGED skip-gate semantics, now checked against the FINAL direction after the H1 override above) ==="
 input bool   UseHigherTFAlignment2  = true;      // a SECOND higher timeframe that must ALSO be aligned with the FINAL (post-H1-override) direction, else this touch is skipped (TEST, untested)
@@ -335,6 +352,7 @@ datetime g_lastFlipBarSeen=0;
 int hMA=INVALID_HANDLE, hMAFast=INVALID_HANDLE, hATR=INVALID_HANDLE;
 int hMAFlipSlow=INVALID_HANDLE, hMAFlipFast=INVALID_HANDLE;
 int hMAHtfFast=INVALID_HANDLE; // H1 price-vs-MA direction override (REVISED 2026-11-21) -- only the fast(20) MA is needed now, no cross
+int hBB4Htf=INVALID_HANDLE;    // H1 BB4(4,4) exhaustion override (NEW 2026-11-21) -- same "기본비" construct as 010-013
 int hMAHtf2Slow=INVALID_HANDLE, hMAHtf2Fast=INVALID_HANDLE; // higher-timeframe alignment filter #2 (NEW 2026-11-21)
 int f_log=INVALID_HANDLE;
 
@@ -484,6 +502,33 @@ int DecideFinalDir(int fallbackDir)
    if(CopyBuffer(hMAHtfFast,0,0,1,ma)<1) return fallbackDir;
    double bid=SymbolInfoDouble(_Symbol,SYMBOL_BID);
    return (bid>ma[0]) ? +1 : -1;
+}
+
+//+------------------------------------------------------------------+
+//| H1 BB4(4,4) exhaustion override (NEW 2026-11-21, per user request:  |
+//| "기본비를 맞으면 보통 반대방향으로 간다" -- touching the band is itself a |
+//| fade signal, so it overrides even a just-fired golden/dead cross).  |
+//| Reads HigherTFAlignment's last CLOSED candle only (not the forming  |
+//| one, unlike DecideFinalDir -- need a settled candle to know its      |
+//| direction and whether it touched the band). Sets fired=true and      |
+//| returns the faded direction (+1/-1) only if crossDir's own extreme   |
+//| band was touched by a candle moving WITH crossDir; otherwise fired=  |
+//| false and the return value is meaningless (caller must check fired). |
+//+------------------------------------------------------------------+
+int DecideFinalDirByBB4(int crossDir,bool &fired)
+{
+   fired=false;
+   double o=iOpen(_Symbol,HigherTFAlignment,1), c=iClose(_Symbol,HigherTFAlignment,1);
+   double h=iHigh(_Symbol,HigherTFAlignment,1), l=iLow(_Symbol,HigherTFAlignment,1);
+   if(o==0 || c==0) return 0;
+
+   double up4[1],lo4[1];
+   if(CopyBuffer(hBB4Htf,1,1,1,up4)<1) return 0;
+   if(CopyBuffer(hBB4Htf,2,1,1,lo4)<1) return 0;
+
+   if(crossDir>0 && c>o && h>=up4[0]) { fired=true; return -1; } // golden cross, bullish H1 candle touches upper band -> fade SELL
+   if(crossDir<0 && c<o && l<=lo4[0]) { fired=true; return +1; } // dead cross, bearish H1 candle touches lower band -> fade BUY
+   return 0;
 }
 
 //+------------------------------------------------------------------+
@@ -803,10 +848,12 @@ int OnInit()
    hMAHtfFast =iMA(_Symbol,HigherTFAlignment,MAFastPeriod,0,MODE_SMA,PRICE_CLOSE);
    hMAHtf2Slow=iMA(_Symbol,HigherTFAlignment2,MAPeriod,0,MODE_SMA,PRICE_CLOSE);
    hMAHtf2Fast=iMA(_Symbol,HigherTFAlignment2,MAFastPeriod,0,MODE_SMA,PRICE_CLOSE);
+   hBB4Htf    =iBands(_Symbol,HigherTFAlignment,4,0,4.0,PRICE_OPEN); // "기본비", same construct as 010-013
    if(hMA==INVALID_HANDLE || hMAFast==INVALID_HANDLE || hATR==INVALID_HANDLE ||
       hMAFlipSlow==INVALID_HANDLE || hMAFlipFast==INVALID_HANDLE ||
       hMAHtfFast==INVALID_HANDLE ||
-      hMAHtf2Slow==INVALID_HANDLE || hMAHtf2Fast==INVALID_HANDLE) return INIT_FAILED;
+      hMAHtf2Slow==INVALID_HANDLE || hMAHtf2Fast==INVALID_HANDLE ||
+      hBB4Htf==INVALID_HANDLE) return INIT_FAILED;
 
    f_log=FileOpen("XAU_M3_MATOUCHGRID_test_LOG.csv",FILE_READ|FILE_WRITE|FILE_CSV|FILE_ANSI|FILE_SHARE_READ,',');
    if(f_log!=INVALID_HANDLE)
@@ -830,6 +877,7 @@ int OnInit()
        " RegimeFlipTimeframe="+EnumToString(RegimeFlipTimeframe)+
        " | UseHigherTFAlignment="+(UseHigherTFAlignment?"true":"false")+" HigherTFAlignment="+EnumToString(HigherTFAlignment)+
        " CounterTrendTPShrink="+DoubleToString(CounterTrendTPShrink,2)+
+       " UseHtfBB4Exhaustion="+(UseHtfBB4Exhaustion?"true":"false")+
        " UseHigherTFAlignment2="+(UseHigherTFAlignment2?"true":"false")+" HigherTFAlignment2="+EnumToString(HigherTFAlignment2)+
        " | UseSkipHourKST="+(UseSkipHourKST?"true":"false")+" SkipHourStartKST="+IntegerToString(SkipHourStartKST)+
        " SkipHourEndKST="+IntegerToString(SkipHourEndKST)+
@@ -851,6 +899,7 @@ void OnDeinit(const int reason)
    if(hMAHtfFast!=INVALID_HANDLE)  IndicatorRelease(hMAHtfFast);
    if(hMAHtf2Slow!=INVALID_HANDLE) IndicatorRelease(hMAHtf2Slow);
    if(hMAHtf2Fast!=INVALID_HANDLE) IndicatorRelease(hMAHtf2Fast);
+   if(hBB4Htf!=INVALID_HANDLE)     IndicatorRelease(hBB4Htf);
 }
 
 void OnTradeTransaction(const MqlTradeTransaction &trans,const MqlTradeRequest &request,const MqlTradeResult &result)
@@ -915,12 +964,22 @@ void OnTick()
             }
          }
 
-         //--- H1 price-vs-MA DECIDES the final direction (may override the M3
-         //    cross's own direction g_awaitDir -- see DecideFinalDir header).
+         //--- Decide the final direction. Priority order (highest first):
+         //    1) H1 BB4(4,4) exhaustion fade (UseHtfBB4Exhaustion)
+         //    2) H1 price-vs-20MA override (UseHigherTFAlignment)
+         //    3) the M3 cross's own direction (g_awaitDir), unchanged
          int finalDir=g_awaitDir;
-         if(UseHigherTFAlignment) finalDir=DecideFinalDir(g_awaitDir);
+         bool bb4Fired=false;
+         if(UseHtfBB4Exhaustion)
+         {
+            int bb4Dir=DecideFinalDirByBB4(g_awaitDir,bb4Fired);
+            if(bb4Fired) finalDir=bb4Dir;
+         }
+         if(!bb4Fired && UseHigherTFAlignment) finalDir=DecideFinalDir(g_awaitDir);
          bool isCounterTrend=(finalDir!=g_awaitDir);
-         if(isCounterTrend)
+         if(bb4Fired)
+            Log("HTF_BB4_EXHAUSTION_OVERRIDE","M3 cross dir="+(g_awaitDir>0?"BUY":"SELL")+" -> BB4 fade dir="+(finalDir>0?"BUY":"SELL")+" ("+EnumToString(HigherTFAlignment)+" candle touched the band)");
+         else if(isCounterTrend)
             Log("H1_DIRECTION_OVERRIDE","M3 cross dir="+(g_awaitDir>0?"BUY":"SELL")+" -> H1 override dir="+(finalDir>0?"BUY":"SELL")+" (counter-trend, shrunk TP)");
 
          if(UseHigherTFAlignment2 && !TFAligned(finalDir,hMAHtf2Fast,hMAHtf2Slow))
