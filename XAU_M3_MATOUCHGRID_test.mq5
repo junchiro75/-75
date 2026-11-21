@@ -397,7 +397,24 @@
 //| for it. User's own framing: "구간매매하는 사람들" re-check direction        |
 //| mid-ladder and bail at breakeven if it looks wrong, maximize if it still  |
 //| looks right -- this is that, built on the exact depth/reason split found  |
-//| above. Not yet backtested.                                               |
+//| above.                                                                   |
+//|                                                                     |
+//| SEVENTEENTH BACKTEST (2026-11-21, isolated 3-way A/B of the 16th         |
+//| revision's two switches vs the no-filter baseline (NET $31,651.25, PF     |
+//| 1.338244, RF 2.117905, Balance DD 9.88%, Equity DD 11.75%)): zone-1-only  |
+//| i.e. UseLastLegConfirm ONLY -> NET $26,890.70, PF 1.319100, RF 2.635687,  |
+//| Balance DD 9.41%, Equity DD 8.36% ($10,202.54, BEST of all 4 configs).    |
+//| UseFullDepthBadSignalExit ONLY -> NET $22,053.91, PF 1.258319, RF         |
+//| 1.752320 (WORSE than baseline's 2.118), Balance DD 11.83% (worse than     |
+//| baseline), Equity DD 12.26% -- worse than baseline on nearly every        |
+//| metric. BOTH ON -> NET $28,365.24, PF 1.343067, RF 2.680406 (best NET/RF  |
+//| of the 4), Balance DD 9.81%, Equity DD 10.26% (worse than LastLegConfirm  |
+//| alone). CONCLUSION: UseLastLegConfirm drives essentially all of the       |
+//| improvement and gives the best Equity DD; UseFullDepthBadSignalExit is    |
+//| net harmful alone but adds a little extra NET/RF on top of               |
+//| LastLegConfirm at the cost of some Equity DD. User chose stability:       |
+//| UseFullDepthBadSignalExit default CHANGED to false; UseLastLegConfirm     |
+//| (true) CONFIRMED as the new default going forward.                       |
 //+------------------------------------------------------------------+
 #property strict
 #include <Trade/Trade.mqh>
@@ -431,8 +448,8 @@ input double RegimeFlipMinProfitSteps = 0;    // 0 = breakeven ("본절"); posit
 input ENUM_TIMEFRAMES RegimeFlipTimeframe = PERIOD_M15; // REVISED 2026-11-21: timeframe for the regime-flip check, DECOUPLED from the M3 entry cross. M3's own 20/120 cross flipped against 79% of baskets before they ever reached SL/TP (too noisy); the user also flagged H1 as too slow relative to typical basket lifetimes (1-5 hours) -- M15 is a first-guess middle ground, untested (TEST, untested)
 
 input group "=== Late-grid direction re-confirm (NEW 2026-11-21, per user request, motivated by a basket-depth breakdown showing ALL SL losses -- 84.5% of full-depth baskets, $0 losses below full depth -- occur only once every grid leg has filled; '구간매매' traders reportedly re-check direction mid-ladder and bail at breakeven if it looks wrong) ==="
-input bool   UseLastLegConfirm        = true; // right before the LAST grid leg (GridCount-th) is allowed to fill, re-check that M3's own 20/120 cross, H1's price-vs-20MA, and H4's fast/slow MA cross (ANY one disagreeing counts) still agree with the basket direction g_dir -- if not, cancel that leg's pending order so the basket caps at GridCount-1 legs instead of reaching the full-depth cohort where all SL losses occur (TEST, untested, user-specified logic)
-input bool   UseFullDepthBadSignalExit = true; // once the basket reaches FULL depth (every grid leg filled) AND the SAME M3/H1/H4 bad-signal check fires, arm the SAME breakeven-or-better close as UseRegimeFlipExit (reuses g_regimeFlippedAgainstBasket + RegimeFlipMinProfitSteps) -- an ADDITIONAL, faster-reacting trigger source alongside RegimeFlipTimeframe's own cross, not a replacement for it (TEST, untested, user-specified logic)
+input bool   UseLastLegConfirm        = true; // right before the LAST grid leg (GridCount-th) is allowed to fill, re-check that M3's own 20/120 cross, H1's price-vs-20MA, and H4's fast/slow MA cross (ANY one disagreeing counts) still agree with the basket direction g_dir -- if not, cancel that leg's pending order so the basket caps at GridCount-1 legs instead of reaching the full-depth cohort where all SL losses occur (CONFIRMED 2026-11-21: isolated A/B showed this alone beats every other combination on Equity DD, see dated backtest note)
+input bool   UseFullDepthBadSignalExit = false; // once the basket reaches FULL depth (every grid leg filled) AND the SAME M3/H1/H4 bad-signal check fires, arm the SAME breakeven-or-better close as UseRegimeFlipExit (reuses g_regimeFlippedAgainstBasket + RegimeFlipMinProfitSteps) -- an ADDITIONAL, faster-reacting trigger source alongside RegimeFlipTimeframe's own cross, not a replacement for it (REJECTED 2026-11-21: isolated A/B showed this ALONE is worse than the no-filter baseline on every metric except Equity DD; default now OFF, see dated backtest note)
 
 input group "=== H1 price-vs-MA direction override (REVISED 2026-11-21, REPLACES the 7th revision's H1 skip-gate per user's own strategy description) ==="
 input bool   UseHigherTFAlignment   = true;      // at the moment of entry, HigherTFAlignment's CURRENT price vs its own MAFastPeriod(20) MA DETERMINES the final trade direction -- overrides the M3 cross's direction when they disagree, rather than skipping (TEST, untested, user-specified logic)
