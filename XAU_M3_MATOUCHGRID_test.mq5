@@ -415,6 +415,23 @@
 //| LastLegConfirm at the cost of some Equity DD. User chose stability:       |
 //| UseFullDepthBadSignalExit default CHANGED to false; UseLastLegConfirm     |
 //| (true) CONFIRMED as the new default going forward.                       |
+//|                                                                     |
+//| EIGHTEENTH REVISION (2026-11-21, per user request, motivated by the      |
+//| FLIP-dependent "occasional big win" structure feeling too unstable):     |
+//| UseProfitTrail added -- distinct from the REMOVED UseBreakevenExit (4th   |
+//| revision), which ran unconditionally from ANY profit level and cut       |
+//| aligned-trend winners short. This only arms once favSteps EVER reaches   |
+//| ProfitTrailActivateSteps (5.0 steps = $50 = 2x the current $25 SL, the    |
+//| user's own framing), then trails the best favorable price by            |
+//| ProfitTrailDistanceSteps (1.0 step = $10), FLOORED at breakeven so it     |
+//| can never lock in a loss once armed. Runs every tick in UpdateBasketExits|
+//| regardless of regime state, ahead of the existing regime-flip check --   |
+//| an ADDITIONAL protective layer, not a replacement for UseSwingTP or      |
+//| UseRegimeFlipExit (both unchanged and can still fire first). Intent:     |
+//| catch a big unrealized gain (the kind that currently requires waiting    |
+//| out a slow M15 regime-flip, sometimes 96+ hours per the basket-depth     |
+//| diagnostic above) and lock most of it in well before it can fully        |
+//| round-trip back to breakeven or a loss. Not yet backtested.              |
 //+------------------------------------------------------------------+
 #property strict
 #include <Trade/Trade.mqh>
@@ -441,6 +458,11 @@ input group "=== Take-profit: nearby swing high/low (REVISED 2026-11-21: was cro
 input bool   UseSwingTP           = true;  // BUY target = highest high over SwingLookbackBars bars at entry ("전고점 역전"); SELL target = lowest low over SwingLookbackBars bars at entry ("전저점 역전") (TEST, untested)
 input int    SwingLookbackBars    = 50;    // lookback window (signal-TF bars, ending at the bar before entry) for the swing extreme (CONFIRMED over 20: NET $30,220->$25,870, RF 2.03->1.49, DD worse at 20 -- 50 stays)
 input double MinSwingTPStep       = 1.0;   // minimum favorable distance from P0 to the swing target, in steps -- if the swing level doesn't clear this (target too close/behind), skip the hard TP for this basket and rely on SL/breakeven-exit only (TEST, untested)
+
+input group "=== Profit trail: lock in gains after N steps favorable (NEW 2026-11-21, per user request -- UseSwingTP/UseRegimeFlipExit are UNCHANGED and can still fire; this is an ADDITIONAL protective layer so a big unrealized gain can't fully round-trip before either of those would otherwise catch it) ==="
+input bool   UseProfitTrail            = true; // once a basket's favorable move (avg entry to current price, in steps) reaches ProfitTrailActivateSteps, arm a trailing stop that follows the best favorable price by ProfitTrailDistanceSteps, FLOORED at breakeven (avg entry) so it can never lock in a loss once armed (TEST, untested, user-specified logic)
+input double ProfitTrailActivateSteps  = 5.0; // favorable steps required to arm the trail (5.0 steps * step=$10 = $50, i.e. 2x the current $25 SL, per user's own framing "손절 2배인 50포인트") (TEST, untested)
+input double ProfitTrailDistanceSteps  = 1.0; // once armed, the trail follows the best favorable price by this many steps (1.0 step * step=$10 = $10, per user's own framing "일정 거리(예: 10포인트)") (TEST, untested)
 
 input group "=== Regime-flip breakeven exit (RENAMED 2026-11-21: UseBreakevenExit REMOVED -- it ran unconditionally and cut aligned-trend winners short, see dated backtest note. '본절' ONLY applies per checklist '04 정배/역배 대응', confirmed by user: while regime stays ALIGNED with the basket, wait on UseSwingTP only; ONLY when the regime flips AGAINST it, close at breakeven+margin ASAP) ==="
 input bool   UseRegimeFlipExit        = true; // if the regime flips AGAINST an open basket's direction, close immediately once avg price reaches breakeven+RegimeFlipMinProfitSteps; while still aligned, UseSwingTP/hard SL are the ONLY exits (TEST, untested)
@@ -520,6 +542,8 @@ bool     g_flipRegimeBullish=false;
 bool     g_regimeFlippedAgainstBasket=false; // set true when the RegimeFlipTimeframe regime flips while GS_BASKET is open and no longer matches g_dir
 datetime g_lastFlipBarSeen=0;
 bool     g_lastLegChecked=false; // NEW 2026-11-21: consumed once per basket by the UseLastLegConfirm re-check right before the LAST grid leg is allowed to fill
+bool     g_profitTrailArmed=false;    // NEW 2026-11-21: true once favSteps has ever reached ProfitTrailActivateSteps for the current basket
+double   g_profitTrailBestPrice=0;    // NEW 2026-11-21: best (most favorable) price seen since the trail armed
 
 int hMA=INVALID_HANDLE, hMAFast=INVALID_HANDLE, hATR=INVALID_HANDLE;
 int hMAFlipSlow=INVALID_HANDLE, hMAFlipFast=INVALID_HANDLE;
@@ -933,6 +957,7 @@ void PlaceGrid(double step,double tpCandidate)
    g_sl=NP(g_p0-g_dir*SLMult*step);
    g_basketOpenTime=TimeCurrent();
    g_lastLegChecked=false; // NEW 2026-11-21: re-arm the UseLastLegConfirm check for this fresh basket
+   g_profitTrailArmed=false; g_profitTrailBestPrice=0; // NEW 2026-11-21: re-arm the profit trail for this fresh basket
 
    //--- validate the swing-extreme TP: must be favorable by at least
    //    MinSwingTPStep steps from P0, else there's no real target to give
@@ -1068,15 +1093,55 @@ void UpdateBasketExits()
    double curPrice=(g_dir>0)?q.bid:q.ask;
    double favSteps=(g_dir>0 ? (curPrice-avgEntry) : (avgEntry-curPrice))/g_step;
 
-   //--- ONLY exit this function handles: regime flipped against this basket
-   //    (checklist '04 정배/역배 대응', confirmed 2026-11-21) -- while the
-   //    regime stays ALIGNED with g_dir, there is NO other exit here; the
-   //    basket just waits on UseSwingTP/the hard SL. A prior revision also
-   //    ran an unconditional breakeven-recovery trail regardless of regime
-   //    state (UseBasketTrailStop/UseBreakevenExit) -- REMOVED 2026-11-21
-   //    after a backtest (NET $611->-$4,410, win rate 65%->54%, avg win
-   //    $125->$56) showed it was cutting aligned-trend winners short before
-   //    they reached the real ① target, exactly as the user flagged.
+   //--- Profit trail (NEW 2026-11-21, per user request): once favSteps has
+   //    EVER reached ProfitTrailActivateSteps (default 5.0 = $50, 2x the
+   //    current $25 SL), arm a trailing stop at the best favorable price
+   //    seen since -/+ ProfitTrailDistanceSteps (default 1.0 = $10), FLOORED
+   //    at breakeven so it can never lock in a loss once armed. Runs
+   //    regardless of regime state -- an ADDITIONAL layer protecting a big
+   //    unrealized gain from fully round-tripping before UseSwingTP or the
+   //    regime-flip exit below would otherwise catch it. Distinct from the
+   //    4th-revision's REMOVED UseBreakevenExit, which ran unconditionally
+   //    from ANY profit level and cut aligned-trend winners short (NET
+   //    $611->-$4,410) -- this only engages after a much larger move.
+   if(UseProfitTrail)
+   {
+      if(!g_profitTrailArmed && favSteps>=ProfitTrailActivateSteps)
+      {
+         g_profitTrailArmed=true;
+         g_profitTrailBestPrice=curPrice;
+         Log("PROFIT_TRAIL_ARMED","favSteps="+DoubleToString(favSteps,2)+" >= "+DoubleToString(ProfitTrailActivateSteps,2));
+      }
+      if(g_profitTrailArmed)
+      {
+         if(g_dir>0) g_profitTrailBestPrice=MathMax(g_profitTrailBestPrice,curPrice);
+         else        g_profitTrailBestPrice=MathMin(g_profitTrailBestPrice,curPrice);
+
+         double trailStop=(g_dir>0) ? g_profitTrailBestPrice-ProfitTrailDistanceSteps*g_step
+                                     : g_profitTrailBestPrice+ProfitTrailDistanceSteps*g_step;
+         trailStop=(g_dir>0) ? MathMax(trailStop,avgEntry) : MathMin(trailStop,avgEntry);
+
+         bool trailHit=(g_dir>0) ? (curPrice<=trailStop) : (curPrice>=trailStop);
+         if(trailHit)
+         {
+            Log("PROFIT_TRAIL_CLOSE","best="+DoubleToString(g_profitTrailBestPrice,_Digits)+" trailStop="+DoubleToString(trailStop,_Digits)+" cur="+DoubleToString(curPrice,_Digits));
+            if(EnableLiveOrders) CloseAllPositions();
+            else Log("PROFIT_TRAIL_CLOSE_DRY","would close now (EnableLiveOrders=false)");
+            return;
+         }
+      }
+   }
+
+   //--- ONLY OTHER exit this function handles: regime flipped against this
+   //    basket (checklist '04 정배/역배 대응', confirmed 2026-11-21) -- while
+   //    the regime stays ALIGNED with g_dir and the profit trail above is
+   //    unarmed or not yet hit, the basket just waits on UseSwingTP/the hard
+   //    SL. A prior revision also ran an unconditional breakeven-recovery
+   //    trail regardless of regime state (UseBasketTrailStop/UseBreakevenExit)
+   //    -- REMOVED 2026-11-21 after a backtest (NET $611->-$4,410, win rate
+   //    65%->54%, avg win $125->$56) showed it was cutting aligned-trend
+   //    winners short before they reached the real target, exactly as the
+   //    user flagged.
    if(!UseRegimeFlipExit || !g_regimeFlippedAgainstBasket) return;
    if(favSteps<RegimeFlipMinProfitSteps) return;
 
@@ -1183,6 +1248,8 @@ int OnInit()
        " | Lots="+DoubleToString(Lots,2)+" GridCount="+IntegerToString(GridCount)+" SLMult="+DoubleToString(SLMult,2)+
        " | UseSwingTP="+(UseSwingTP?"true":"false")+" SwingLookbackBars="+IntegerToString(SwingLookbackBars)+
        " MinSwingTPStep="+DoubleToString(MinSwingTPStep,2)+
+       " | UseProfitTrail="+(UseProfitTrail?"true":"false")+" ProfitTrailActivateSteps="+DoubleToString(ProfitTrailActivateSteps,2)+
+       " ProfitTrailDistanceSteps="+DoubleToString(ProfitTrailDistanceSteps,2)+
        " | UseRegimeFlipExit="+(UseRegimeFlipExit?"true":"false")+" RegimeFlipMinProfitSteps="+DoubleToString(RegimeFlipMinProfitSteps,2)+
        " RegimeFlipTimeframe="+EnumToString(RegimeFlipTimeframe)+
        " | UseLastLegConfirm="+(UseLastLegConfirm?"true":"false")+" UseFullDepthBadSignalExit="+(UseFullDepthBadSignalExit?"true":"false")+
