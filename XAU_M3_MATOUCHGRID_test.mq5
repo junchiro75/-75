@@ -40,15 +40,18 @@
 //|     UseATRStep=false with the corrected GridStepPoints=1000 is the   |
 //|     safer next test.                                                 |
 //|  3) EXIT: the manual tool had NO take-profit mechanism at all        |
-//|     (purely discretionary). REVISED TWICE since -- see the dated      |
-//|     backtest notes below for the full history. CURRENT (2026-11-21,   |
-//|     4th revision): UseSwingTP sets a hard TP at the SwingLookbackBars  |
-//|     rolling high/low read AT ENTRY TIME ("전고점"/"전저점"); UseBreakeven|
-//|     Exit arms a SAME-shared-SL profit-protect once avg price reaches   |
-//|     breakeven+BreakevenTriggerStep ("본절 복귀"); UseRegimeFlipExit      |
-//|     closes immediately at breakeven+RegimeFlipMinProfitSteps if the     |
-//|     20/120 regime turns against an open basket before either of the     |
-//|     above fires ("역배열: 본절 or 약수익 오면 즉시 정리").                 |
+//|     (purely discretionary). REVISED several times since -- see the    |
+//|     dated backtest notes below for the full history. CURRENT          |
+//|     (2026-11-21, 5th revision): UseSwingTP sets a hard TP at the       |
+//|     SwingLookbackBars rolling high/low read AT ENTRY TIME ("전고점"/    |
+//|     "전저점"). While the 20/120 regime stays ALIGNED with the basket,   |
+//|     that TP + the hard SL are the ONLY exits -- confirmed by the user  |
+//|     after the 4th revision's unconditional breakeven-trail (then       |
+//|     called UseBreakevenExit) was shown to cut aligned-trend winners     |
+//|     short. UseRegimeFlipExit is the ONLY "본절" mechanism: if the        |
+//|     regime flips AGAINST an open basket, close immediately once avg     |
+//|     price reaches breakeven+RegimeFlipMinProfitSteps ("역배열: 본절       |
+//|     or 약수익 오면 즉시 정리").                                           |
 //|                                                                     |
 //| PRESERVED EXACTLY from the manual tool: grid legs are placed in the  |
 //| ADVERSE direction from the first fill (P0) -- i.e. a DCA/martingale  |
@@ -145,6 +148,24 @@
 //|    the SAME BB4(4,4,PRICE_OPEN) construct already used in 010-013 in     |
 //|    this repo. The rest (how many/which higher timeframes to require      |
 //|    alignment on) is asked of the user rather than guessed.               |
+//|                                                                     |
+//| FOURTH BACKTEST (2026-11-21, 4th revision as above, REJECTED): NET       |
+//| -$4,410.88, PF 0.944281, RF -0.571292, Sharpe -1.383616, Balance DD      |
+//| 7.06% ($7,254.18, much lower than before) on 2,471 baskets (-25%),       |
+//| avg holding 1:08:53 (was 4:59:12), win rate 53.62% (was 65.34%), avg     |
+//| win $56.42/avg loss -$65.84 (was $125.21/-$231.15). DD dropped a lot     |
+//| but NET went negative and win rate collapsed toward a coin flip --      |
+//| user identified the cause before this backtest even came back:          |
+//| UseBreakevenExit ran UNCONDITIONALLY (any time avg price reached         |
+//| breakeven, regardless of regime state), so it was constantly cutting     |
+//| off baskets that were STILL regime-aligned and on track for the real     |
+//| ① target, confirmed by the user's correction: "본절" in the checklist     |
+//| ONLY applies when the regime flips AGAINST the basket (checklist '04     |
+//| 정배/역배 대응'), not as a standalone always-on mechanism. FIFTH           |
+//| REVISION: UseBreakevenExit/BreakevenTriggerStep/BreakevenTrailStep        |
+//| REMOVED entirely; UseRegimeFlipExit is now the ONLY breakeven-related     |
+//| exit, firing ONLY on a regime flip against the basket -- not yet         |
+//| backtested.                                                              |
 //+------------------------------------------------------------------+
 #property strict
 #include <Trade/Trade.mqh>
@@ -172,13 +193,8 @@ input bool   UseSwingTP           = true;  // BUY target = highest high over Swi
 input int    SwingLookbackBars    = 50;    // lookback window (signal-TF bars, ending at the bar before entry) for the swing extreme (TEST, untested, first guess)
 input double MinSwingTPStep       = 1.0;   // minimum favorable distance from P0 to the swing target, in steps -- if the swing level doesn't clear this (target too close/behind), skip the hard TP for this basket and rely on SL/breakeven-exit only (TEST, untested)
 
-input group "=== Breakeven-recovery exit (RENAMED/RECALIBRATED 2026-11-21 from UseBasketTrailStop, per checklist '② 본절 복귀 시 구간 일괄 익절': 1차 본절, 2차 10포, 3차 20~30포) ==="
-input bool   UseBreakevenExit     = true;  // secondary profit protection alongside UseSwingTP (TEST, untested)
-input double BreakevenTriggerStep = 0;     // favorable steps from basket's volume-weighted avg entry to ARM -- 0 = exactly breakeven ("1차 본절"), REVISED from 1.0 (TEST, untested)
-input double BreakevenTrailStep   = 1.0;   // distance kept behind price once armed, in steps -- loosely spans toward "2차 10포" (TEST, untested)
-
-input group "=== Regime-flip handling (NEW 2026-11-21, per checklist '04 정배/역배 대응': 역배열 = 본절 or 약수익 오면 즉시 정리) ==="
-input bool   UseRegimeFlipExit        = true; // if the 20/120 regime flips AGAINST an open basket's direction, close immediately once avg price reaches breakeven+RegimeFlipMinProfitSteps, instead of waiting on UseSwingTP/UseBreakevenExit (TEST, untested)
+input group "=== Regime-flip breakeven exit (RENAMED 2026-11-21: UseBreakevenExit REMOVED -- it ran unconditionally and cut aligned-trend winners short, see dated backtest note. '본절' ONLY applies per checklist '04 정배/역배 대응', confirmed by user: while regime stays ALIGNED with the basket, wait on UseSwingTP only; ONLY when the regime flips AGAINST it, close at breakeven+margin ASAP) ==="
+input bool   UseRegimeFlipExit        = true; // if the 20/120 regime flips AGAINST an open basket's direction, close immediately once avg price reaches breakeven+RegimeFlipMinProfitSteps; while still aligned, UseSwingTP/hard SL are the ONLY exits (TEST, untested)
 input double RegimeFlipMinProfitSteps = 0;    // 0 = breakeven ("본절"); positive = require a small profit margin first ("약수익") (TEST, untested)
 
 input group "=== Time filter (NEW 2026-11-21, per checklist '새벽 2시 이후 신규 금지'; window CONFIRMED by user as KST 02:00-08:00) ==="
@@ -202,7 +218,6 @@ double   g_step=0;         // step used for this basket (fixed once placed)
 double   g_sl=0;           // current shared SL for the whole basket
 double   g_tp=0;           // hard swing-high/low TP for the whole basket, 0 = none
 datetime g_basketOpenTime=0;
-bool     g_trailArmed=false;
 
 // Cross-episode state (REVISED 2026-11-21): g_awaitDir!=0 means a golden/dead
 // cross has fired and we're waiting for the FIRST 120MA touch to trade it.
@@ -443,7 +458,7 @@ void PlaceGrid(double step,double tpCandidate)
    //--- validate the swing-extreme TP: must be favorable by at least
    //    MinSwingTPStep steps from P0, else there's no real target to give
    //    (e.g. the prior swing extreme sits behind or too close to entry) --
-   //    fall back to no hard TP (UseBreakevenExit/hard SL only) for this basket.
+   //    fall back to no hard TP (hard SL / UseRegimeFlipExit only) for this basket.
    g_tp=0;
    if(UseSwingTP && tpCandidate>0)
    {
@@ -521,8 +536,8 @@ void PlaceGrid(double step,double tpCandidate)
 }
 
 //+------------------------------------------------------------------+
-//| Basket exits (NEW -- not in the manual tool): regime-flip close     |
-//| then breakeven-recovery protect/trail, in that priority order.      |
+//| Basket exits (NEW -- not in the manual tool): the ONLY exit handled  |
+//| here is the regime-flip breakeven close (see comment inside).        |
 //+------------------------------------------------------------------+
 void UpdateBasketExits()
 {
@@ -542,64 +557,22 @@ void UpdateBasketExits()
    double curPrice=(g_dir>0)?q.bid:q.ask;
    double favSteps=(g_dir>0 ? (curPrice-avgEntry) : (avgEntry-curPrice))/g_step;
 
-   //--- regime flipped against this basket (checklist '04 정배/역배 대응'):
-   //    abandon the patient targets and close at breakeven+margin ASAP.
-   if(UseRegimeFlipExit && g_regimeFlippedAgainstBasket && favSteps>=RegimeFlipMinProfitSteps)
-   {
-      Log("REGIME_FLIP_CLOSE","favSteps="+DoubleToString(favSteps,3)+" >= RegimeFlipMinProfitSteps="+DoubleToString(RegimeFlipMinProfitSteps,2));
-      if(EnableLiveOrders) CloseAllPositions();
-      else Log("REGIME_FLIP_CLOSE_DRY","would close now (EnableLiveOrders=false)");
-      g_regimeFlippedAgainstBasket=false; // consumed -- avoid repeated close attempts
-      return;
-   }
+   //--- ONLY exit this function handles: regime flipped against this basket
+   //    (checklist '04 정배/역배 대응', confirmed 2026-11-21) -- while the
+   //    regime stays ALIGNED with g_dir, there is NO other exit here; the
+   //    basket just waits on UseSwingTP/the hard SL. A prior revision also
+   //    ran an unconditional breakeven-recovery trail regardless of regime
+   //    state (UseBasketTrailStop/UseBreakevenExit) -- REMOVED 2026-11-21
+   //    after a backtest (NET $611->-$4,410, win rate 65%->54%, avg win
+   //    $125->$56) showed it was cutting aligned-trend winners short before
+   //    they reached the real ① target, exactly as the user flagged.
+   if(!UseRegimeFlipExit || !g_regimeFlippedAgainstBasket) return;
+   if(favSteps<RegimeFlipMinProfitSteps) return;
 
-   //--- normal breakeven-recovery protect/trail (checklist '② 본절 복귀 시 구간 일괄 익절')
-   if(!UseBreakevenExit) return;
-
-   if(!g_trailArmed && favSteps>=BreakevenTriggerStep)
-   {
-      g_trailArmed=true;
-      Log("BREAKEVEN_ARM","favSteps="+DoubleToString(favSteps,3)+" avgEntry="+DoubleToString(avgEntry,_Digits));
-   }
-   if(!g_trailArmed) return;
-
-   double candidate=NP(curPrice-g_dir*BreakevenTrailStep*g_step);
-   bool improves=(g_dir>0)?(candidate>g_sl):(candidate<g_sl);
-   if(!improves) return;
-
-   double cushion=MinStopDistance()+_Point;
-   double sl=candidate;
-   if(g_dir>0){ if(sl>q.bid-cushion) sl=q.bid-cushion; }
-   else       { if(sl<q.ask+cushion) sl=q.ask+cushion; }
-   sl=NP(sl);
-   if(g_dir>0 ? sl<=g_sl : sl>=g_sl) return; // cushion clamp wiped out the improvement
-
-   if(!EnableLiveOrders)
-   {
-      g_sl=sl;
-      Log("BREAKEVEN_TRAIL_DRY","would move shared SL->"+DoubleToString(sl,_Digits)+" favSteps="+DoubleToString(favSteps,3));
-      return;
-   }
-
-   bool anyFail=false;
-   for(int i=PositionsTotal()-1;i>=0;i--)
-   {
-      ulong t=PositionGetTicket(i);
-      if(t==0 || !PositionSelectByTicket(t)) continue;
-      if(!IsMine((ulong)PositionGetInteger(POSITION_MAGIC),PositionGetString(POSITION_SYMBOL))) continue;
-      if(!trade.PositionModify(t,sl,PositionGetDouble(POSITION_TP))) anyFail=true;
-   }
-   for(int i=OrdersTotal()-1;i>=0;i--)
-   {
-      ulong t=OrderGetTicket(i);
-      if(t==0 || !OrderSelect(t)) continue;
-      if(!IsMine((ulong)OrderGetInteger(ORDER_MAGIC),OrderGetString(ORDER_SYMBOL))) continue;
-      double op=OrderGetDouble(ORDER_PRICE_OPEN), tp=OrderGetDouble(ORDER_TP);
-      if(!trade.OrderModify(t,op,sl,tp,ORDER_TIME_GTC,0)) anyFail=true;
-   }
-   if(anyFail) Log("BREAKEVEN_TRAIL_MOVE_PARTIAL_FAIL","target="+DoubleToString(sl,_Digits));
-   g_sl=sl;
-   Log("BREAKEVEN_TRAIL_MOVED","shared SL->"+DoubleToString(sl,_Digits)+" favSteps="+DoubleToString(favSteps,3));
+   Log("REGIME_FLIP_CLOSE","favSteps="+DoubleToString(favSteps,3)+" >= RegimeFlipMinProfitSteps="+DoubleToString(RegimeFlipMinProfitSteps,2));
+   if(EnableLiveOrders) CloseAllPositions();
+   else Log("REGIME_FLIP_CLOSE_DRY","would close now (EnableLiveOrders=false)");
+   g_regimeFlippedAgainstBasket=false; // consumed -- avoid repeated close attempts
 }
 
 //+------------------------------------------------------------------+
@@ -626,11 +599,10 @@ void FinalizeBasketIfFlat()
 
    Log("BASKET_CLOSED","dir="+(g_dir>0?"BUY":"SELL")+" P0="+DoubleToString(g_p0,_Digits)+
        " step="+DoubleToString(g_step,_Digits)+" finalSL="+DoubleToString(g_sl,_Digits)+
-       " finalTP="+DoubleToString(g_tp,_Digits)+
-       " trailArmed="+(g_trailArmed?"true":"false")+" basketProfit="+DoubleToString(basketProfit,2));
+       " finalTP="+DoubleToString(g_tp,_Digits)+" basketProfit="+DoubleToString(basketProfit,2));
 
    g_state=GS_IDLE; g_dir=0; g_p0=0; g_step=0; g_sl=0; g_tp=0; g_basketOpenTime=0;
-   g_trailArmed=false; g_regimeFlippedAgainstBasket=false;
+   g_regimeFlippedAgainstBasket=false;
 }
 
 //+------------------------------------------------------------------+
@@ -689,8 +661,6 @@ int OnInit()
        " | Lots="+DoubleToString(Lots,2)+" GridCount="+IntegerToString(GridCount)+" SLMult="+DoubleToString(SLMult,2)+
        " | UseSwingTP="+(UseSwingTP?"true":"false")+" SwingLookbackBars="+IntegerToString(SwingLookbackBars)+
        " MinSwingTPStep="+DoubleToString(MinSwingTPStep,2)+
-       " | UseBreakevenExit="+(UseBreakevenExit?"true":"false")+" BreakevenTriggerStep="+DoubleToString(BreakevenTriggerStep,2)+
-       " BreakevenTrailStep="+DoubleToString(BreakevenTrailStep,2)+
        " | UseRegimeFlipExit="+(UseRegimeFlipExit?"true":"false")+" RegimeFlipMinProfitSteps="+DoubleToString(RegimeFlipMinProfitSteps,2)+
        " | UseSkipHourKST="+(UseSkipHourKST?"true":"false")+" SkipHourStartKST="+IntegerToString(SkipHourStartKST)+
        " SkipHourEndKST="+IntegerToString(SkipHourEndKST)+
