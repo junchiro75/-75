@@ -431,7 +431,20 @@
 //| catch a big unrealized gain (the kind that currently requires waiting    |
 //| out a slow M15 regime-flip, sometimes 96+ hours per the basket-depth     |
 //| diagnostic above) and lock most of it in well before it can fully        |
-//| round-trip back to breakeven or a loss. Not yet backtested.              |
+//| round-trip back to breakeven or a loss.                                  |
+//|                                                                     |
+//| NINETEENTH BACKTEST (2026-11-21, UseProfitTrail=true test, everything     |
+//| else at the confirmed 17th-revision baseline): NET $26,890.70->$4,956.80  |
+//| (-82%), PF 1.319100->1.038888 (near breakeven), RF 2.635687->0.385929     |
+//| (collapsed), Sharpe 1.972821->0.531451, Balance DD 9.41%->11.34%, Equity  |
+//| DD 8.36%->11.99% -- worse on every metric. Smoking gun: max winning       |
+//| trade $3,434.01->$1,058.54 -- the $50-activate/$10-trail combo cut the    |
+//| FLIP mechanism's big wins short almost exactly like the REMOVED (4th      |
+//| revision) UseBreakevenExit, just at a higher trigger threshold. Trade     |
+//| count rose 762->1,183 (closing more often, each for less). REJECTED --    |
+//| UseProfitTrail default CHANGED to false; reverted to the confirmed        |
+//| 17th-revision baseline (UseLastLegConfirm=true, UseFullDepthBadSignal-    |
+//| Exit=false, everything else unchanged).                                  |
 //+------------------------------------------------------------------+
 #property strict
 #include <Trade/Trade.mqh>
@@ -460,7 +473,7 @@ input int    SwingLookbackBars    = 50;    // lookback window (signal-TF bars, e
 input double MinSwingTPStep       = 1.0;   // minimum favorable distance from P0 to the swing target, in steps -- if the swing level doesn't clear this (target too close/behind), skip the hard TP for this basket and rely on SL/breakeven-exit only (TEST, untested)
 
 input group "=== Profit trail: lock in gains after N steps favorable (NEW 2026-11-21, per user request -- UseSwingTP/UseRegimeFlipExit are UNCHANGED and can still fire; this is an ADDITIONAL protective layer so a big unrealized gain can't fully round-trip before either of those would otherwise catch it) ==="
-input bool   UseProfitTrail            = true; // once a basket's favorable move (avg entry to current price, in steps) reaches ProfitTrailActivateSteps, arm a trailing stop that follows the best favorable price by ProfitTrailDistanceSteps, FLOORED at breakeven (avg entry) so it can never lock in a loss once armed (TEST, untested, user-specified logic)
+input bool   UseProfitTrail            = false; // once a basket's favorable move (avg entry to current price, in steps) reaches ProfitTrailActivateSteps, arm a trailing stop that follows the best favorable price by ProfitTrailDistanceSteps, FLOORED at breakeven (avg entry) so it can never lock in a loss once armed (REJECTED 2026-11-21: NET $26,890.70->$4,956.80, RF 2.636->0.386, max win $3,334->$1,059 -- cut the FLIP mechanism's big wins short just like the removed UseBreakevenExit; default now OFF, see dated backtest note)
 input double ProfitTrailActivateSteps  = 5.0; // favorable steps required to arm the trail (5.0 steps * step=$10 = $50, i.e. 2x the current $25 SL, per user's own framing "손절 2배인 50포인트") (TEST, untested)
 input double ProfitTrailDistanceSteps  = 1.0; // once armed, the trail follows the best favorable price by this many steps (1.0 step * step=$10 = $10, per user's own framing "일정 거리(예: 10포인트)") (TEST, untested)
 
