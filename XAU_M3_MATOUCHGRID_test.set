@@ -1,4 +1,5 @@
 Timeframe=3
+MAFastPeriod=20
 MAPeriod=120
 MaxWaitBars=0
 UseATRStep=true
@@ -8,6 +9,8 @@ GridStepPoints=1000
 Lots=0.1
 GridCount=5
 SLMult=5.5
+UseSwingTP=true
+MinSwingTPStep=1.0
 UseBasketTrailStop=true
 TrailTriggerStep=1.0
 TrailDistanceStep=0.5

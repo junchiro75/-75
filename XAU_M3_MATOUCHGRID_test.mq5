@@ -13,11 +13,19 @@
 //| profit at all (purely discretionary/manual exit).                   |
 //|                                                                     |
 //| This file automates all three human actions:                       |
-//|  1) ARM: whenever flat, automatically evaluate current bid vs the   |
-//|     M3 120-SMA (MAPeriod) -- bid>MA => arm BUY (wait for price to   |
-//|     drop down and touch the MA); bid<MA => arm SELL (wait for price |
-//|     to rise up and touch it). Same rule as the manual tool's [ON]   |
-//|     button, just evaluated every tick instead of on a click.        |
+//|  1) ARM: REVISED (2026-11-21, see dated note below) -- arming is no  |
+//|     longer "whenever flat, check current bid vs MA" (that version    |
+//|     took every touch indefinitely, backtested at PF~1.01, no edge).  |
+//|     Per the user's confirmed reading of the cafe post's own title    |
+//|     ("3분 장기이평 매매... 20,120 이평의 골크,데크 후 첫 120장기이평 눌림  |
+//|     에서 진입"): a NEW fast MAFastPeriod (20) SMA is added purely for |
+//|     cross detection against the existing 120 MAPeriod SMA. Only the  |
+//|     FIRST touch of the 120 MA following a fresh golden/dead cross is |
+//|     tradeable -- not every touch while the alignment merely persists.|
+//|     A golden cross (fast crosses above slow) arms BUY; a dead cross  |
+//|     arms SELL. If price never pulls back to touch the 120 MA before  |
+//|     the NEXT opposite cross happens, that episode is discarded (no   |
+//|     entry) and the new cross's direction takes over.                 |
 //|  2) STEP: the manual tool's typed step-size box is replaced by      |
 //|     UseATRStep (step=ATR(StepATRPeriod)*StepATRMult, price units)   |
 //|     or, if false, a fixed GridStepPoints. The manual tool's author   |
@@ -32,18 +40,18 @@
 //|     UseATRStep=false with the corrected GridStepPoints=1000 is the   |
 //|     safer next test.                                                 |
 //|  3) EXIT: the manual tool had NO take-profit mechanism at all        |
-//|     (purely discretionary). UseBasketTrailStop is a NEW addition,    |
-//|     not in the original tool, needed to make this backtestable:      |
-//|     once the basket's volume-weighted average entry price has moved  |
-//|     TrailTriggerStep steps favorably, arm a trailing stop that keeps |
-//|     TrailDistanceStep steps behind price, applied as the SAME shared |
-//|     SL across every open leg (and every still-pending grid order),   |
-//|     mirroring the one-shared-SL structure the manual tool already    |
-//|     used for its hard stop. This exit design is an unvalidated first |
-//|     guess -- the original author's own philosophy (per the attached  |
-//|     "3분 장기이평 매매" cafe post, read the same session this file was |
-//|     requested) is closer to "give it one solid swing target and take |
-//|     it manually," which a fixed trailing distance only approximates. |
+//|     (purely discretionary). REVISED (2026-11-21, per user            |
+//|     instruction "익절은 전저점, 전고점에서"): UseSwingTP sets a hard     |
+//|     structural TP at the swing extreme the article's own screenshots |
+//|     target -- BUY's TP = highest high reached during the just-ended  |
+//|     bearish/dead-cross regime ("전고점 역전"); SELL's TP = lowest low  |
+//|     during the just-ended bullish/golden-cross regime ("전저점 역전"). |
+//|     If that level isn't favorably beyond P0 by MinSwingTPStep steps,  |
+//|     there's no real target to give, so the hard TP is skipped for    |
+//|     that basket (SL/trail only). UseBasketTrailStop (unchanged from   |
+//|     the first pass) still runs ALONGSIDE this as secondary profit     |
+//|     protection -- the SAME shared-SL-across-every-leg mechanism as    |
+//|     the manual tool's hard stop, now also updating the shared TP.     |
 //|                                                                     |
 //| PRESERVED EXACTLY from the manual tool: grid legs are placed in the  |
 //| ADVERSE direction from the first fill (P0) -- i.e. a DCA/martingale  |
@@ -56,12 +64,12 @@
 //|                                                                     |
 //| NOT YET IMPLEMENTED (flagged, not built): the cafe article the user  |
 //| shared alongside this request ("3분 장기이평 매매") spends most of its  |
-//| length on WHICH long-MA touches to skip -- near a prior high/low,     |
-//| near a W/M double top/bottom, right after a higher-timeframe outsize  |
-//| candle -- calling the common thread "변곡의 초입" (the early stage of  |
-//| a reversal). This file has NO such filter; it takes every touch.     |
-//| Adding one is a natural next iteration once this first pass has a     |
-//| baseline backtest to compare against.                                 |
+//| length on WHICH golden/dead-cross setups to skip entirely -- near a    |
+//| prior high/low, near a W/M double top/bottom, right after a higher-   |
+//| timeframe outsize candle -- calling the common thread "변곡의 초입"     |
+//| (the early stage of a reversal). This file takes EVERY cross's first   |
+//| touch, with no such filter. Adding one is a natural next iteration    |
+//| once the cross-gated ARM + swing-extreme TP revision has a backtest.   |
 //|                                                                     |
 //| Also not built: a re-arm cooldown. The moment a basket fully closes   |
 //| (flat), the very next tick re-arms immediately off current price vs   |
@@ -84,15 +92,31 @@
 //| grid/trail structure operated at tick-noise scale instead of genuine  |
 //| swing scale. This is the dominant cause of the overtrading/DD, well   |
 //| above the trail-vs-step tightness also present at that scale.         |
+//|                                                                     |
+//| SECOND BACKTEST (2026-11-21, GridStepPoints=1000/UseATRStep=false,    |
+//| scale bug fixed, REJECTED as no-edge, not as broken): NET +$3,709.99, |
+//| PF 1.010433, RF 0.13063, Sharpe 0.13875, Balance DD 24.10% ($27,499)  |
+//| on 4,338 baskets (-93% vs first backtest), avg holding 4:16:50 (was   |
+//| 1:36). Confirms the scale fix: trade count and holding time both      |
+//| normalized, NET flipped positive. But PF~1.01 is essentially          |
+//| breakeven-after-costs -- no real edge, terrible DD-for-NET ($27,499   |
+//| risked for $3,710 gained). Root cause: entry was STILL "any touch of  |
+//| the 120 MA while price happens to be on one side of it," not the      |
+//| article's actual "FIRST touch after a fresh 20/120 cross" -- i.e. the |
+//| human-judgment step (is this a genuine new cross, not a stale/        |
+//| already-extended alignment) was entirely missing, not just the       |
+//| separately-flagged "변곡 초입" avoidance. Fixed by the ARM revision    |
+//| above (MAFastPeriod cross-gating) -- not yet backtested.               |
 //+------------------------------------------------------------------+
 #property strict
 #include <Trade/Trade.mqh>
 CTrade trade;
 
-input group "=== Signal: long-term MA touch (ported from MATouchGridManual_EA.mq5, now full-auto, TEST/untested) ==="
+input group "=== Signal: 20/120 cross + first 120MA pullback touch (REVISED 2026-11-21, TEST/untested) ==="
 input ENUM_TIMEFRAMES Timeframe  = PERIOD_M3; // signal timeframe (manual tool was fixed M3) (TEST, untested)
-input int    MAPeriod            = 120;  // long-term SMA period (TEST, untested, ported from manual tool default)
-input int    MaxWaitBars         = 0;    // cancel WAIT and re-evaluate direction after N new signal-TF bars with no touch (0 = never cancel, matches manual tool's indefinite wait) (TEST, untested)
+input int    MAFastPeriod         = 20;   // fast SMA, used ONLY to detect golden/dead cross against MAPeriod -- NEW, not in manual tool (TEST, untested)
+input int    MAPeriod            = 120;  // long-term SMA period -- cross-detection slow leg AND the pullback-touch entry level (TEST, untested, ported from manual tool default)
+input int    MaxWaitBars         = 0;    // give up on a cross episode (no entry) after N new signal-TF bars with no 120MA touch, 0 = wait indefinitely for THIS cross (a new opposite cross still overrides it immediately regardless of this setting) (TEST, untested)
 
 input group "=== Grid step sizing (manual tool had a user-typed box; this automates it, TEST/untested) ==="
 input bool   UseATRStep          = true;  // true: step=ATR(StepATRPeriod)*StepATRMult (price units); false: fixed GridStepPoints (TEST, untested)
@@ -105,8 +129,12 @@ input double Lots                = 0.1;   // lot size, SAME for every leg (first
 input int    GridCount            = 5;    // additional DCA legs beyond the first entry, ported unchanged from manual tool default (TEST, untested)
 input double SLMult               = 5.5;  // shared basket SL = P0 -/+ SLMult*step, ALL legs share this one SL, ported unchanged from manual tool default (TEST, untested)
 
-input group "=== Exit automation (NEW -- manual tool had NO take-profit, purely discretionary/manual exit, TEST/untested) ==="
-input bool   UseBasketTrailStop   = true;  // first-guess automatic substitute for the manual tool's discretionary exit (TEST, untested)
+input group "=== Take-profit: prior swing high/low (NEW 2026-11-21, per user instruction -- 익절은 전저점/전고점에서) ==="
+input bool   UseSwingTP           = true;  // BUY target = highest high reached during the just-ended bearish (dead-cross) regime ("전고점 역전"); SELL target = lowest low during the just-ended bullish regime ("전저점 역전") (TEST, untested)
+input double MinSwingTPStep       = 1.0;   // minimum favorable distance from P0 to the swing target, in steps -- if the swing level doesn't clear this (target too close/behind), skip the hard TP for this basket and rely on SL/trail only (TEST, untested)
+
+input group "=== Basket trailing stop (secondary profit protection alongside UseSwingTP, manual tool had NO take-profit at all, TEST/untested) ==="
+input bool   UseBasketTrailStop   = true;  // protects profit if price reverses before reaching the UseSwingTP target; first-guess automatic substitute for the manual tool's discretionary exit (TEST, untested)
 input double TrailTriggerStep     = 1.0;   // favorable move from basket's volume-weighted avg entry, in steps, to arm trailing (TEST, untested)
 input double TrailDistanceStep    = 0.5;   // distance kept behind price once armed, in steps (TEST, untested)
 
@@ -118,18 +146,32 @@ input bool   EnableLiveOrders     = false; // Enable live orders
 //+------------------------------------------------------------------+
 //| State                                                              |
 //+------------------------------------------------------------------+
-enum ENUM_GSTATE { GS_IDLE=0, GS_WAIT=1, GS_BASKET=2 };
+enum ENUM_GSTATE { GS_IDLE=0, GS_BASKET=1 };
 ENUM_GSTATE g_state=GS_IDLE;
 int      g_dir=0;          // +1 long basket, -1 short basket
 double   g_p0=0;           // first-leg fill price
 double   g_step=0;         // step used for this basket (fixed once placed)
 double   g_sl=0;           // current shared SL for the whole basket
+double   g_tp=0;           // hard swing-high/low TP for the whole basket, 0 = none
 datetime g_basketOpenTime=0;
-int      g_waitBarCount=0;
-datetime g_lastSeenBar=0;
 bool     g_trailArmed=false;
 
-int hMA=INVALID_HANDLE, hATR=INVALID_HANDLE;
+// Cross-episode state (REVISED 2026-11-21): g_awaitDir!=0 means a golden/dead
+// cross has fired and we're waiting for the FIRST 120MA touch to trade it.
+int      g_awaitDir=0;         // 0=no pending cross episode; +1=golden cross (wait to BUY); -1=dead cross (wait to SELL)
+double   g_awaitTP=0;          // swing-extreme TP captured at the moment of that cross, carried into g_tp on entry
+int      g_awaitBarsElapsed=0;
+datetime g_lastBarSeen=0;      // shared new-bar detector for cross-check + wait-timeout counting
+
+// Regime swing-extreme tracking, used to compute the NEXT cross's TP target:
+// 전고점 = highest high reached during the current/just-ended BEARISH (fast<slow)
+// regime; 전저점 = lowest low during the current/just-ended BULLISH regime.
+bool     g_regimeKnown=false;
+bool     g_regimeBullish=false;
+double   g_regimeExtremeHigh=0;
+double   g_regimeExtremeLow=0;
+
+int hMA=INVALID_HANDLE, hMAFast=INVALID_HANDLE, hATR=INVALID_HANDLE;
 int f_log=INVALID_HANDLE;
 
 //+------------------------------------------------------------------+
@@ -186,6 +228,54 @@ double GetStep()
    if(CopyBuffer(hATR,0,1,1,b)<1) return MathMax(_Point,GridStepPoints*_Point); // fallback to fixed if ATR unavailable
    double step=b[0]*StepATRMult; // ATR buffer is already in price units, same convention as XAU_M5_PULLBACKTREND_test.mq5's R=ATR
    return MathMax(_Point,step);
+}
+
+//+------------------------------------------------------------------+
+//| Regime (fast-vs-slow MA) extreme tracking + cross detection.       |
+//| Called once per newly CLOSED bar. Tracks the running swing high    |
+//| during a bearish regime ("전고점" target for the NEXT golden cross)  |
+//| and the running swing low during a bullish regime ("전저점" target   |
+//| for the NEXT dead cross). On the bar the regime flips, captures     |
+//| that just-ended regime's extreme as g_awaitTP and arms g_awaitDir.  |
+//+------------------------------------------------------------------+
+void UpdateRegimeAndCross()
+{
+   double fast1[1],slow1[1];
+   if(CopyBuffer(hMAFast,0,1,1,fast1)<1) return;
+   if(CopyBuffer(hMA,0,1,1,slow1)<1) return;
+   bool bullish=fast1[0]>slow1[0];
+
+   double h1=iHigh(_Symbol,Timeframe,1), l1=iLow(_Symbol,Timeframe,1);
+   if(h1<=0 || l1<=0) return;
+
+   if(!g_regimeKnown)
+   {
+      g_regimeKnown=true; g_regimeBullish=bullish;
+      g_regimeExtremeHigh=h1; g_regimeExtremeLow=l1;
+      return;
+   }
+
+   if(bullish==g_regimeBullish)
+   {
+      if(bullish) g_regimeExtremeLow=MathMin(g_regimeExtremeLow,l1);
+      else        g_regimeExtremeHigh=MathMax(g_regimeExtremeHigh,h1);
+      return;
+   }
+
+   // regime just flipped on this bar -- this is the cross
+   if(bullish)
+   {
+      g_awaitDir=+1; g_awaitTP=g_regimeExtremeHigh; g_awaitBarsElapsed=0;
+      Log("GOLDEN_CROSS","전고점(TP target)="+DoubleToString(g_awaitTP,_Digits)+" -- awaiting first 120MA pullback touch to BUY");
+   }
+   else
+   {
+      g_awaitDir=-1; g_awaitTP=g_regimeExtremeLow; g_awaitBarsElapsed=0;
+      Log("DEAD_CROSS","전저점(TP target)="+DoubleToString(g_awaitTP,_Digits)+" -- awaiting first 120MA pullback touch to SELL");
+   }
+
+   g_regimeBullish=bullish;
+   g_regimeExtremeHigh=h1; g_regimeExtremeLow=l1;
 }
 
 bool IsMine(ulong magic,string sym){ return magic==MagicNumber && sym==_Symbol; }
@@ -262,15 +352,38 @@ bool DoFirstEntry()
 //+------------------------------------------------------------------+
 //| Grid placement (auto equivalent of manual tool's PlaceGrid)        |
 //+------------------------------------------------------------------+
-void PlaceGrid(double step)
+void PlaceGrid(double step,double tpCandidate)
 {
    g_step=step;
    g_sl=NP(g_p0-g_dir*SLMult*step);
    g_basketOpenTime=TimeCurrent();
 
+   //--- validate the swing-extreme TP: must be favorable by at least
+   //    MinSwingTPStep steps from P0, else there's no real target to give
+   //    (e.g. the prior swing extreme sits behind or too close to entry) --
+   //    fall back to no hard TP (UseBasketTrailStop/hard SL only) for this basket.
+   g_tp=0;
+   if(UseSwingTP && tpCandidate>0)
+   {
+      double favDist=(g_dir>0) ? (tpCandidate-g_p0) : (g_p0-tpCandidate);
+      if(favDist>=MinSwingTPStep*step)
+      {
+         double cushion=MinStopDistance()+_Point;
+         double tpCand=tpCandidate;
+         MqlTick qtp; if(SymbolInfoTick(_Symbol,qtp))
+         {
+            if(g_dir>0){ if(tpCand<qtp.ask+cushion) tpCand=qtp.ask+cushion; }
+            else       { if(tpCand>qtp.bid-cushion) tpCand=qtp.bid-cushion; }
+         }
+         g_tp=NP(tpCand);
+      }
+      else
+         Log("SWING_TP_REJECTED","target="+DoubleToString(tpCandidate,_Digits)+" too close/behind P0="+DoubleToString(g_p0,_Digits)+" (favDist<"+DoubleToString(MinSwingTPStep,2)+" steps) -- no hard TP this basket");
+   }
+
    if(!EnableLiveOrders)
    {
-      Log("DRY_GRID","P0="+DoubleToString(g_p0,_Digits)+" step="+DoubleToString(step,_Digits)+" SL="+DoubleToString(g_sl,_Digits));
+      Log("DRY_GRID","P0="+DoubleToString(g_p0,_Digits)+" step="+DoubleToString(step,_Digits)+" SL="+DoubleToString(g_sl,_Digits)+" TP="+DoubleToString(g_tp,_Digits));
       g_state=GS_BASKET;
       return;
    }
@@ -287,13 +400,13 @@ void PlaceGrid(double step)
       return;
    }
 
-   //--- 1) set SL on the first-entry position
+   //--- 1) set SL+TP on the first-entry position
    for(int i=PositionsTotal()-1;i>=0;i--)
    {
       ulong t=PositionGetTicket(i);
       if(t==0 || !PositionSelectByTicket(t)) continue;
       if(!IsMine((ulong)PositionGetInteger(POSITION_MAGIC),PositionGetString(POSITION_SYMBOL))) continue;
-      if(!trade.PositionModify(t,g_sl,PositionGetDouble(POSITION_TP)))
+      if(!trade.PositionModify(t,g_sl,g_tp))
          Log("GRID_SL_SET_FAIL",IntegerToString((int)trade.ResultRetcode()));
    }
 
@@ -308,13 +421,13 @@ void PlaceGrid(double step)
       bool passed=(g_dir>0)?(ask<=level+minDist):(bid>=level-minDist);
       if(passed)
       {
-         ok=(g_dir>0 ? trade.Buy(lot,_Symbol,0.0,g_sl,0.0,cmt) : trade.Sell(lot,_Symbol,0.0,g_sl,0.0,cmt));
+         ok=(g_dir>0 ? trade.Buy(lot,_Symbol,0.0,g_sl,g_tp,cmt) : trade.Sell(lot,_Symbol,0.0,g_sl,g_tp,cmt));
          Log("GRID_LEG_MARKET",IntegerToString(k)+" level="+DoubleToString(level,_Digits)+" "+(ok?"FILLED":"FAILED"));
       }
       else
       {
-         ok=(g_dir>0 ? trade.BuyLimit (lot,level,_Symbol,g_sl,0.0,ORDER_TIME_GTC,0,cmt)
-                     : trade.SellLimit(lot,level,_Symbol,g_sl,0.0,ORDER_TIME_GTC,0,cmt));
+         ok=(g_dir>0 ? trade.BuyLimit (lot,level,_Symbol,g_sl,g_tp,ORDER_TIME_GTC,0,cmt)
+                     : trade.SellLimit(lot,level,_Symbol,g_sl,g_tp,ORDER_TIME_GTC,0,cmt));
          Log("GRID_LEG_PENDING",IntegerToString(k)+" level="+DoubleToString(level,_Digits)+" "+(ok?"PLACED":"FAILED"));
       }
       if(!ok) Log("GRID_LEG_RETCODE",IntegerToString((int)trade.ResultRetcode())+" | "+trade.ResultRetcodeDescription());
@@ -322,7 +435,7 @@ void PlaceGrid(double step)
    }
 
    g_state=GS_BASKET;
-   Log("GRID_COMPLETE","P0="+DoubleToString(g_p0,_Digits)+" step="+DoubleToString(step,_Digits)+" SL="+DoubleToString(g_sl,_Digits));
+   Log("GRID_COMPLETE","P0="+DoubleToString(g_p0,_Digits)+" step="+DoubleToString(step,_Digits)+" SL="+DoubleToString(g_sl,_Digits)+" TP="+DoubleToString(g_tp,_Digits));
 }
 
 //+------------------------------------------------------------------+
@@ -418,10 +531,11 @@ void FinalizeBasketIfFlat()
 
    Log("BASKET_CLOSED","dir="+(g_dir>0?"BUY":"SELL")+" P0="+DoubleToString(g_p0,_Digits)+
        " step="+DoubleToString(g_step,_Digits)+" finalSL="+DoubleToString(g_sl,_Digits)+
+       " finalTP="+DoubleToString(g_tp,_Digits)+
        " trailArmed="+(g_trailArmed?"true":"false")+" basketProfit="+DoubleToString(basketProfit,2));
 
-   g_state=GS_IDLE; g_dir=0; g_p0=0; g_step=0; g_sl=0; g_basketOpenTime=0;
-   g_trailArmed=false; g_waitBarCount=0;
+   g_state=GS_IDLE; g_dir=0; g_p0=0; g_step=0; g_sl=0; g_tp=0; g_basketOpenTime=0;
+   g_trailArmed=false;
 }
 
 //+------------------------------------------------------------------+
@@ -444,11 +558,12 @@ void RecoverState()
    g_dir=(PositionGetInteger(POSITION_TYPE)==POSITION_TYPE_BUY)?1:-1;
    g_p0=PositionGetDouble(POSITION_PRICE_OPEN);
    g_sl=PositionGetDouble(POSITION_SL);
+   g_tp=PositionGetDouble(POSITION_TP);
    g_basketOpenTime=earliest;
    g_step=(g_sl>0 && SLMult>0) ? MathAbs(g_p0-g_sl)/SLMult : GetStep();
    g_state=GS_BASKET;
    Log("RECOVERED","dir="+(g_dir>0?"BUY":"SELL")+" P0="+DoubleToString(g_p0,_Digits)+
-       " step="+DoubleToString(g_step,_Digits)+" SL="+DoubleToString(g_sl,_Digits));
+       " step="+DoubleToString(g_step,_Digits)+" SL="+DoubleToString(g_sl,_Digits)+" TP="+DoubleToString(g_tp,_Digits));
 }
 
 //+------------------------------------------------------------------+
@@ -456,9 +571,10 @@ void RecoverState()
 //+------------------------------------------------------------------+
 int OnInit()
 {
-   hMA =iMA(_Symbol,Timeframe,MAPeriod,0,MODE_SMA,PRICE_CLOSE);
-   hATR=iATR(_Symbol,Timeframe,StepATRPeriod);
-   if(hMA==INVALID_HANDLE || hATR==INVALID_HANDLE) return INIT_FAILED;
+   hMA    =iMA(_Symbol,Timeframe,MAPeriod,0,MODE_SMA,PRICE_CLOSE);
+   hMAFast=iMA(_Symbol,Timeframe,MAFastPeriod,0,MODE_SMA,PRICE_CLOSE);
+   hATR   =iATR(_Symbol,Timeframe,StepATRPeriod);
+   if(hMA==INVALID_HANDLE || hMAFast==INVALID_HANDLE || hATR==INVALID_HANDLE) return INIT_FAILED;
 
    f_log=FileOpen("XAU_M3_MATOUCHGRID_test_LOG.csv",FILE_READ|FILE_WRITE|FILE_CSV|FILE_ANSI|FILE_SHARE_READ,',');
    if(f_log!=INVALID_HANDLE)
@@ -471,11 +587,12 @@ int OnInit()
    trade.SetDeviationInPoints(MaxDeviationPts);
    trade.SetTypeFillingBySymbol(_Symbol);
 
-   Log("START",string("TF=")+EnumToString(Timeframe)+" | MAPeriod="+IntegerToString(MAPeriod)+
-       " MaxWaitBars="+IntegerToString(MaxWaitBars)+
+   Log("START",string("TF=")+EnumToString(Timeframe)+" | MAFastPeriod="+IntegerToString(MAFastPeriod)+
+       " MAPeriod="+IntegerToString(MAPeriod)+" MaxWaitBars="+IntegerToString(MaxWaitBars)+
        " | UseATRStep="+(UseATRStep?"true":"false")+" StepATRPeriod="+IntegerToString(StepATRPeriod)+
        " StepATRMult="+DoubleToString(StepATRMult,2)+" GridStepPoints="+DoubleToString(GridStepPoints,1)+
        " | Lots="+DoubleToString(Lots,2)+" GridCount="+IntegerToString(GridCount)+" SLMult="+DoubleToString(SLMult,2)+
+       " | UseSwingTP="+(UseSwingTP?"true":"false")+" MinSwingTPStep="+DoubleToString(MinSwingTPStep,2)+
        " | UseBasketTrailStop="+(UseBasketTrailStop?"true":"false")+" TrailTriggerStep="+DoubleToString(TrailTriggerStep,2)+
        " TrailDistanceStep="+DoubleToString(TrailDistanceStep,2)+
        " | Magic="+IntegerToString((int)MagicNumber)+" | orders="+(EnableLiveOrders?"ENABLED":"DRY"));
@@ -488,8 +605,9 @@ int OnInit()
 void OnDeinit(const int reason)
 {
    if(f_log!=INVALID_HANDLE){ FileFlush(f_log); FileClose(f_log); }
-   if(hMA!=INVALID_HANDLE)  IndicatorRelease(hMA);
-   if(hATR!=INVALID_HANDLE) IndicatorRelease(hATR);
+   if(hMA!=INVALID_HANDLE)     IndicatorRelease(hMA);
+   if(hMAFast!=INVALID_HANDLE) IndicatorRelease(hMAFast);
+   if(hATR!=INVALID_HANDLE)    IndicatorRelease(hATR);
 }
 
 void OnTradeTransaction(const MqlTradeTransaction &trans,const MqlTradeRequest &request,const MqlTradeResult &result)
@@ -509,41 +627,42 @@ void OnTick()
 {
    MqlTick tick; if(!SymbolInfoTick(_Symbol,tick)) return;
 
+   //--- new-bar bookkeeping: regime/cross detection + wait-timeout counting,
+   //    independent of g_state so a cross can arm/override while flat.
+   datetime curBar=iTime(_Symbol,Timeframe,0);
+   if(curBar!=0 && curBar!=g_lastBarSeen)
+   {
+      g_lastBarSeen=curBar;
+      UpdateRegimeAndCross(); // may set/overwrite g_awaitDir+g_awaitTP, resets g_awaitBarsElapsed
+      if(g_awaitDir!=0) g_awaitBarsElapsed++;
+      if(MaxWaitBars>0 && g_awaitDir!=0 && g_awaitBarsElapsed>=MaxWaitBars)
+      {
+         Log("AWAIT_TIMEOUT","bars="+IntegerToString(g_awaitBarsElapsed)+" -- giving up on this cross episode (no entry)");
+         g_awaitDir=0; g_awaitTP=0;
+      }
+   }
+
    switch(g_state)
    {
       case GS_IDLE:
       {
+         if(g_awaitDir==0) return; // no cross episode currently awaiting its first 120MA touch
          double ma; if(!GetMA(ma)) return;
          double bid=SymbolInfoDouble(_Symbol,SYMBOL_BID);
-         if(bid>ma) g_dir=1; else if(bid<ma) g_dir=-1; else return;
-         g_state=GS_WAIT;
-         g_waitBarCount=0;
-         g_lastSeenBar=iTime(_Symbol,Timeframe,0);
-         Log("ARMED",(g_dir>0?"BUY":"SELL")+" wait for MA touch | bid="+DoubleToString(bid,_Digits)+" ma="+DoubleToString(ma,_Digits));
-         return;
-      }
-
-      case GS_WAIT:
-      {
-         if(MaxWaitBars>0)
-         {
-            datetime curBar=iTime(_Symbol,Timeframe,0);
-            if(curBar!=g_lastSeenBar){ g_lastSeenBar=curBar; g_waitBarCount++; }
-            if(g_waitBarCount>=MaxWaitBars)
-            {
-               Log("WAIT_TIMEOUT","bars="+IntegerToString(g_waitBarCount)+" -- re-evaluating direction");
-               g_state=GS_IDLE; g_dir=0;
-               return;
-            }
-         }
-         double ma; if(!GetMA(ma)) return;
-         double bid=SymbolInfoDouble(_Symbol,SYMBOL_BID);
-         bool touched=(g_dir>0)?(bid<=ma):(bid>=ma);
+         bool touched=(g_awaitDir>0)?(bid<=ma):(bid>=ma);
          if(!touched) return;
 
-         if(!DoFirstEntry()) return; // retry next tick
+         g_dir=g_awaitDir;
+         double tpCandidate=g_awaitTP;
+         g_awaitDir=0; g_awaitTP=0; // consume -- only the FIRST touch after this cross enters
+
+         if(!DoFirstEntry())
+         {
+            g_awaitDir=g_dir; g_awaitTP=tpCandidate; g_dir=0; // restore, retry next tick
+            return;
+         }
          double step=GetStep();
-         PlaceGrid(step);
+         PlaceGrid(step,tpCandidate);
          return;
       }
 
