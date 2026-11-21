@@ -321,6 +321,36 @@
 //| net harmful on its own and is what drags RF/Equity DD down when BOTH are  |
 //| on. UseAvoidFakeBreakout default CHANGED to false (zone #2 OFF); zone #1  |
 //| (UseAvoidBB4MAOverlap=true) CONFIRMED as the new default going forward.   |
+//|                                                                     |
+//| THIRTEENTH BACKTEST (2026-11-21, SLMult sweep at fixed step=$10,          |
+//| GridCount=2, zone #1 ON/zone #2 OFF per the 12th revision): SLMult=3.5    |
+//| (SL $25->$35, buffer beyond last leg $5->$15, entries UNCHANGED at        |
+//| 0/10/20) tested against the SLMult=2.5 confirmed baseline (NET           |
+//| $31,651.25, PF 1.338244, RF 2.117905, Equity DD 11.75%): NET dropped to   |
+//| $24,580.55, PF 1.218068, RF 1.365905, Equity DD 13.70% ($17,995.80),      |
+//| Sharpe 1.343059 -- worse on every metric except a marginally smaller      |
+//| Balance DD %. Same pattern as the GridCount/SLMult sweep in the 11th      |
+//| revision: widening the SL (without adding legs) grows the loss size      |
+//| per full-depth hit faster than it saves from fewer hits. SLMult=2.5      |
+//| CONFIRMED to remain the optimum; user chose to keep it and move on.       |
+//|                                                                     |
+//| FOURTEENTH REVISION (2026-11-21, per checklist "피해야 할 구간 4가지"       |
+//| zone #4, previously flagged out-of-scope -- user asked for it anyway):    |
+//| UseAvoidEconCalendar added as a 4th skip-gate (same armed-episode-stays-  |
+//| alive pattern as zones #1/#2). Uses MQL5's native CalendarValueHistory()/ |
+//| CalendarEventById() -- NOT a new handle, just an API call each check.     |
+//| Skips a touch if an AvoidEconCalendarCurrency (default "USD", proxy for   |
+//| the "5대 경제지표" set since MT5's calendar isn't easily filtered to 5     |
+//| specific named indicators) calendar event at >=AvoidEconCalendarMin-      |
+//| Importance (default CALENDAR_IMPORTANCE_HIGH) has its release time within |
+//| [-AvoidEconCalendarMinutesBefore,+AvoidEconCalendarMinutesAfter] minutes   |
+//| (default 30/30) of the current tick. CAVEAT, UNCONFIRMED: MT5 Strategy    |
+//| Tester's calendar support depends on the terminal/broker actually having  |
+//| cached calendar data for the test's date range -- a CALENDAR_DIAG log     |
+//| line was added at OnInit to report how many qualifying events it finds    |
+//| across the backtest's 2025.01.01-2026.12.31 span; if that logs 0, this    |
+//| filter is a silent no-op and the feature does not work in this tester.    |
+//| Not yet backtested.                                                      |
 //+------------------------------------------------------------------+
 #property strict
 #include <Trade/Trade.mqh>
@@ -372,6 +402,13 @@ input double AvoidBB4MAOverlapPts   = 200;   // overlap tolerance, trader-points
 input group "=== Avoid zone #2: H1 전고/전저 가짜돌파 (NEW 2026-11-21, per checklist '피해야 할 구간 4가지': '상위 전저·전고를 트라이하고 실패한 뒤 꼬리 달고 내려온 자리. 세력의 함정일 확률 높음. 재진입 금지') ==="
 input bool   UseAvoidFakeBreakout       = false; // skip entry if HigherTFAlignment's last CLOSED candle tried and failed to break the recent swing high/low in the SAME direction as this entry's finalDir (REJECTED 2026-11-21: isolated 3-way sweep showed this zone alone, and combined with zone #1, drags RF/Equity DD below zone-#1-only; default now OFF, see 13th-revision note below)
 input int    FakeBreakoutLookbackBars   = 20;    // bars (on HigherTFAlignment, shift 2..N+1, excluding the candle being tested) used to find the prior swing high/low -- first guess (TEST, untested)
+
+input group "=== Avoid zone #4: 5대 경제지표 발표 전후 30분 (NEW 2026-11-21, per checklist '피해야 할 구간 4가지': 고영향 경제지표 발표 전후는 변동성 급증 구간, 신규 진입 금지. 이전엔 OUT-OF-SCOPE로 남겨뒀으나 사용자 요청으로 구현) ==="
+input bool   UseAvoidEconCalendar            = true; // skip NEW entries within [AvoidEconCalendarMinutesBefore,AvoidEconCalendarMinutesAfter] minutes of a >=AvoidEconCalendarMinImportance AvoidEconCalendarCurrency calendar event (MQL5 CalendarValueHistory()/CalendarEventById() -- see CALENDAR_DIAG log line at startup for whether Strategy Tester actually has calendar data for this test) (TEST, untested, user-specified logic)
+input int    AvoidEconCalendarMinutesBefore  = 30;    // minutes BEFORE a qualifying event's release time to start blocking new entries (TEST, untested)
+input int    AvoidEconCalendarMinutesAfter   = 30;    // minutes AFTER a qualifying event's release time to keep blocking new entries (TEST, untested)
+input string AvoidEconCalendarCurrency       = "USD"; // only count calendar events for this currency -- gold's primary macro driver, used as a proxy for "5대 경제지표" since MT5's calendar isn't easily filtered to 5 specific named indicators (TEST, untested)
+input ENUM_CALENDAR_EVENT_IMPORTANCE AvoidEconCalendarMinImportance = CALENDAR_IMPORTANCE_HIGH; // minimum calendar importance to count as a qualifying event (TEST, untested)
 
 input group "=== Time filter (NEW 2026-11-21, per checklist '새벽 2시 이후 신규 금지'; window CONFIRMED by user as KST 02:00-08:00) ==="
 input bool   UseSkipHourKST       = true; // block NEW entries in [SkipHourStartKST,SkipHourEndKST) KST; does not affect baskets already open (TEST, untested)
@@ -637,6 +674,30 @@ bool InAvoidZoneFakeBreakout(int dir)
 
    if(dir>0 && failedUp)   return true; // about to chase a BUY right after a failed breakout UP
    if(dir<0 && failedDown) return true; // about to chase a SELL right after a failed breakdown
+   return false;
+}
+
+//+------------------------------------------------------------------+
+//| Avoid zone #4 (NEW 2026-11-21, per checklist '피해야 할 구간 4가지'    |
+//| #4 "5대 경제지표 발표 전후"): true if an AvoidEconCalendarCurrency      |
+//| calendar event at >=AvoidEconCalendarMinImportance has its release    |
+//| time within [-AvoidEconCalendarMinutesBefore,+AvoidEconCalendarMinutes|
+//| After] minutes of now. Non-directional, applies to ANY entry. Relies  |
+//| on MT5's native calendar cache -- see CALENDAR_DIAG log at OnInit.    |
+//+------------------------------------------------------------------+
+bool InAvoidZoneEconCalendar()
+{
+   datetime now =TimeTradeServer();
+   datetime from=now-AvoidEconCalendarMinutesBefore*60;
+   datetime to  =now+AvoidEconCalendarMinutesAfter*60;
+   MqlCalendarValue vals[];
+   int n=CalendarValueHistory(vals,from,to,NULL,AvoidEconCalendarCurrency);
+   for(int i=0;i<n;i++)
+   {
+      MqlCalendarEvent ev;
+      if(!CalendarEventById(vals[i].event_id,ev)) continue;
+      if(ev.importance>=AvoidEconCalendarMinImportance) return true;
+   }
    return false;
 }
 
@@ -991,9 +1052,27 @@ int OnInit()
        " UseHigherTFAlignment2="+(UseHigherTFAlignment2?"true":"false")+" HigherTFAlignment2="+EnumToString(HigherTFAlignment2)+
        " | UseAvoidBB4MAOverlap="+(UseAvoidBB4MAOverlap?"true":"false")+" AvoidBB4MAOverlapPts="+DoubleToString(AvoidBB4MAOverlapPts,1)+
        " UseAvoidFakeBreakout="+(UseAvoidFakeBreakout?"true":"false")+" FakeBreakoutLookbackBars="+IntegerToString(FakeBreakoutLookbackBars)+
+       " | UseAvoidEconCalendar="+(UseAvoidEconCalendar?"true":"false")+" AvoidEconCalendarMinutesBefore="+IntegerToString(AvoidEconCalendarMinutesBefore)+
+       " AvoidEconCalendarMinutesAfter="+IntegerToString(AvoidEconCalendarMinutesAfter)+" AvoidEconCalendarCurrency="+AvoidEconCalendarCurrency+
+       " AvoidEconCalendarMinImportance="+EnumToString(AvoidEconCalendarMinImportance)+
        " | UseSkipHourKST="+(UseSkipHourKST?"true":"false")+" SkipHourStartKST="+IntegerToString(SkipHourStartKST)+
        " SkipHourEndKST="+IntegerToString(SkipHourEndKST)+
        " | Magic="+IntegerToString((int)MagicNumber)+" | orders="+(EnableLiveOrders?"ENABLED":"DRY"));
+
+   if(UseAvoidEconCalendar)
+   {
+      MqlCalendarValue diagVals[];
+      int diagCnt=CalendarValueHistory(diagVals,D'2025.01.01',D'2026.12.31',NULL,AvoidEconCalendarCurrency);
+      int diagHighCnt=0;
+      for(int i=0;i<diagCnt;i++)
+      {
+         MqlCalendarEvent ev;
+         if(CalendarEventById(diagVals[i].event_id,ev) && ev.importance>=AvoidEconCalendarMinImportance) diagHighCnt++;
+      }
+      Log("CALENDAR_DIAG","CalendarValueHistory returned "+IntegerToString(diagCnt)+" "+AvoidEconCalendarCurrency+
+          " events total over 2025.01.01-2026.12.31, "+IntegerToString(diagHighCnt)+" at importance>="+EnumToString(AvoidEconCalendarMinImportance)+
+          " -- if this is 0, Strategy Tester has no calendar data cached and UseAvoidEconCalendar will never fire (check terminal calendar cache/internet access during the test)");
+   }
 
    g_state=GS_IDLE;
    RecoverState();
@@ -1109,6 +1188,11 @@ void OnTick()
          if(UseAvoidFakeBreakout && InAvoidZoneFakeBreakout(finalDir))
          {
             Log("ENTRY_SKIPPED","Avoid zone #2: "+EnumToString(HigherTFAlignment)+" failed breakout (가짜돌파) in dir="+(finalDir>0?"BUY":"SELL")+" -- episode stays armed, retry on a later touch");
+            return;
+         }
+         if(UseAvoidEconCalendar && InAvoidZoneEconCalendar())
+         {
+            Log("ENTRY_SKIPPED","Avoid zone #4: "+AvoidEconCalendarCurrency+" high-importance calendar event within -"+IntegerToString(AvoidEconCalendarMinutesBefore)+"/+"+IntegerToString(AvoidEconCalendarMinutesAfter)+" min -- episode stays armed, retry on a later touch");
             return;
          }
 
