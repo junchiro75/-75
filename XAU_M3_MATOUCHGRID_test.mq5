@@ -288,6 +288,24 @@
 //| to 24.37%). SwingLookbackBars was separately tested at 20 (vs the         |
 //| existing 50, GridCount=2 held constant): worse on every metric (NET       |
 //| $30,220->$25,870, RF 2.03->1.49, Equity DD 11.7%->13.9%) -- 50 CONFIRMED. |
+//|                                                                     |
+//| TWELFTH REVISION (2026-11-21, per user's "탑다운 분석 매뉴얼" checklist     |
+//| section "피해야 할 구간 4가지" (4 zones to avoid), user chose option 1):      |
+//| two new entry-side skip-gates added, checked right after the existing     |
+//| H4 alignment gate, before an armed episode is allowed to fire. Each is a  |
+//| skip only (same pattern as the other gates) -- the armed episode stays    |
+//| alive for a later touch, it is not discarded. Zone #1 (상위저항,           |
+//| "H1 기본비+120이평 겹침"): UseAvoidBB4MAOverlap skips if HigherTFAlignment's |
+//| upper OR lower BB4(4,4,PRICE_OPEN) band sits within AvoidBB4MAOverlapPts   |
+//| of HigherTFAlignment's own 120-period MA (hMAHtfSlow, re-added for this    |
+//| purpose -- H1's cross is still not used, only this band/MA distance).     |
+//| Zone #2 (가짜돌파, "H1 전고/전저 가짜돌파"): UseAvoidFakeBreakout skips if    |
+//| HigherTFAlignment's last CLOSED candle poked through the prior            |
+//| FakeBreakoutLookbackBars swing high/low but closed back inside it, in the  |
+//| SAME direction as the final (post-override) trade direction -- a failed   |
+//| breakout trap. Zone #3 (새벽 2-8시 KST) was already implemented as          |
+//| UseSkipHourKST. Zone #4 (5대 경제지표 발표) is OUT OF SCOPE -- needs the     |
+//| MT5 economic calendar API, not built. Not yet backtested.                 |
 //+------------------------------------------------------------------+
 #property strict
 #include <Trade/Trade.mqh>
@@ -331,6 +349,14 @@ input bool   UseHtfBB4Exhaustion = true; // at a golden cross, if HigherTFAlignm
 input group "=== Second higher-timeframe alignment filter (NEW 2026-11-21, per user request -- UNCHANGED skip-gate semantics, now checked against the FINAL direction after the H1 override above) ==="
 input bool   UseHigherTFAlignment2  = true;      // a SECOND higher timeframe that must ALSO be aligned with the FINAL (post-H1-override) direction, else this touch is skipped (TEST, untested)
 input ENUM_TIMEFRAMES HigherTFAlignment2 = PERIOD_H4; // first guess for the second required timeframe (TEST, untested)
+
+input group "=== Avoid zone #1: H1 기본비+장기이평 겹침 '상위저항' (NEW 2026-11-21, per checklist '피해야 할 구간 4가지': '상위 시간봉에서 기본비(박스)와 장기이평이 겹치는 자리. 뚫리면 한 방향으로 미친듯이 간다. 건드리면 손절 확정') ==="
+input bool   UseAvoidBB4MAOverlap    = true; // skip ANY entry (regardless of direction) if HigherTFAlignment's BB4(4,4) upper OR lower band sits within AvoidBB4MAOverlapPts of HigherTFAlignment's own 120-period MA -- a "loaded" confluence level (TEST, untested, user-specified logic)
+input double AvoidBB4MAOverlapPts   = 200;   // overlap tolerance, trader-points ($1 each, same GridStepPoints convention -- 200=$2) -- first guess (TEST, untested)
+
+input group "=== Avoid zone #2: H1 전고/전저 가짜돌파 (NEW 2026-11-21, per checklist '피해야 할 구간 4가지': '상위 전저·전고를 트라이하고 실패한 뒤 꼬리 달고 내려온 자리. 세력의 함정일 확률 높음. 재진입 금지') ==="
+input bool   UseAvoidFakeBreakout       = true; // skip entry if HigherTFAlignment's last CLOSED candle tried and failed to break the recent swing high/low in the SAME direction as this entry's finalDir (TEST, untested, user-specified logic)
+input int    FakeBreakoutLookbackBars   = 20;    // bars (on HigherTFAlignment, shift 2..N+1, excluding the candle being tested) used to find the prior swing high/low -- first guess (TEST, untested)
 
 input group "=== Time filter (NEW 2026-11-21, per checklist '새벽 2시 이후 신규 금지'; window CONFIRMED by user as KST 02:00-08:00) ==="
 input bool   UseSkipHourKST       = true; // block NEW entries in [SkipHourStartKST,SkipHourEndKST) KST; does not affect baskets already open (TEST, untested)
@@ -377,6 +403,7 @@ datetime g_lastFlipBarSeen=0;
 int hMA=INVALID_HANDLE, hMAFast=INVALID_HANDLE, hATR=INVALID_HANDLE;
 int hMAFlipSlow=INVALID_HANDLE, hMAFlipFast=INVALID_HANDLE;
 int hMAHtfFast=INVALID_HANDLE; // H1 price-vs-MA direction override (REVISED 2026-11-21) -- only the fast(20) MA is needed now, no cross
+int hMAHtfSlow=INVALID_HANDLE; // RE-ADDED 2026-11-21 for Avoid zone #1 (H1 120MA vs BB4 overlap) -- no longer used for a cross
 int hBB4Htf=INVALID_HANDLE;    // H1 BB4(4,4) exhaustion override (NEW 2026-11-21) -- same "기본비" construct as 010-013
 int hMAHtf2Slow=INVALID_HANDLE, hMAHtf2Fast=INVALID_HANDLE; // higher-timeframe alignment filter #2 (NEW 2026-11-21)
 int f_log=INVALID_HANDLE;
@@ -554,6 +581,48 @@ int DecideFinalDirByBB4(int crossDir,bool &fired)
    if(crossDir>0 && c>o && h>=up4[0]) { fired=true; return -1; } // golden cross, bullish H1 candle touches upper band -> fade SELL
    if(crossDir<0 && c<o && l<=lo4[0]) { fired=true; return +1; } // dead cross, bearish H1 candle touches lower band -> fade BUY
    return 0;
+}
+
+//+------------------------------------------------------------------+
+//| Avoid zone #1 (NEW 2026-11-21, per checklist '피해야 할 구간 4가지'    |
+//| #1 "1시간 이상봉 기본비+장기이평"): true if HigherTFAlignment's BB4      |
+//| upper OR lower band sits within AvoidBB4MAOverlapPts of its own       |
+//| 120MA -- non-directional, applies to ANY entry regardless of dir.     |
+//+------------------------------------------------------------------+
+bool InAvoidZoneBB4MAOverlap()
+{
+   double up4[1],lo4[1],ma120[1];
+   if(CopyBuffer(hBB4Htf,1,1,1,up4)<1) return false;
+   if(CopyBuffer(hBB4Htf,2,1,1,lo4)<1) return false;
+   if(CopyBuffer(hMAHtfSlow,0,1,1,ma120)<1) return false;
+   double tol=AvoidBB4MAOverlapPts*_Point;
+   return (MathAbs(up4[0]-ma120[0])<=tol) || (MathAbs(lo4[0]-ma120[0])<=tol);
+}
+
+//+------------------------------------------------------------------+
+//| Avoid zone #2 (NEW 2026-11-21, per checklist '피해야 할 구간 4가지'    |
+//| #2 "1시간 이상봉 전저·전고 매물 트라이 후 실패(가짜돌파)"): true if       |
+//| HigherTFAlignment's last CLOSED candle tried and failed to break the  |
+//| recent swing high/low (shift 2..FakeBreakoutLookbackBars+1, so the    |
+//| tested candle itself is excluded) in the SAME direction as dir.       |
+//+------------------------------------------------------------------+
+bool InAvoidZoneFakeBreakout(int dir)
+{
+   int idxHigh=iHighest(_Symbol,HigherTFAlignment,MODE_HIGH,FakeBreakoutLookbackBars,2);
+   int idxLow =iLowest (_Symbol,HigherTFAlignment,MODE_LOW, FakeBreakoutLookbackBars,2);
+   if(idxHigh<0 || idxLow<0) return false;
+   double priorHigh=iHigh(_Symbol,HigherTFAlignment,idxHigh);
+   double priorLow =iLow (_Symbol,HigherTFAlignment,idxLow);
+
+   double h1=iHigh(_Symbol,HigherTFAlignment,1), l1=iLow(_Symbol,HigherTFAlignment,1), c1=iClose(_Symbol,HigherTFAlignment,1);
+   if(h1==0 || l1==0) return false;
+
+   bool failedUp  =(h1>=priorHigh) && (c1<priorHigh); // tried to break the prior high, failed (closed back under)
+   bool failedDown=(l1<=priorLow)  && (c1>priorLow);  // tried to break the prior low, failed (closed back over)
+
+   if(dir>0 && failedUp)   return true; // about to chase a BUY right after a failed breakout UP
+   if(dir<0 && failedDown) return true; // about to chase a SELL right after a failed breakdown
+   return false;
 }
 
 //+------------------------------------------------------------------+
@@ -871,12 +940,13 @@ int OnInit()
    hMAFlipSlow=iMA(_Symbol,RegimeFlipTimeframe,MAPeriod,0,MODE_SMA,PRICE_CLOSE);
    hMAFlipFast=iMA(_Symbol,RegimeFlipTimeframe,MAFastPeriod,0,MODE_SMA,PRICE_CLOSE);
    hMAHtfFast =iMA(_Symbol,HigherTFAlignment,MAFastPeriod,0,MODE_SMA,PRICE_CLOSE);
+   hMAHtfSlow =iMA(_Symbol,HigherTFAlignment,MAPeriod,0,MODE_SMA,PRICE_CLOSE); // RE-ADDED for Avoid zone #1
    hMAHtf2Slow=iMA(_Symbol,HigherTFAlignment2,MAPeriod,0,MODE_SMA,PRICE_CLOSE);
    hMAHtf2Fast=iMA(_Symbol,HigherTFAlignment2,MAFastPeriod,0,MODE_SMA,PRICE_CLOSE);
    hBB4Htf    =iBands(_Symbol,HigherTFAlignment,4,0,4.0,PRICE_OPEN); // "기본비", same construct as 010-013
    if(hMA==INVALID_HANDLE || hMAFast==INVALID_HANDLE || hATR==INVALID_HANDLE ||
       hMAFlipSlow==INVALID_HANDLE || hMAFlipFast==INVALID_HANDLE ||
-      hMAHtfFast==INVALID_HANDLE ||
+      hMAHtfFast==INVALID_HANDLE || hMAHtfSlow==INVALID_HANDLE ||
       hMAHtf2Slow==INVALID_HANDLE || hMAHtf2Fast==INVALID_HANDLE ||
       hBB4Htf==INVALID_HANDLE) return INIT_FAILED;
 
@@ -904,6 +974,8 @@ int OnInit()
        " CounterTrendTPShrink="+DoubleToString(CounterTrendTPShrink,2)+
        " UseHtfBB4Exhaustion="+(UseHtfBB4Exhaustion?"true":"false")+
        " UseHigherTFAlignment2="+(UseHigherTFAlignment2?"true":"false")+" HigherTFAlignment2="+EnumToString(HigherTFAlignment2)+
+       " | UseAvoidBB4MAOverlap="+(UseAvoidBB4MAOverlap?"true":"false")+" AvoidBB4MAOverlapPts="+DoubleToString(AvoidBB4MAOverlapPts,1)+
+       " UseAvoidFakeBreakout="+(UseAvoidFakeBreakout?"true":"false")+" FakeBreakoutLookbackBars="+IntegerToString(FakeBreakoutLookbackBars)+
        " | UseSkipHourKST="+(UseSkipHourKST?"true":"false")+" SkipHourStartKST="+IntegerToString(SkipHourStartKST)+
        " SkipHourEndKST="+IntegerToString(SkipHourEndKST)+
        " | Magic="+IntegerToString((int)MagicNumber)+" | orders="+(EnableLiveOrders?"ENABLED":"DRY"));
@@ -922,6 +994,7 @@ void OnDeinit(const int reason)
    if(hMAFlipSlow!=INVALID_HANDLE) IndicatorRelease(hMAFlipSlow);
    if(hMAFlipFast!=INVALID_HANDLE) IndicatorRelease(hMAFlipFast);
    if(hMAHtfFast!=INVALID_HANDLE)  IndicatorRelease(hMAHtfFast);
+   if(hMAHtfSlow!=INVALID_HANDLE)  IndicatorRelease(hMAHtfSlow);
    if(hMAHtf2Slow!=INVALID_HANDLE) IndicatorRelease(hMAHtf2Slow);
    if(hMAHtf2Fast!=INVALID_HANDLE) IndicatorRelease(hMAHtf2Fast);
    if(hBB4Htf!=INVALID_HANDLE)     IndicatorRelease(hBB4Htf);
@@ -1010,6 +1083,17 @@ void OnTick()
          if(UseHigherTFAlignment2 && !TFAligned(finalDir,hMAHtf2Fast,hMAHtf2Slow))
          {
             Log("ENTRY_SKIPPED","HigherTFAlignment2 ("+EnumToString(HigherTFAlignment2)+") not aligned with "+(finalDir>0?"BUY":"SELL")+" -- episode stays armed, retry on a later touch");
+            return;
+         }
+
+         if(UseAvoidBB4MAOverlap && InAvoidZoneBB4MAOverlap())
+         {
+            Log("ENTRY_SKIPPED","Avoid zone #1: "+EnumToString(HigherTFAlignment)+" BB4+120MA overlap (상위저항) -- episode stays armed, retry on a later touch");
+            return;
+         }
+         if(UseAvoidFakeBreakout && InAvoidZoneFakeBreakout(finalDir))
+         {
+            Log("ENTRY_SKIPPED","Avoid zone #2: "+EnumToString(HigherTFAlignment)+" failed breakout (가짜돌파) in dir="+(finalDir>0?"BUY":"SELL")+" -- episode stays armed, retry on a later touch");
             return;
          }
 
