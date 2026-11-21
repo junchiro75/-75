@@ -306,6 +306,21 @@
 //| breakout trap. Zone #3 (새벽 2-8시 KST) was already implemented as          |
 //| UseSkipHourKST. Zone #4 (5대 경제지표 발표) is OUT OF SCOPE -- needs the     |
 //| MT5 economic calendar API, not built. Not yet backtested.                 |
+//|                                                                     |
+//| TWELFTH BACKTEST (2026-11-21, 12th revision as above, isolated 3-way     |
+//| sweep of the two avoid zones vs the GridCount=2/SLMult=2.5/Swing=50       |
+//| no-filter baseline (NET $30,220, RF 2.03, Equity DD 11.7%, PF ~1.21)):     |
+//| zone #1 ONLY -> NET $31,651.25, PF 1.338244, RF 2.117905 (best of all 4   |
+//| configs), Balance DD 9.88% ($10,224.76), Equity DD 11.75% ($14,944.60),   |
+//| Sharpe 1.937987. zone #2 ONLY -> NET $30,383.12, PF 1.320711, RF          |
+//| 1.876669 (WORSE than baseline's 2.03), Balance DD 10.26%, Equity DD       |
+//| 12.76%, Sharpe 1.827618. BOTH ON -> NET $31,542.84, PF 1.338639, RF       |
+//| 1.864183, Balance DD 10.19%, Equity DD 13.33% ($16,920.46, worst of all   |
+//| 4). CONCLUSION: zone #1 (BB4/120MA overlap) drives essentially all of     |
+//| the improvement and dominates every metric; zone #2 (fake breakout) is    |
+//| net harmful on its own and is what drags RF/Equity DD down when BOTH are  |
+//| on. UseAvoidFakeBreakout default CHANGED to false (zone #2 OFF); zone #1  |
+//| (UseAvoidBB4MAOverlap=true) CONFIRMED as the new default going forward.   |
 //+------------------------------------------------------------------+
 #property strict
 #include <Trade/Trade.mqh>
@@ -355,7 +370,7 @@ input bool   UseAvoidBB4MAOverlap    = true; // skip ANY entry (regardless of di
 input double AvoidBB4MAOverlapPts   = 200;   // overlap tolerance, trader-points ($1 each, same GridStepPoints convention -- 200=$2) -- first guess (TEST, untested)
 
 input group "=== Avoid zone #2: H1 전고/전저 가짜돌파 (NEW 2026-11-21, per checklist '피해야 할 구간 4가지': '상위 전저·전고를 트라이하고 실패한 뒤 꼬리 달고 내려온 자리. 세력의 함정일 확률 높음. 재진입 금지') ==="
-input bool   UseAvoidFakeBreakout       = true; // skip entry if HigherTFAlignment's last CLOSED candle tried and failed to break the recent swing high/low in the SAME direction as this entry's finalDir (TEST, untested, user-specified logic)
+input bool   UseAvoidFakeBreakout       = false; // skip entry if HigherTFAlignment's last CLOSED candle tried and failed to break the recent swing high/low in the SAME direction as this entry's finalDir (REJECTED 2026-11-21: isolated 3-way sweep showed this zone alone, and combined with zone #1, drags RF/Equity DD below zone-#1-only; default now OFF, see 13th-revision note below)
 input int    FakeBreakoutLookbackBars   = 20;    // bars (on HigherTFAlignment, shift 2..N+1, excluding the candle being tested) used to find the prior swing high/low -- first guess (TEST, untested)
 
 input group "=== Time filter (NEW 2026-11-21, per checklist '새벽 2시 이후 신규 금지'; window CONFIRMED by user as KST 02:00-08:00) ==="
