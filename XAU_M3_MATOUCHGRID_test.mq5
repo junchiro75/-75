@@ -164,8 +164,30 @@
 //| 정배/역배 대응'), not as a standalone always-on mechanism. FIFTH           |
 //| REVISION: UseBreakevenExit/BreakevenTriggerStep/BreakevenTrailStep        |
 //| REMOVED entirely; UseRegimeFlipExit is now the ONLY breakeven-related     |
-//| exit, firing ONLY on a regime flip against the basket -- not yet         |
-//| backtested.                                                              |
+//| exit, firing ONLY on a regime flip against the basket.                    |
+//|                                                                     |
+//| FIFTH BACKTEST (2026-11-21, 5th revision as above, REJECTED, worst DD     |
+//| since the unit-scale bug): NET -$29,249.57, PF 0.866384, RF -0.899317,    |
+//| Sharpe -2.034188, Balance DD 31.77% ($32,381.53) on 3,862 baskets, win    |
+//| rate 64.45% (recovered, confirming the 5th revision's fix worked), avg    |
+//| win $76.20/avg loss -$155.22. Order-table close-reason tally: only 480    |
+//| closed via hard SL and 328 via swing TP -- the remaining ~3,054 (79%!)    |
+//| closed via REGIME_FLIP_CLOSE. M3's own 20/120 cross flips so often that   |
+//| "regime flip against an open basket" is the NORM on M3, not the rare      |
+//| correction the checklist frames it as -- and each such close, even at    |
+//| raw-price breakeven, nets a small realized LOSS once spread+commission    |
+//| across up to 6 grid legs are included, which is the likely driver of      |
+//| the loss-count inflation. User pushed back on a first proposal to fix     |
+//| this by checking the regime-flip on H1 instead of M3: correctly pointed   |
+//| out that H1 rarely/never flips within a basket's typical 1-5 hour         |
+//| lifetime (per backtests 3-5's own holding-time stats), which would make   |
+//| UseRegimeFlipExit nearly inert instead of fixing the over-triggering.     |
+//| SIXTH REVISION: RegimeFlipTimeframe (default M15) added, decoupling the   |
+//| regime-flip check from the M3 entry cross entirely -- M3 still drives     |
+//| ARM/entry, a SEPARATE M15 20/120 cross (own handles, own bar-cadence      |
+//| tracking) drives ONLY the regime-flip-against-basket detection. M15 is    |
+//| a first-guess middle ground between M3 (too noisy) and H1 (too slow),    |
+//| not yet backtested.                                                      |
 //+------------------------------------------------------------------+
 #property strict
 #include <Trade/Trade.mqh>
@@ -194,8 +216,9 @@ input int    SwingLookbackBars    = 50;    // lookback window (signal-TF bars, e
 input double MinSwingTPStep       = 1.0;   // minimum favorable distance from P0 to the swing target, in steps -- if the swing level doesn't clear this (target too close/behind), skip the hard TP for this basket and rely on SL/breakeven-exit only (TEST, untested)
 
 input group "=== Regime-flip breakeven exit (RENAMED 2026-11-21: UseBreakevenExit REMOVED -- it ran unconditionally and cut aligned-trend winners short, see dated backtest note. '본절' ONLY applies per checklist '04 정배/역배 대응', confirmed by user: while regime stays ALIGNED with the basket, wait on UseSwingTP only; ONLY when the regime flips AGAINST it, close at breakeven+margin ASAP) ==="
-input bool   UseRegimeFlipExit        = true; // if the 20/120 regime flips AGAINST an open basket's direction, close immediately once avg price reaches breakeven+RegimeFlipMinProfitSteps; while still aligned, UseSwingTP/hard SL are the ONLY exits (TEST, untested)
+input bool   UseRegimeFlipExit        = true; // if the regime flips AGAINST an open basket's direction, close immediately once avg price reaches breakeven+RegimeFlipMinProfitSteps; while still aligned, UseSwingTP/hard SL are the ONLY exits (TEST, untested)
 input double RegimeFlipMinProfitSteps = 0;    // 0 = breakeven ("본절"); positive = require a small profit margin first ("약수익") (TEST, untested)
+input ENUM_TIMEFRAMES RegimeFlipTimeframe = PERIOD_M15; // REVISED 2026-11-21: timeframe for the regime-flip check, DECOUPLED from the M3 entry cross. M3's own 20/120 cross flipped against 79% of baskets before they ever reached SL/TP (too noisy); the user also flagged H1 as too slow relative to typical basket lifetimes (1-5 hours) -- M15 is a first-guess middle ground, untested (TEST, untested)
 
 input group "=== Time filter (NEW 2026-11-21, per checklist '새벽 2시 이후 신규 금지'; window CONFIRMED by user as KST 02:00-08:00) ==="
 input bool   UseSkipHourKST       = true; // block NEW entries in [SkipHourStartKST,SkipHourEndKST) KST; does not affect baskets already open (TEST, untested)
@@ -225,13 +248,22 @@ int      g_awaitDir=0;         // 0=no pending cross episode; +1=golden cross (w
 int      g_awaitBarsElapsed=0;
 datetime g_lastBarSeen=0;      // shared new-bar detector for cross-check + wait-timeout counting
 
-// Regime (fast-vs-slow MA) tracking, used for cross detection (ARM) and to
-// detect a regime flip AGAINST an open basket (REGIME-FLIP exit, see below).
+// Regime (fast-vs-slow MA) tracking on the ENTRY timeframe (M3), used ONLY
+// for cross detection (ARM) -- NOT for the regime-flip exit, see below.
 bool     g_regimeKnown=false;
 bool     g_regimeBullish=false;
-bool     g_regimeFlippedAgainstBasket=false; // set true when the regime flips while GS_BASKET is open and no longer matches g_dir
+
+// Regime tracking on RegimeFlipTimeframe (REVISED 2026-11-21, decoupled from
+// the entry cross -- M3's own cross flipped against 79% of baskets before
+// they reached SL/TP). Used ONLY to detect a regime flip AGAINST an open
+// basket (REGIME-FLIP exit, see UpdateBasketExits).
+bool     g_flipRegimeKnown=false;
+bool     g_flipRegimeBullish=false;
+bool     g_regimeFlippedAgainstBasket=false; // set true when the RegimeFlipTimeframe regime flips while GS_BASKET is open and no longer matches g_dir
+datetime g_lastFlipBarSeen=0;
 
 int hMA=INVALID_HANDLE, hMAFast=INVALID_HANDLE, hATR=INVALID_HANDLE;
+int hMAFlipSlow=INVALID_HANDLE, hMAFlipFast=INVALID_HANDLE;
 int f_log=INVALID_HANDLE;
 
 //+------------------------------------------------------------------+
@@ -291,10 +323,10 @@ double GetStep()
 }
 
 //+------------------------------------------------------------------+
-//| Regime (fast-vs-slow MA) cross detection. Called once per newly    |
-//| CLOSED bar. On a flip: arms g_awaitDir for the new cross, and if    |
-//| a basket is currently open in the OLD direction, flags it for the   |
-//| regime-flip exit (see UpdateBasketExits).                           |
+//| Regime (fast-vs-slow MA) cross detection on the ENTRY timeframe     |
+//| (M3). Called once per newly CLOSED M3 bar. Only arms g_awaitDir     |
+//| for the new cross -- does NOT touch the regime-flip exit (that's    |
+//| on a separate, slower timeframe now, see UpdateFlipRegime).         |
 //+------------------------------------------------------------------+
 void UpdateRegimeAndCross()
 {
@@ -317,6 +349,25 @@ void UpdateRegimeAndCross()
       g_awaitDir=-1; g_awaitBarsElapsed=0;
       Log("DEAD_CROSS","awaiting first 120MA pullback touch to SELL");
    }
+}
+
+//+------------------------------------------------------------------+
+//| Regime cross detection on RegimeFlipTimeframe (REVISED 2026-11-21, |
+//| decoupled from the M3 entry cross). Called once per newly CLOSED    |
+//| bar on THIS timeframe. On a flip, flags an open basket in the OLD   |
+//| direction for the regime-flip exit (see UpdateBasketExits). Does    |
+//| NOT touch g_awaitDir -- entry arming stays purely M3-driven.        |
+//+------------------------------------------------------------------+
+void UpdateFlipRegime()
+{
+   double fast1[1],slow1[1];
+   if(CopyBuffer(hMAFlipFast,0,1,1,fast1)<1) return;
+   if(CopyBuffer(hMAFlipSlow,0,1,1,slow1)<1) return;
+   bool bullish=fast1[0]>slow1[0];
+
+   if(!g_flipRegimeKnown){ g_flipRegimeKnown=true; g_flipRegimeBullish=bullish; return; }
+   if(bullish==g_flipRegimeBullish) return; // no flip
+   g_flipRegimeBullish=bullish;
 
    if(g_state==GS_BASKET && !g_regimeFlippedAgainstBasket)
    {
@@ -324,7 +375,7 @@ void UpdateRegimeAndCross()
       if(basketIsBullish!=bullish)
       {
          g_regimeFlippedAgainstBasket=true;
-         Log("REGIME_FLIPPED_AGAINST_BASKET","basket dir="+(g_dir>0?"BUY":"SELL")+" -- will close at breakeven+"+DoubleToString(RegimeFlipMinProfitSteps,2)+" steps ASAP");
+         Log("REGIME_FLIPPED_AGAINST_BASKET","("+EnumToString(RegimeFlipTimeframe)+") basket dir="+(g_dir>0?"BUY":"SELL")+" -- will close at breakeven+"+DoubleToString(RegimeFlipMinProfitSteps,2)+" steps ASAP");
       }
    }
 }
@@ -641,7 +692,10 @@ int OnInit()
    hMA    =iMA(_Symbol,Timeframe,MAPeriod,0,MODE_SMA,PRICE_CLOSE);
    hMAFast=iMA(_Symbol,Timeframe,MAFastPeriod,0,MODE_SMA,PRICE_CLOSE);
    hATR   =iATR(_Symbol,Timeframe,StepATRPeriod);
-   if(hMA==INVALID_HANDLE || hMAFast==INVALID_HANDLE || hATR==INVALID_HANDLE) return INIT_FAILED;
+   hMAFlipSlow=iMA(_Symbol,RegimeFlipTimeframe,MAPeriod,0,MODE_SMA,PRICE_CLOSE);
+   hMAFlipFast=iMA(_Symbol,RegimeFlipTimeframe,MAFastPeriod,0,MODE_SMA,PRICE_CLOSE);
+   if(hMA==INVALID_HANDLE || hMAFast==INVALID_HANDLE || hATR==INVALID_HANDLE ||
+      hMAFlipSlow==INVALID_HANDLE || hMAFlipFast==INVALID_HANDLE) return INIT_FAILED;
 
    f_log=FileOpen("XAU_M3_MATOUCHGRID_test_LOG.csv",FILE_READ|FILE_WRITE|FILE_CSV|FILE_ANSI|FILE_SHARE_READ,',');
    if(f_log!=INVALID_HANDLE)
@@ -662,6 +716,7 @@ int OnInit()
        " | UseSwingTP="+(UseSwingTP?"true":"false")+" SwingLookbackBars="+IntegerToString(SwingLookbackBars)+
        " MinSwingTPStep="+DoubleToString(MinSwingTPStep,2)+
        " | UseRegimeFlipExit="+(UseRegimeFlipExit?"true":"false")+" RegimeFlipMinProfitSteps="+DoubleToString(RegimeFlipMinProfitSteps,2)+
+       " RegimeFlipTimeframe="+EnumToString(RegimeFlipTimeframe)+
        " | UseSkipHourKST="+(UseSkipHourKST?"true":"false")+" SkipHourStartKST="+IntegerToString(SkipHourStartKST)+
        " SkipHourEndKST="+IntegerToString(SkipHourEndKST)+
        " | Magic="+IntegerToString((int)MagicNumber)+" | orders="+(EnableLiveOrders?"ENABLED":"DRY"));
@@ -674,9 +729,11 @@ int OnInit()
 void OnDeinit(const int reason)
 {
    if(f_log!=INVALID_HANDLE){ FileFlush(f_log); FileClose(f_log); }
-   if(hMA!=INVALID_HANDLE)     IndicatorRelease(hMA);
-   if(hMAFast!=INVALID_HANDLE) IndicatorRelease(hMAFast);
-   if(hATR!=INVALID_HANDLE)    IndicatorRelease(hATR);
+   if(hMA!=INVALID_HANDLE)         IndicatorRelease(hMA);
+   if(hMAFast!=INVALID_HANDLE)     IndicatorRelease(hMAFast);
+   if(hATR!=INVALID_HANDLE)        IndicatorRelease(hATR);
+   if(hMAFlipSlow!=INVALID_HANDLE) IndicatorRelease(hMAFlipSlow);
+   if(hMAFlipFast!=INVALID_HANDLE) IndicatorRelease(hMAFlipFast);
 }
 
 void OnTradeTransaction(const MqlTradeTransaction &trans,const MqlTradeRequest &request,const MqlTradeResult &result)
@@ -696,19 +753,28 @@ void OnTick()
 {
    MqlTick tick; if(!SymbolInfoTick(_Symbol,tick)) return;
 
-   //--- new-bar bookkeeping: regime/cross detection + wait-timeout counting,
+   //--- new-bar bookkeeping (M3, entry cross + wait-timeout counting),
    //    independent of g_state so a cross can arm/override while flat.
    datetime curBar=iTime(_Symbol,Timeframe,0);
    if(curBar!=0 && curBar!=g_lastBarSeen)
    {
       g_lastBarSeen=curBar;
-      UpdateRegimeAndCross(); // may set/overwrite g_awaitDir, resets g_awaitBarsElapsed; may set g_regimeFlippedAgainstBasket
+      UpdateRegimeAndCross(); // may set/overwrite g_awaitDir, resets g_awaitBarsElapsed
       if(g_awaitDir!=0) g_awaitBarsElapsed++;
       if(MaxWaitBars>0 && g_awaitDir!=0 && g_awaitBarsElapsed>=MaxWaitBars)
       {
          Log("AWAIT_TIMEOUT","bars="+IntegerToString(g_awaitBarsElapsed)+" -- giving up on this cross episode (no entry)");
          g_awaitDir=0;
       }
+   }
+
+   //--- new-bar bookkeeping (RegimeFlipTimeframe, decoupled from the above --
+   //    see UpdateFlipRegime). Runs on its own cadence regardless of Timeframe.
+   datetime curFlipBar=iTime(_Symbol,RegimeFlipTimeframe,0);
+   if(curFlipBar!=0 && curFlipBar!=g_lastFlipBarSeen)
+   {
+      g_lastFlipBarSeen=curFlipBar;
+      UpdateFlipRegime(); // may set g_regimeFlippedAgainstBasket
    }
 
    switch(g_state)

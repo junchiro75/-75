@@ -14,6 +14,7 @@ SwingLookbackBars=50
 MinSwingTPStep=1.0
 UseRegimeFlipExit=true
 RegimeFlipMinProfitSteps=0
+RegimeFlipTimeframe=15
 UseSkipHourKST=true
 SkipHourStartKST=2
 SkipHourEndKST=8
