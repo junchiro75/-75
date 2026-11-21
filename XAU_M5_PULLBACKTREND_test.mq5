@@ -34,6 +34,16 @@
 //| ALL OF THIS IS A FIRST-PASS GUESS, COMPLETELY UNTESTED. Nothing here is    |
 //| confirmed -- it is a starting point to react to once real backtest         |
 //| numbers come back, same as every other _test fork this session.            |
+//|                                                                             |
+//| FIRST BACKTEST (2026-11-21, REJECTED as-is): bare "low<=ema"/"high>=ema"    |
+//| touch condition was far too loose -- 12,443 trades over the test window     |
+//| (129,971 M5 bars, i.e. ~9.6% of ALL bars fired a signal), NET -$10,377.51,  |
+//| PF 0.932612 (losing), DD 15.94%, payoff ratio 0.37:1 (avg win $15.59 vs     |
+//| avg loss -$41.89). An EMA graze on M5 is just normal price noise, not a     |
+//| real pullback. Added MinPullbackDepthR/MinReclaimR to require a minimum     |
+//| penetration past the EMA and a minimum reclaim margin, in ATR(R) units --   |
+//| untested, first guess at fixing the selectivity problem before judging      |
+//| the core thesis.                                                            |
 //+------------------------------------------------------------------+
 #property strict
 #include <Trade/Trade.mqh>
@@ -44,6 +54,8 @@ input double Lots                 = 0.1; // Lot size
 input int    TrendEMAPeriod       = 50;  // H1 EMA period deciding trend direction (TEST, untested)
 input int    PullbackEMAPeriod    = 20;  // Signal-timeframe EMA period the pullback dips through (TEST, untested)
 input int    ATRPeriod            = 14;  // ATR period on signal timeframe, used as R (stop-loss sizing unit) (TEST, untested)
+input double MinPullbackDepthR    = 0.3; // TEST: minimum penetration past the pullback EMA, in R (ATR) units -- rejects shallow EMA grazes, added after a too-frequent/no-edge first pass (12,443 trades, PF 0.93)
+input double MinReclaimR          = 0.1; // TEST: minimum close distance back past the pullback EMA, in R units -- rejects weak reclaims
 input double SL_R                 = 1.0;  // Stop loss (R, in ATR units) (TEST, untested)
 input double TP_R                 = 2.0; // Take profit (R) -- structurally inert once UseTrailingTP arms (TEST, untested, nominal 2:1 target)
 input ulong  MagicNumber          = 95016200; // Magic number
@@ -422,14 +434,14 @@ void CheckNewBar()
    int dir=0; string tag="";
    if(trendUp)
    {
-      bool pulledBack=(l<=emaVal);
-      bool reclaimed=(c>emaVal) && (c>o);
+      bool pulledBack=(emaVal-l)>=MinPullbackDepthR*R;
+      bool reclaimed=(c-emaVal)>=MinReclaimR*R && (c>o);
       if(pulledBack && reclaimed){ dir=+1; tag="PULLBACK_TREND_BULL"; }
    }
    else // trendDown
    {
-      bool pulledBack=(h>=emaVal);
-      bool reclaimed=(c<emaVal) && (c<o);
+      bool pulledBack=(h-emaVal)>=MinPullbackDepthR*R;
+      bool reclaimed=(emaVal-c)>=MinReclaimR*R && (c<o);
       if(pulledBack && reclaimed){ dir=-1; tag="PULLBACK_TREND_BEAR"; }
    }
    if(dir==0) return;
@@ -459,6 +471,7 @@ int OnInit()
 
    Log("START",string("TF=")+EnumToString(Timeframe)+" | TrendEMAPeriod="+IntegerToString(TrendEMAPeriod)+
        " PullbackEMAPeriod="+IntegerToString(PullbackEMAPeriod)+" ATRPeriod="+IntegerToString(ATRPeriod)+
+       " MinPullbackDepthR="+DoubleToString(MinPullbackDepthR,2)+" MinReclaimR="+DoubleToString(MinReclaimR,2)+
        " | SL_R="+DoubleToString(SL_R,2)+" TP_R="+DoubleToString(TP_R,2)+
        " | SkipHourStartKST="+IntegerToString(SkipHourStartKST)+" SkipHourEndKST="+IntegerToString(SkipHourEndKST)+
        " SkipHourEntryKST="+(SkipHourEntryKST?"true":"false")+
