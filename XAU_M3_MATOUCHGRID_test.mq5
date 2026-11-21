@@ -40,18 +40,15 @@
 //|     UseATRStep=false with the corrected GridStepPoints=1000 is the   |
 //|     safer next test.                                                 |
 //|  3) EXIT: the manual tool had NO take-profit mechanism at all        |
-//|     (purely discretionary). REVISED (2026-11-21, per user            |
-//|     instruction "익절은 전저점, 전고점에서"): UseSwingTP sets a hard     |
-//|     structural TP at the swing extreme the article's own screenshots |
-//|     target -- BUY's TP = highest high reached during the just-ended  |
-//|     bearish/dead-cross regime ("전고점 역전"); SELL's TP = lowest low  |
-//|     during the just-ended bullish/golden-cross regime ("전저점 역전"). |
-//|     If that level isn't favorably beyond P0 by MinSwingTPStep steps,  |
-//|     there's no real target to give, so the hard TP is skipped for    |
-//|     that basket (SL/trail only). UseBasketTrailStop (unchanged from   |
-//|     the first pass) still runs ALONGSIDE this as secondary profit     |
-//|     protection -- the SAME shared-SL-across-every-leg mechanism as    |
-//|     the manual tool's hard stop, now also updating the shared TP.     |
+//|     (purely discretionary). REVISED TWICE since -- see the dated      |
+//|     backtest notes below for the full history. CURRENT (2026-11-21,   |
+//|     4th revision): UseSwingTP sets a hard TP at the SwingLookbackBars  |
+//|     rolling high/low read AT ENTRY TIME ("전고점"/"전저점"); UseBreakeven|
+//|     Exit arms a SAME-shared-SL profit-protect once avg price reaches   |
+//|     breakeven+BreakevenTriggerStep ("본절 복귀"); UseRegimeFlipExit      |
+//|     closes immediately at breakeven+RegimeFlipMinProfitSteps if the     |
+//|     20/120 regime turns against an open basket before either of the     |
+//|     above fires ("역배열: 본절 or 약수익 오면 즉시 정리").                 |
 //|                                                                     |
 //| PRESERVED EXACTLY from the manual tool: grid legs are placed in the  |
 //| ADVERSE direction from the first fill (P0) -- i.e. a DCA/martingale  |
@@ -62,14 +59,11 @@
 //| at placement time fills at market instead of as a pending order,      |
 //| exactly like the manual tool.                                        |
 //|                                                                     |
-//| NOT YET IMPLEMENTED (flagged, not built): the cafe article the user  |
-//| shared alongside this request ("3분 장기이평 매매") spends most of its  |
-//| length on WHICH golden/dead-cross setups to skip entirely -- near a    |
-//| prior high/low, near a W/M double top/bottom, right after a higher-   |
-//| timeframe outsize candle -- calling the common thread "변곡의 초입"     |
-//| (the early stage of a reversal). This file takes EVERY cross's first   |
-//| touch, with no such filter. Adding one is a natural next iteration    |
-//| once the cross-gated ARM + swing-extreme TP revision has a backtest.   |
+//| NOT YET IMPLEMENTED (flagged, not built -- see the FOURTH REVISION     |
+//| note below for the fuller, more concrete version of this list):        |
+//| this file takes EVERY cross's first touch, with no filter on WHICH     |
+//| golden/dead-cross setups to skip ("변곡의 초입" avoidance / top-down     |
+//| multi-timeframe confluence).                                           |
 //|                                                                     |
 //| Also not built: a re-arm cooldown. The moment a basket fully closes   |
 //| (flat), the very next tick re-arms immediately off current price vs   |
@@ -107,6 +101,52 @@
 //| already-extended alignment) was entirely missing, not just the       |
 //| separately-flagged "변곡 초입" avoidance. Fixed by the ARM revision    |
 //| above (MAFastPeriod cross-gating) -- not yet backtested.               |
+//|                                                                     |
+//| THIRD BACKTEST (2026-11-21, cross-gated ARM + regime-extreme swing     |
+//| TP, REJECTED, slightly worse): NET +$611.03, PF 1.002278, RF 0.02497, |
+//| Sharpe 0.029362, DD 22.59% ($23,712) on 3,286 baskets (-24%). Order    |
+//| table showed the swing TP (전고점/전저점 defined as the just-ended       |
+//| regime's extreme) was hit only 126/3,286 times (3.8%) -- a 20/120      |
+//| cross on M3 flips too often for "the extreme since the last cross" to  |
+//| be a meaningful structural level; 96% of baskets still closed via SL.  |
+//|                                                                     |
+//| FOURTH REVISION (2026-11-21, per two documents the user shared: a      |
+//| "손절/익절", "정배/역배 대응", "피해야 할 구간 4가지", "체크리스트 요약"       |
+//| screenshot set, and a "탑다운 분석 매뉴얼" docx). Changes made:           |
+//|  - Swing TP decoupled from the cross-regime tracker (which the 3rd     |
+//|    backtest showed rarely fires) -- now computed as a rolling          |
+//|    SwingLookbackBars-bar high/low AT ENTRY TIME, matching "① 전저/전고   |
+//|    무조건 익절" read literally as "the nearest meaningful swing point",  |
+//|    not "whatever the last cross happened to produce."                  |
+//|  - UseBasketTrailStop renamed/recalibrated to UseBreakevenExit, per     |
+//|    "② 본절 복귀 시 구간 일괄 익절": arms at BreakevenTriggerStep=0 (exactly|
+//|    breakeven, was 1.0 step) -- the checklist's own numbers are "1차     |
+//|    본절, 2차 10포, 3차 20~30포", i.e. arm AT breakeven, not a full step   |
+//|    past it.                                                            |
+//|  - UseRegimeFlipExit added, per "04 정배/역배 대응": if the 20/120        |
+//|    regime flips AGAINST an open basket's direction, close immediately   |
+//|    the moment avg price reaches breakeven+RegimeFlipMinProfitSteps      |
+//|    ("역배열: 본절 or 약수익 오면 즉시 정리") rather than waiting on the     |
+//|    normal swing TP or the gentler breakeven-recovery arm/trail.         |
+//|  - UseSkipHourKST added, per "새벽 2시 이후 신규 금지": blocks NEW         |
+//|    entries in a KST window. The source gives a start (02:00) but NO     |
+//|    end hour -- SkipHourEndKST is a GUESS (09:00, the low-liquidity      |
+//|    pre-Tokyo/London window), flagged for the user to confirm/correct.   |
+//|  - NOT IMPLEMENTED (scope flagged, needs the user's input before        |
+//|    building): the "탑다운 분석 매뉴얼" docx describes a FULL 9-timeframe  |
+//|    (주/일/8H/4H/2H/1H/30M/15M/3M) cascade, each checked for 5 things     |
+//|    (골크/데크, 첫 BB4(4,4) 기본비 터치, 쌍비, 쌍봉/쌍바닥, 120MA 터치),      |
+//|    before the M3 entry is even considered -- i.e. the M3 cross+touch    |
+//|    this file already automates is only the FINAL step of a much larger  |
+//|    discretionary multi-timeframe bias analysis. 쌍봉/쌍바닥 (visual       |
+//|    double-top/bottom) and 매물대 (시가봉/AM/BOB/미장되돌림봉/박스권 zone    |
+//|    types) are genuinely discretionary pattern reads with no precise      |
+//|    enough definition given here to automate faithfully. The 5대 지표     |
+//|    economic-calendar filter also needs MT5's calendar API, not built.    |
+//|    One piece IS directly portable without more input needed: 기본비 is   |
+//|    the SAME BB4(4,4,PRICE_OPEN) construct already used in 010-013 in     |
+//|    this repo. The rest (how many/which higher timeframes to require      |
+//|    alignment on) is asked of the user rather than guessed.               |
 //+------------------------------------------------------------------+
 #property strict
 #include <Trade/Trade.mqh>
@@ -129,14 +169,24 @@ input double Lots                = 0.1;   // lot size, SAME for every leg (first
 input int    GridCount            = 5;    // additional DCA legs beyond the first entry, ported unchanged from manual tool default (TEST, untested)
 input double SLMult               = 5.5;  // shared basket SL = P0 -/+ SLMult*step, ALL legs share this one SL, ported unchanged from manual tool default (TEST, untested)
 
-input group "=== Take-profit: prior swing high/low (NEW 2026-11-21, per user instruction -- 익절은 전저점/전고점에서) ==="
-input bool   UseSwingTP           = true;  // BUY target = highest high reached during the just-ended bearish (dead-cross) regime ("전고점 역전"); SELL target = lowest low during the just-ended bullish regime ("전저점 역전") (TEST, untested)
-input double MinSwingTPStep       = 1.0;   // minimum favorable distance from P0 to the swing target, in steps -- if the swing level doesn't clear this (target too close/behind), skip the hard TP for this basket and rely on SL/trail only (TEST, untested)
+input group "=== Take-profit: nearby swing high/low (REVISED 2026-11-21: was cross-regime extreme, hit only 3.8% of baskets -- now a rolling lookback at entry time) ==="
+input bool   UseSwingTP           = true;  // BUY target = highest high over SwingLookbackBars bars at entry ("전고점 역전"); SELL target = lowest low over SwingLookbackBars bars at entry ("전저점 역전") (TEST, untested)
+input int    SwingLookbackBars    = 50;    // lookback window (signal-TF bars, ending at the bar before entry) for the swing extreme (TEST, untested, first guess)
+input double MinSwingTPStep       = 1.0;   // minimum favorable distance from P0 to the swing target, in steps -- if the swing level doesn't clear this (target too close/behind), skip the hard TP for this basket and rely on SL/breakeven-exit only (TEST, untested)
 
-input group "=== Basket trailing stop (secondary profit protection alongside UseSwingTP, manual tool had NO take-profit at all, TEST/untested) ==="
-input bool   UseBasketTrailStop   = true;  // protects profit if price reverses before reaching the UseSwingTP target; first-guess automatic substitute for the manual tool's discretionary exit (TEST, untested)
-input double TrailTriggerStep     = 1.0;   // favorable move from basket's volume-weighted avg entry, in steps, to arm trailing (TEST, untested)
-input double TrailDistanceStep    = 0.5;   // distance kept behind price once armed, in steps (TEST, untested)
+input group "=== Breakeven-recovery exit (RENAMED/RECALIBRATED 2026-11-21 from UseBasketTrailStop, per checklist '② 본절 복귀 시 구간 일괄 익절': 1차 본절, 2차 10포, 3차 20~30포) ==="
+input bool   UseBreakevenExit     = true;  // secondary profit protection alongside UseSwingTP (TEST, untested)
+input double BreakevenTriggerStep = 0;     // favorable steps from basket's volume-weighted avg entry to ARM -- 0 = exactly breakeven ("1차 본절"), REVISED from 1.0 (TEST, untested)
+input double BreakevenTrailStep   = 1.0;   // distance kept behind price once armed, in steps -- loosely spans toward "2차 10포" (TEST, untested)
+
+input group "=== Regime-flip handling (NEW 2026-11-21, per checklist '04 정배/역배 대응': 역배열 = 본절 or 약수익 오면 즉시 정리) ==="
+input bool   UseRegimeFlipExit        = true; // if the 20/120 regime flips AGAINST an open basket's direction, close immediately once avg price reaches breakeven+RegimeFlipMinProfitSteps, instead of waiting on UseSwingTP/UseBreakevenExit (TEST, untested)
+input double RegimeFlipMinProfitSteps = 0;    // 0 = breakeven ("본절"); positive = require a small profit margin first ("약수익") (TEST, untested)
+
+input group "=== Time filter (NEW 2026-11-21, per checklist '새벽 2시 이후 신규 금지' -- end hour NOT given in source, GUESSED) ==="
+input bool   UseSkipHourKST       = true; // block NEW entries in [SkipHourStartKST,SkipHourEndKST) KST; does not affect baskets already open (TEST, untested)
+input int    SkipHourStartKST     = 2;    // source says "2시 이후" -- this part is direct (TEST, untested)
+input int    SkipHourEndKST       = 9;    // GUESSED (not specified in source) -- picked to span the low-liquidity window before Tokyo/London; NEEDS USER CONFIRMATION (TEST, untested)
 
 input group "=== Misc ==="
 input ulong  MagicNumber          = 95016300; // Magic number (unused by any other model in this repo)
@@ -159,17 +209,14 @@ bool     g_trailArmed=false;
 // Cross-episode state (REVISED 2026-11-21): g_awaitDir!=0 means a golden/dead
 // cross has fired and we're waiting for the FIRST 120MA touch to trade it.
 int      g_awaitDir=0;         // 0=no pending cross episode; +1=golden cross (wait to BUY); -1=dead cross (wait to SELL)
-double   g_awaitTP=0;          // swing-extreme TP captured at the moment of that cross, carried into g_tp on entry
 int      g_awaitBarsElapsed=0;
 datetime g_lastBarSeen=0;      // shared new-bar detector for cross-check + wait-timeout counting
 
-// Regime swing-extreme tracking, used to compute the NEXT cross's TP target:
-// 전고점 = highest high reached during the current/just-ended BEARISH (fast<slow)
-// regime; 전저점 = lowest low during the current/just-ended BULLISH regime.
+// Regime (fast-vs-slow MA) tracking, used for cross detection (ARM) and to
+// detect a regime flip AGAINST an open basket (REGIME-FLIP exit, see below).
 bool     g_regimeKnown=false;
 bool     g_regimeBullish=false;
-double   g_regimeExtremeHigh=0;
-double   g_regimeExtremeLow=0;
+bool     g_regimeFlippedAgainstBasket=false; // set true when the regime flips while GS_BASKET is open and no longer matches g_dir
 
 int hMA=INVALID_HANDLE, hMAFast=INVALID_HANDLE, hATR=INVALID_HANDLE;
 int f_log=INVALID_HANDLE;
@@ -231,12 +278,10 @@ double GetStep()
 }
 
 //+------------------------------------------------------------------+
-//| Regime (fast-vs-slow MA) extreme tracking + cross detection.       |
-//| Called once per newly CLOSED bar. Tracks the running swing high    |
-//| during a bearish regime ("전고점" target for the NEXT golden cross)  |
-//| and the running swing low during a bullish regime ("전저점" target   |
-//| for the NEXT dead cross). On the bar the regime flips, captures     |
-//| that just-ended regime's extreme as g_awaitTP and arms g_awaitDir.  |
+//| Regime (fast-vs-slow MA) cross detection. Called once per newly    |
+//| CLOSED bar. On a flip: arms g_awaitDir for the new cross, and if    |
+//| a basket is currently open in the OLD direction, flags it for the   |
+//| regime-flip exit (see UpdateBasketExits).                           |
 //+------------------------------------------------------------------+
 void UpdateRegimeAndCross()
 {
@@ -245,37 +290,76 @@ void UpdateRegimeAndCross()
    if(CopyBuffer(hMA,0,1,1,slow1)<1) return;
    bool bullish=fast1[0]>slow1[0];
 
-   double h1=iHigh(_Symbol,Timeframe,1), l1=iLow(_Symbol,Timeframe,1);
-   if(h1<=0 || l1<=0) return;
+   if(!g_regimeKnown){ g_regimeKnown=true; g_regimeBullish=bullish; return; }
+   if(bullish==g_regimeBullish) return; // no flip
 
-   if(!g_regimeKnown)
-   {
-      g_regimeKnown=true; g_regimeBullish=bullish;
-      g_regimeExtremeHigh=h1; g_regimeExtremeLow=l1;
-      return;
-   }
-
-   if(bullish==g_regimeBullish)
-   {
-      if(bullish) g_regimeExtremeLow=MathMin(g_regimeExtremeLow,l1);
-      else        g_regimeExtremeHigh=MathMax(g_regimeExtremeHigh,h1);
-      return;
-   }
-
-   // regime just flipped on this bar -- this is the cross
+   g_regimeBullish=bullish;
    if(bullish)
    {
-      g_awaitDir=+1; g_awaitTP=g_regimeExtremeHigh; g_awaitBarsElapsed=0;
-      Log("GOLDEN_CROSS","전고점(TP target)="+DoubleToString(g_awaitTP,_Digits)+" -- awaiting first 120MA pullback touch to BUY");
+      g_awaitDir=+1; g_awaitBarsElapsed=0;
+      Log("GOLDEN_CROSS","awaiting first 120MA pullback touch to BUY");
    }
    else
    {
-      g_awaitDir=-1; g_awaitTP=g_regimeExtremeLow; g_awaitBarsElapsed=0;
-      Log("DEAD_CROSS","전저점(TP target)="+DoubleToString(g_awaitTP,_Digits)+" -- awaiting first 120MA pullback touch to SELL");
+      g_awaitDir=-1; g_awaitBarsElapsed=0;
+      Log("DEAD_CROSS","awaiting first 120MA pullback touch to SELL");
    }
 
-   g_regimeBullish=bullish;
-   g_regimeExtremeHigh=h1; g_regimeExtremeLow=l1;
+   if(g_state==GS_BASKET && !g_regimeFlippedAgainstBasket)
+   {
+      bool basketIsBullish=(g_dir>0);
+      if(basketIsBullish!=bullish)
+      {
+         g_regimeFlippedAgainstBasket=true;
+         Log("REGIME_FLIPPED_AGAINST_BASKET","basket dir="+(g_dir>0?"BUY":"SELL")+" -- will close at breakeven+"+DoubleToString(RegimeFlipMinProfitSteps,2)+" steps ASAP");
+      }
+   }
+}
+
+//+------------------------------------------------------------------+
+//| Swing high/low over a lookback window, read at entry time          |
+//| (closed bars only, shift 1..SwingLookbackBars). Used as the        |
+//| "전고점"/"전저점" TP target -- see header, REVISED 2026-11-21.        |
+//+------------------------------------------------------------------+
+double SwingHigh(int lookback)
+{
+   int idx=iHighest(_Symbol,Timeframe,MODE_HIGH,lookback,1);
+   if(idx<0) return 0;
+   return iHigh(_Symbol,Timeframe,idx);
+}
+
+double SwingLow(int lookback)
+{
+   int idx=iLowest(_Symbol,Timeframe,MODE_LOW,lookback,1);
+   if(idx<0) return 0;
+   return iLow(_Symbol,Timeframe,idx);
+}
+
+// -- Korea-time session helper (server clock -> KST, EU-DST aware), ported
+//    unchanged from the live 001/005/006/007/010-013 files in this repo. ---
+datetime LastSundayOfMonth(int year,int month,int daysInMonth)
+{
+   MqlDateTime dt; dt.year=year; dt.mon=month; dt.day=daysInMonth;
+   dt.hour=0; dt.min=0; dt.sec=0;
+   datetime d=StructToTime(dt);
+   MqlDateTime cur; TimeToStruct(d,cur);
+   d-=cur.day_of_week*86400;
+   return d;
+}
+
+bool IsEUDST(datetime server_now)
+{
+   MqlDateTime t; TimeToStruct(server_now,t);
+   datetime dstStart=LastSundayOfMonth(t.year,3,31);
+   datetime dstEnd  =LastSundayOfMonth(t.year,10,31);
+   return (server_now>=dstStart && server_now<dstEnd);
+}
+
+int KST_Hour(datetime server_now)
+{
+   int offsetHours=IsEUDST(server_now)?6:7;
+   MqlDateTime t; TimeToStruct(server_now+offsetHours*3600,t);
+   return t.hour;
 }
 
 bool IsMine(ulong magic,string sym){ return magic==MagicNumber && sym==_Symbol; }
@@ -361,7 +445,7 @@ void PlaceGrid(double step,double tpCandidate)
    //--- validate the swing-extreme TP: must be favorable by at least
    //    MinSwingTPStep steps from P0, else there's no real target to give
    //    (e.g. the prior swing extreme sits behind or too close to entry) --
-   //    fall back to no hard TP (UseBasketTrailStop/hard SL only) for this basket.
+   //    fall back to no hard TP (UseBreakevenExit/hard SL only) for this basket.
    g_tp=0;
    if(UseSwingTP && tpCandidate>0)
    {
@@ -439,12 +523,11 @@ void PlaceGrid(double step,double tpCandidate)
 }
 
 //+------------------------------------------------------------------+
-//| Basket-level trailing stop (NEW -- not in the manual tool)         |
+//| Basket exits (NEW -- not in the manual tool): regime-flip close     |
+//| then breakeven-recovery protect/trail, in that priority order.      |
 //+------------------------------------------------------------------+
-void UpdateBasketTrail()
+void UpdateBasketExits()
 {
-   if(!UseBasketTrailStop) return;
-
    double sumVolPrice=0, sumVol=0;
    for(int i=PositionsTotal()-1;i>=0;i--)
    {
@@ -461,14 +544,28 @@ void UpdateBasketTrail()
    double curPrice=(g_dir>0)?q.bid:q.ask;
    double favSteps=(g_dir>0 ? (curPrice-avgEntry) : (avgEntry-curPrice))/g_step;
 
-   if(!g_trailArmed && favSteps>=TrailTriggerStep)
+   //--- regime flipped against this basket (checklist '04 정배/역배 대응'):
+   //    abandon the patient targets and close at breakeven+margin ASAP.
+   if(UseRegimeFlipExit && g_regimeFlippedAgainstBasket && favSteps>=RegimeFlipMinProfitSteps)
+   {
+      Log("REGIME_FLIP_CLOSE","favSteps="+DoubleToString(favSteps,3)+" >= RegimeFlipMinProfitSteps="+DoubleToString(RegimeFlipMinProfitSteps,2));
+      if(EnableLiveOrders) CloseAllPositions();
+      else Log("REGIME_FLIP_CLOSE_DRY","would close now (EnableLiveOrders=false)");
+      g_regimeFlippedAgainstBasket=false; // consumed -- avoid repeated close attempts
+      return;
+   }
+
+   //--- normal breakeven-recovery protect/trail (checklist '② 본절 복귀 시 구간 일괄 익절')
+   if(!UseBreakevenExit) return;
+
+   if(!g_trailArmed && favSteps>=BreakevenTriggerStep)
    {
       g_trailArmed=true;
-      Log("BASKET_TRAIL_ARM","favSteps="+DoubleToString(favSteps,3)+" avgEntry="+DoubleToString(avgEntry,_Digits));
+      Log("BREAKEVEN_ARM","favSteps="+DoubleToString(favSteps,3)+" avgEntry="+DoubleToString(avgEntry,_Digits));
    }
    if(!g_trailArmed) return;
 
-   double candidate=NP(curPrice-g_dir*TrailDistanceStep*g_step);
+   double candidate=NP(curPrice-g_dir*BreakevenTrailStep*g_step);
    bool improves=(g_dir>0)?(candidate>g_sl):(candidate<g_sl);
    if(!improves) return;
 
@@ -482,7 +579,7 @@ void UpdateBasketTrail()
    if(!EnableLiveOrders)
    {
       g_sl=sl;
-      Log("BASKET_TRAIL_DRY","would move shared SL->"+DoubleToString(sl,_Digits)+" favSteps="+DoubleToString(favSteps,3));
+      Log("BREAKEVEN_TRAIL_DRY","would move shared SL->"+DoubleToString(sl,_Digits)+" favSteps="+DoubleToString(favSteps,3));
       return;
    }
 
@@ -502,9 +599,9 @@ void UpdateBasketTrail()
       double op=OrderGetDouble(ORDER_PRICE_OPEN), tp=OrderGetDouble(ORDER_TP);
       if(!trade.OrderModify(t,op,sl,tp,ORDER_TIME_GTC,0)) anyFail=true;
    }
-   if(anyFail) Log("BASKET_TRAIL_MOVE_PARTIAL_FAIL","target="+DoubleToString(sl,_Digits));
+   if(anyFail) Log("BREAKEVEN_TRAIL_MOVE_PARTIAL_FAIL","target="+DoubleToString(sl,_Digits));
    g_sl=sl;
-   Log("BASKET_TRAIL_MOVED","shared SL->"+DoubleToString(sl,_Digits)+" favSteps="+DoubleToString(favSteps,3));
+   Log("BREAKEVEN_TRAIL_MOVED","shared SL->"+DoubleToString(sl,_Digits)+" favSteps="+DoubleToString(favSteps,3));
 }
 
 //+------------------------------------------------------------------+
@@ -535,7 +632,7 @@ void FinalizeBasketIfFlat()
        " trailArmed="+(g_trailArmed?"true":"false")+" basketProfit="+DoubleToString(basketProfit,2));
 
    g_state=GS_IDLE; g_dir=0; g_p0=0; g_step=0; g_sl=0; g_tp=0; g_basketOpenTime=0;
-   g_trailArmed=false;
+   g_trailArmed=false; g_regimeFlippedAgainstBasket=false;
 }
 
 //+------------------------------------------------------------------+
@@ -592,9 +689,13 @@ int OnInit()
        " | UseATRStep="+(UseATRStep?"true":"false")+" StepATRPeriod="+IntegerToString(StepATRPeriod)+
        " StepATRMult="+DoubleToString(StepATRMult,2)+" GridStepPoints="+DoubleToString(GridStepPoints,1)+
        " | Lots="+DoubleToString(Lots,2)+" GridCount="+IntegerToString(GridCount)+" SLMult="+DoubleToString(SLMult,2)+
-       " | UseSwingTP="+(UseSwingTP?"true":"false")+" MinSwingTPStep="+DoubleToString(MinSwingTPStep,2)+
-       " | UseBasketTrailStop="+(UseBasketTrailStop?"true":"false")+" TrailTriggerStep="+DoubleToString(TrailTriggerStep,2)+
-       " TrailDistanceStep="+DoubleToString(TrailDistanceStep,2)+
+       " | UseSwingTP="+(UseSwingTP?"true":"false")+" SwingLookbackBars="+IntegerToString(SwingLookbackBars)+
+       " MinSwingTPStep="+DoubleToString(MinSwingTPStep,2)+
+       " | UseBreakevenExit="+(UseBreakevenExit?"true":"false")+" BreakevenTriggerStep="+DoubleToString(BreakevenTriggerStep,2)+
+       " BreakevenTrailStep="+DoubleToString(BreakevenTrailStep,2)+
+       " | UseRegimeFlipExit="+(UseRegimeFlipExit?"true":"false")+" RegimeFlipMinProfitSteps="+DoubleToString(RegimeFlipMinProfitSteps,2)+
+       " | UseSkipHourKST="+(UseSkipHourKST?"true":"false")+" SkipHourStartKST="+IntegerToString(SkipHourStartKST)+
+       " SkipHourEndKST="+IntegerToString(SkipHourEndKST)+
        " | Magic="+IntegerToString((int)MagicNumber)+" | orders="+(EnableLiveOrders?"ENABLED":"DRY"));
 
    g_state=GS_IDLE;
@@ -633,12 +734,12 @@ void OnTick()
    if(curBar!=0 && curBar!=g_lastBarSeen)
    {
       g_lastBarSeen=curBar;
-      UpdateRegimeAndCross(); // may set/overwrite g_awaitDir+g_awaitTP, resets g_awaitBarsElapsed
+      UpdateRegimeAndCross(); // may set/overwrite g_awaitDir, resets g_awaitBarsElapsed; may set g_regimeFlippedAgainstBasket
       if(g_awaitDir!=0) g_awaitBarsElapsed++;
       if(MaxWaitBars>0 && g_awaitDir!=0 && g_awaitBarsElapsed>=MaxWaitBars)
       {
          Log("AWAIT_TIMEOUT","bars="+IntegerToString(g_awaitBarsElapsed)+" -- giving up on this cross episode (no entry)");
-         g_awaitDir=0; g_awaitTP=0;
+         g_awaitDir=0;
       }
    }
 
@@ -652,16 +753,27 @@ void OnTick()
          bool touched=(g_awaitDir>0)?(bid<=ma):(bid>=ma);
          if(!touched) return;
 
+         if(UseSkipHourKST)
+         {
+            int kstHour=KST_Hour(TimeCurrent());
+            bool inSkip=(kstHour>=SkipHourStartKST && kstHour<SkipHourEndKST);
+            if(inSkip)
+            {
+               Log("ENTRY_SKIPPED","KST hour in ["+IntegerToString(SkipHourStartKST)+","+IntegerToString(SkipHourEndKST)+") -- episode stays armed, retry on a later touch");
+               return;
+            }
+         }
+
          g_dir=g_awaitDir;
-         double tpCandidate=g_awaitTP;
-         g_awaitDir=0; g_awaitTP=0; // consume -- only the FIRST touch after this cross enters
+         g_awaitDir=0; // consume -- only the FIRST touch after this cross enters
 
          if(!DoFirstEntry())
          {
-            g_awaitDir=g_dir; g_awaitTP=tpCandidate; g_dir=0; // restore, retry next tick
+            g_awaitDir=g_dir; g_dir=0; // restore, retry next tick
             return;
          }
          double step=GetStep();
+         double tpCandidate=UseSwingTP ? (g_dir>0 ? SwingHigh(SwingLookbackBars) : SwingLow(SwingLookbackBars)) : 0;
          PlaceGrid(step,tpCandidate);
          return;
       }
@@ -669,7 +781,7 @@ void OnTick()
       case GS_BASKET:
       {
          FinalizeBasketIfFlat();
-         if(g_state==GS_BASKET) UpdateBasketTrail();
+         if(g_state==GS_BASKET) UpdateBasketExits();
          return;
       }
    }
