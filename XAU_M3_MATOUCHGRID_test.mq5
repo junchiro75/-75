@@ -261,8 +261,33 @@
 //| this still counts as counter-trend if it disagrees with the M3 cross's    |
 //| own direction (CounterTrendTPShrink applies the same way). If it does     |
 //| NOT fire, falls through to the 9th revision's price-vs-20MA override      |
-//| unchanged. New hBB4Htf handle (iBands on HigherTFAlignment). Not yet       |
-//| backtested.                                                              |
+//| unchanged. New hBB4Htf handle (iBands on HigherTFAlignment).               |
+//|                                                                     |
+//| EIGHTH BACKTEST (2026-11-21, 10th revision as above, new best of the      |
+//| whole session): NET +$23,972.51, PF 1.153543, RF 0.792339, Sharpe         |
+//| 0.880681, Balance DD 15.32% ($19,647), Equity DD 22.04% ($30,255,         |
+//| WORSE than balance DD) on 1,147 baskets. Equity-vs-Balance DD gap          |
+//| investigated via deal-level basket reconstruction: 87/349 baskets         |
+//| (25%) reach full grid depth (all 5 DCA legs), of which 78 close at a      |
+//| loss (avg -$1,484) and only 9 recover to profit -- but those 9            |
+//| recoveries (one took 133 hours) sat on several-thousand-dollar            |
+//| UNREALIZED losses the whole time, which is what inflates Equity DD        |
+//| without touching Balance DD. Full-depth loss size formula derived and     |
+//| confirmed exactly against the data: loss ≈ step*(GridCount+1)²/2*$10      |
+//| (per 0.1 lot) -- for a FIXED total range, loss scales with GridCount,     |
+//| not range alone, because more legs means more accumulated volume by       |
+//| the time the shared SL is reached.                                       |
+//|                                                                     |
+//| ELEVENTH REVISION: GridCount/SLMult swept 5/5.5 -> 3/3.5 -> 2/2.5 ->      |
+//| 1/1.5 (step fixed at $10 throughout). Results: RF 0.79 -> 1.31 -> 2.03    |
+//| -> 1.43; NET $23,973 -> $25,103 -> $30,220 -> $14,795; Equity DD 22.0% -> |
+//| 14.4% -> 11.7% -> 10.2%. GridCount=2 is the CONFIRMED local optimum --    |
+//| every metric peaks there; GridCount=1 shrinks the DCA "rescue margin"     |
+//| too far and NET/PF/RF/Sharpe all fall back, even though per-trade risk    |
+//| keeps improving (payoff ratio climbs to 3.84:1, but win rate collapses    |
+//| to 24.37%). SwingLookbackBars was separately tested at 20 (vs the         |
+//| existing 50, GridCount=2 held constant): worse on every metric (NET       |
+//| $30,220->$25,870, RF 2.03->1.49, Equity DD 11.7%->13.9%) -- 50 CONFIRMED. |
 //+------------------------------------------------------------------+
 #property strict
 #include <Trade/Trade.mqh>
@@ -280,14 +305,14 @@ input int    StepATRPeriod       = 14;    // (TEST, untested)
 input double StepATRMult         = 0.2;   // first-guess only, no backtest run yet (TEST, untested)
 input double GridStepPoints      = 1000;  // used only when UseATRStep=false; multiplied by _Point (=$0.01 on this symbol), so 1000 = $10 -- trader convention is 1 "포인트"=$1 for gold, NOT MQL5's native _Point; matches manual tool author's own "10포인트 간격"=$10 example (REVISED from 10=$0.10 after first backtest's 100x unit-scale bug, see header) (TEST, untested)
 
-input group "=== Grid/basket structure (same semantics as MATouchGridManual_EA.mq5) ==="
+input group "=== Grid/basket structure (REVISED 2026-11-21: GridCount/SLMult CONFIRMED by user after a 5/3/2/1 sweep -- see dated backtest note) ==="
 input double Lots                = 0.1;   // lot size, SAME for every leg (first entry + all grid legs) -- max basket exposure = Lots*(1+GridCount) (TEST, untested)
-input int    GridCount            = 5;    // additional DCA legs beyond the first entry, ported unchanged from manual tool default (TEST, untested)
-input double SLMult               = 5.5;  // shared basket SL = P0 -/+ SLMult*step, ALL legs share this one SL, ported unchanged from manual tool default (TEST, untested)
+input int    GridCount            = 2;    // additional DCA legs beyond the first entry (CONFIRMED: best of 5/3/2/1 sweep -- RF 0.79->1.31->2.03 peaked at 2, then RF 1.43/NET roughly halved at 1, so 2 is the local optimum, not just "smaller is better")
+input double SLMult               = 2.5;  // shared basket SL = P0 -/+ SLMult*step, ALL legs share this one SL (CONFIRMED alongside GridCount=2, same "+0.5 buffer" convention as the manual tool's original 5/5.5)
 
 input group "=== Take-profit: nearby swing high/low (REVISED 2026-11-21: was cross-regime extreme, hit only 3.8% of baskets -- now a rolling lookback at entry time) ==="
 input bool   UseSwingTP           = true;  // BUY target = highest high over SwingLookbackBars bars at entry ("전고점 역전"); SELL target = lowest low over SwingLookbackBars bars at entry ("전저점 역전") (TEST, untested)
-input int    SwingLookbackBars    = 50;    // lookback window (signal-TF bars, ending at the bar before entry) for the swing extreme (TEST, untested, first guess)
+input int    SwingLookbackBars    = 50;    // lookback window (signal-TF bars, ending at the bar before entry) for the swing extreme (CONFIRMED over 20: NET $30,220->$25,870, RF 2.03->1.49, DD worse at 20 -- 50 stays)
 input double MinSwingTPStep       = 1.0;   // minimum favorable distance from P0 to the swing target, in steps -- if the swing level doesn't clear this (target too close/behind), skip the hard TP for this basket and rely on SL/breakeven-exit only (TEST, untested)
 
 input group "=== Regime-flip breakeven exit (RENAMED 2026-11-21: UseBreakevenExit REMOVED -- it ran unconditionally and cut aligned-trend winners short, see dated backtest note. '본절' ONLY applies per checklist '04 정배/역배 대응', confirmed by user: while regime stays ALIGNED with the basket, wait on UseSwingTP only; ONLY when the regime flips AGAINST it, close at breakeven+margin ASAP) ==="
