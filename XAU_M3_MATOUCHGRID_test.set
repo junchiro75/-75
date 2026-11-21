@@ -17,6 +17,7 @@ RegimeFlipMinProfitSteps=0
 RegimeFlipTimeframe=15
 UseHigherTFAlignment=true
 HigherTFAlignment=16385
+CounterTrendTPShrink=0.5
 UseHigherTFAlignment2=true
 HigherTFAlignment2=16388
 UseSkipHourKST=true

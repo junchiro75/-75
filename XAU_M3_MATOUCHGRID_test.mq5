@@ -228,6 +228,27 @@
 //| must ALSO be aligned with the entry direction (AND, not OR, with the      |
 //| H1 check). HigherTFAligned() generalized to TFAligned(dir,hFast,hSlow)    |
 //| so both checks share one implementation. Not yet backtested.              |
+//|                                                                     |
+//| NINTH REVISION (2026-11-21, per user's own detailed strategy             |
+//| description, REPLACES the 7th revision's H1 cross-alignment skip-gate):   |
+//| H1's CURRENT price vs its own MAFastPeriod(20) MA now DECIDES the final    |
+//| trade direction outright (DecideFinalDir()), rather than confirming or     |
+//| skipping the M3 cross's direction -- e.g. an M3 golden cross + first       |
+//| 120MA touch while H1 price sits BELOW H1's 20MA now enters SELL (counter   |
+//| to the golden cross), not a skip; while H1 price is ABOVE enters BUY       |
+//| (agrees with the golden cross). The user's own reasoning: early in a       |
+//| golden-cross regime H1 often hasn't caught up yet (counter-trend SELL      |
+//| likely on the FIRST such M3 signal), but by a LATER M3 golden-cross+touch  |
+//| H1 has often caught up too (BUY likely then) -- this falls out naturally   |
+//| from re-reading H1's live state at each touch, no explicit occurrence      |
+//| count needed. CounterTrendTPShrink (0.5 default) shrinks the swing-TP      |
+//| favorable distance from P0 whenever the H1-decided direction disagrees     |
+//| with the M3 cross's own direction ("기존보다 다소 적은 범위로 익절"),         |
+//| reflecting the lower conviction of a counter-trend entry. The 2nd-         |
+//| timeframe check (H4, 8th revision) is now checked against this FINAL       |
+//| direction, not the raw M3 cross direction. hMAHtfSlow (H1's 120MA)         |
+//| removed -- H1's own cross is no longer used, only price-vs-20MA. Not yet   |
+//| backtested.                                                              |
 //+------------------------------------------------------------------+
 #property strict
 #include <Trade/Trade.mqh>
@@ -260,10 +281,13 @@ input bool   UseRegimeFlipExit        = true; // if the regime flips AGAINST an 
 input double RegimeFlipMinProfitSteps = 0;    // 0 = breakeven ("본절"); positive = require a small profit margin first ("약수익") (TEST, untested)
 input ENUM_TIMEFRAMES RegimeFlipTimeframe = PERIOD_M15; // REVISED 2026-11-21: timeframe for the regime-flip check, DECOUPLED from the M3 entry cross. M3's own 20/120 cross flipped against 79% of baskets before they ever reached SL/TP (too noisy); the user also flagged H1 as too slow relative to typical basket lifetimes (1-5 hours) -- M15 is a first-guess middle ground, untested (TEST, untested)
 
-input group "=== Higher-timeframe alignment filter (NEW 2026-11-21, per 탑다운 분석 매뉴얼 docx: '탑다운 분석 방향과 일치하는지 확인'. 7th revision added H1 alone (NET $2,737->$18,986, PF 1.01->1.089, confirmed working); 8th revision adds a SECOND required timeframe, per user request) ==="
-input bool   UseHigherTFAlignment   = true;      // at the moment of entry, require HigherTFAlignment's own 20/120 (MAFastPeriod/MAPeriod) alignment to match the entry direction; mismatch skips this touch, episode stays armed for a later one (TEST, untested)
-input ENUM_TIMEFRAMES HigherTFAlignment = PERIOD_H1; // CONFIRMED working (7th backtest) -- the docx checks W/D/H8/H4/H2/H1/M30/M15 ALL simultaneously; this + HigherTFAlignment2 are a 2-timeframe scoped version (TEST, confirmed as a filter, exact TF choice still a guess)
-input bool   UseHigherTFAlignment2  = true;      // NEW 2026-11-21 (user request): a SECOND higher timeframe that must ALSO be aligned with the entry direction (TEST, untested)
+input group "=== H1 price-vs-MA direction override (REVISED 2026-11-21, REPLACES the 7th revision's H1 skip-gate per user's own strategy description) ==="
+input bool   UseHigherTFAlignment   = true;      // at the moment of entry, HigherTFAlignment's CURRENT price vs its own MAFastPeriod(20) MA DETERMINES the final trade direction -- overrides the M3 cross's direction when they disagree, rather than skipping (TEST, untested, user-specified logic)
+input ENUM_TIMEFRAMES HigherTFAlignment = PERIOD_H1; // the timeframe read for this override (TEST, CONFIRMED as a cross-alignment skip-gate in the 7th backtest at NET $18,986/PF 1.089; now repurposed, not yet backtested in this new form)
+input double CounterTrendTPShrink   = 0.5;       // when the override disagrees with the M3 cross direction (counter-trend trade), shrink the swing-TP favorable distance from P0 by this fraction ("기존보다 다소 적은 범위로 익절") (TEST, untested, user-specified logic)
+
+input group "=== Second higher-timeframe alignment filter (NEW 2026-11-21, per user request -- UNCHANGED skip-gate semantics, now checked against the FINAL direction after the H1 override above) ==="
+input bool   UseHigherTFAlignment2  = true;      // a SECOND higher timeframe that must ALSO be aligned with the FINAL (post-H1-override) direction, else this touch is skipped (TEST, untested)
 input ENUM_TIMEFRAMES HigherTFAlignment2 = PERIOD_H4; // first guess for the second required timeframe (TEST, untested)
 
 input group "=== Time filter (NEW 2026-11-21, per checklist '새벽 2시 이후 신규 금지'; window CONFIRMED by user as KST 02:00-08:00) ==="
@@ -310,7 +334,7 @@ datetime g_lastFlipBarSeen=0;
 
 int hMA=INVALID_HANDLE, hMAFast=INVALID_HANDLE, hATR=INVALID_HANDLE;
 int hMAFlipSlow=INVALID_HANDLE, hMAFlipFast=INVALID_HANDLE;
-int hMAHtfSlow=INVALID_HANDLE, hMAHtfFast=INVALID_HANDLE;   // higher-timeframe alignment filter #1 (NEW 2026-11-21)
+int hMAHtfFast=INVALID_HANDLE; // H1 price-vs-MA direction override (REVISED 2026-11-21) -- only the fast(20) MA is needed now, no cross
 int hMAHtf2Slow=INVALID_HANDLE, hMAHtf2Fast=INVALID_HANDLE; // higher-timeframe alignment filter #2 (NEW 2026-11-21)
 int f_log=INVALID_HANDLE;
 
@@ -443,6 +467,23 @@ bool TFAligned(int dir,int hFast,int hSlow)
    if(CopyBuffer(hSlow,0,1,1,slow1)<1) return false;
    bool bullish=fast1[0]>slow1[0];
    return (dir>0) ? bullish : !bullish;
+}
+
+//+------------------------------------------------------------------+
+//| H1 price-vs-MA direction override (REVISED 2026-11-21, per user's   |
+//| own strategy description): reads HigherTFAlignment's CURRENT price   |
+//| vs its live MAFastPeriod(20) MA (hMAHtfFast, forming-bar value, same  |
+//| convention as GetMA()) and returns +1/-1 accordingly -- this becomes  |
+//| the basket's ACTUAL direction, which may differ from fallbackDir      |
+//| (the M3 cross's own direction). Falls back to fallbackDir only if the |
+//| MA value can't be read.                                               |
+//+------------------------------------------------------------------+
+int DecideFinalDir(int fallbackDir)
+{
+   double ma[1];
+   if(CopyBuffer(hMAHtfFast,0,0,1,ma)<1) return fallbackDir;
+   double bid=SymbolInfoDouble(_Symbol,SYMBOL_BID);
+   return (bid>ma[0]) ? +1 : -1;
 }
 
 //+------------------------------------------------------------------+
@@ -759,13 +800,12 @@ int OnInit()
    hATR   =iATR(_Symbol,Timeframe,StepATRPeriod);
    hMAFlipSlow=iMA(_Symbol,RegimeFlipTimeframe,MAPeriod,0,MODE_SMA,PRICE_CLOSE);
    hMAFlipFast=iMA(_Symbol,RegimeFlipTimeframe,MAFastPeriod,0,MODE_SMA,PRICE_CLOSE);
-   hMAHtfSlow =iMA(_Symbol,HigherTFAlignment,MAPeriod,0,MODE_SMA,PRICE_CLOSE);
    hMAHtfFast =iMA(_Symbol,HigherTFAlignment,MAFastPeriod,0,MODE_SMA,PRICE_CLOSE);
    hMAHtf2Slow=iMA(_Symbol,HigherTFAlignment2,MAPeriod,0,MODE_SMA,PRICE_CLOSE);
    hMAHtf2Fast=iMA(_Symbol,HigherTFAlignment2,MAFastPeriod,0,MODE_SMA,PRICE_CLOSE);
    if(hMA==INVALID_HANDLE || hMAFast==INVALID_HANDLE || hATR==INVALID_HANDLE ||
       hMAFlipSlow==INVALID_HANDLE || hMAFlipFast==INVALID_HANDLE ||
-      hMAHtfSlow==INVALID_HANDLE || hMAHtfFast==INVALID_HANDLE ||
+      hMAHtfFast==INVALID_HANDLE ||
       hMAHtf2Slow==INVALID_HANDLE || hMAHtf2Fast==INVALID_HANDLE) return INIT_FAILED;
 
    f_log=FileOpen("XAU_M3_MATOUCHGRID_test_LOG.csv",FILE_READ|FILE_WRITE|FILE_CSV|FILE_ANSI|FILE_SHARE_READ,',');
@@ -789,6 +829,7 @@ int OnInit()
        " | UseRegimeFlipExit="+(UseRegimeFlipExit?"true":"false")+" RegimeFlipMinProfitSteps="+DoubleToString(RegimeFlipMinProfitSteps,2)+
        " RegimeFlipTimeframe="+EnumToString(RegimeFlipTimeframe)+
        " | UseHigherTFAlignment="+(UseHigherTFAlignment?"true":"false")+" HigherTFAlignment="+EnumToString(HigherTFAlignment)+
+       " CounterTrendTPShrink="+DoubleToString(CounterTrendTPShrink,2)+
        " UseHigherTFAlignment2="+(UseHigherTFAlignment2?"true":"false")+" HigherTFAlignment2="+EnumToString(HigherTFAlignment2)+
        " | UseSkipHourKST="+(UseSkipHourKST?"true":"false")+" SkipHourStartKST="+IntegerToString(SkipHourStartKST)+
        " SkipHourEndKST="+IntegerToString(SkipHourEndKST)+
@@ -807,7 +848,6 @@ void OnDeinit(const int reason)
    if(hATR!=INVALID_HANDLE)        IndicatorRelease(hATR);
    if(hMAFlipSlow!=INVALID_HANDLE) IndicatorRelease(hMAFlipSlow);
    if(hMAFlipFast!=INVALID_HANDLE) IndicatorRelease(hMAFlipFast);
-   if(hMAHtfSlow!=INVALID_HANDLE)  IndicatorRelease(hMAHtfSlow);
    if(hMAHtfFast!=INVALID_HANDLE)  IndicatorRelease(hMAHtfFast);
    if(hMAHtf2Slow!=INVALID_HANDLE) IndicatorRelease(hMAHtf2Slow);
    if(hMAHtf2Fast!=INVALID_HANDLE) IndicatorRelease(hMAHtf2Fast);
@@ -875,18 +915,21 @@ void OnTick()
             }
          }
 
-         if(UseHigherTFAlignment && !TFAligned(g_awaitDir,hMAHtfFast,hMAHtfSlow))
+         //--- H1 price-vs-MA DECIDES the final direction (may override the M3
+         //    cross's own direction g_awaitDir -- see DecideFinalDir header).
+         int finalDir=g_awaitDir;
+         if(UseHigherTFAlignment) finalDir=DecideFinalDir(g_awaitDir);
+         bool isCounterTrend=(finalDir!=g_awaitDir);
+         if(isCounterTrend)
+            Log("H1_DIRECTION_OVERRIDE","M3 cross dir="+(g_awaitDir>0?"BUY":"SELL")+" -> H1 override dir="+(finalDir>0?"BUY":"SELL")+" (counter-trend, shrunk TP)");
+
+         if(UseHigherTFAlignment2 && !TFAligned(finalDir,hMAHtf2Fast,hMAHtf2Slow))
          {
-            Log("ENTRY_SKIPPED","HigherTFAlignment ("+EnumToString(HigherTFAlignment)+") not aligned with "+(g_awaitDir>0?"BUY":"SELL")+" -- episode stays armed, retry on a later touch");
-            return;
-         }
-         if(UseHigherTFAlignment2 && !TFAligned(g_awaitDir,hMAHtf2Fast,hMAHtf2Slow))
-         {
-            Log("ENTRY_SKIPPED","HigherTFAlignment2 ("+EnumToString(HigherTFAlignment2)+") not aligned with "+(g_awaitDir>0?"BUY":"SELL")+" -- episode stays armed, retry on a later touch");
+            Log("ENTRY_SKIPPED","HigherTFAlignment2 ("+EnumToString(HigherTFAlignment2)+") not aligned with "+(finalDir>0?"BUY":"SELL")+" -- episode stays armed, retry on a later touch");
             return;
          }
 
-         g_dir=g_awaitDir;
+         g_dir=finalDir;
          g_awaitDir=0; // consume -- only the FIRST touch after this cross enters
 
          if(!DoFirstEntry())
@@ -895,7 +938,13 @@ void OnTick()
             return;
          }
          double step=GetStep();
-         double tpCandidate=UseSwingTP ? (g_dir>0 ? SwingHigh(SwingLookbackBars) : SwingLow(SwingLookbackBars)) : 0;
+         double tpCandidate=0;
+         if(UseSwingTP)
+         {
+            double rawTarget=(g_dir>0) ? SwingHigh(SwingLookbackBars) : SwingLow(SwingLookbackBars);
+            if(rawTarget>0)
+               tpCandidate = isCounterTrend ? (g_p0+g_dir*MathAbs(rawTarget-g_p0)*CounterTrendTPShrink) : rawTarget;
+         }
          PlaceGrid(step,tpCandidate);
          return;
       }
