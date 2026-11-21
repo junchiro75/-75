@@ -212,8 +212,22 @@
 //| reference H1 specifically, e.g. the avoid-zone rule "1시간 이상봉 기본비+    |
 //| 장기이평"). At the moment of entry, H1's own 20/120 (MAFastPeriod/          |
 //| MAPeriod) alignment must match the entry direction, else that touch is    |
-//| skipped and the cross episode stays armed for a later one. Not yet        |
-//| backtested.                                                              |
+//| skipped and the cross episode stays armed for a later one.                |
+//|                                                                     |
+//| SEVENTH BACKTEST (2026-11-21, 7th revision as above, CONFIRMED WORKING -- |
+//| first clear edge of the whole session): NET +$18,986.09, PF 1.08931, RF   |
+//| 0.676713, Sharpe 0.74104, Balance DD 18.23% ($25,621.82) on 1,583         |
+//| baskets (-28% vs BT6), avg holding 11:05:23 (up from 8:20:33), win rate   |
+//| 48.33% (still near coin-flip) but avg win $302.71/avg loss -$256.98       |
+//| (payoff ratio ~1.18:1, up from BT6's ~1.03:1), max win $3,242.51. First   |
+//| time PF has cleared ~1.02 across all seven backtests -- H1 directional    |
+//| alignment is a genuine filter, not just noise reduction.                  |
+//|                                                                     |
+//| EIGHTH REVISION (2026-11-21, per user request): UseHigherTFAlignment2/    |
+//| HigherTFAlignment2 added -- a SECOND higher timeframe (default H4) that    |
+//| must ALSO be aligned with the entry direction (AND, not OR, with the      |
+//| H1 check). HigherTFAligned() generalized to TFAligned(dir,hFast,hSlow)    |
+//| so both checks share one implementation. Not yet backtested.              |
 //+------------------------------------------------------------------+
 #property strict
 #include <Trade/Trade.mqh>
@@ -246,9 +260,11 @@ input bool   UseRegimeFlipExit        = true; // if the regime flips AGAINST an 
 input double RegimeFlipMinProfitSteps = 0;    // 0 = breakeven ("본절"); positive = require a small profit margin first ("약수익") (TEST, untested)
 input ENUM_TIMEFRAMES RegimeFlipTimeframe = PERIOD_M15; // REVISED 2026-11-21: timeframe for the regime-flip check, DECOUPLED from the M3 entry cross. M3's own 20/120 cross flipped against 79% of baskets before they ever reached SL/TP (too noisy); the user also flagged H1 as too slow relative to typical basket lifetimes (1-5 hours) -- M15 is a first-guess middle ground, untested (TEST, untested)
 
-input group "=== Higher-timeframe alignment filter (NEW 2026-11-21, per 탑다운 분석 매뉴얼 docx: '탑다운 분석 방향과 일치하는지 확인' -- first scoped piece of the deferred multi-timeframe confluence, ONE timeframe only) ==="
+input group "=== Higher-timeframe alignment filter (NEW 2026-11-21, per 탑다운 분석 매뉴얼 docx: '탑다운 분석 방향과 일치하는지 확인'. 7th revision added H1 alone (NET $2,737->$18,986, PF 1.01->1.089, confirmed working); 8th revision adds a SECOND required timeframe, per user request) ==="
 input bool   UseHigherTFAlignment   = true;      // at the moment of entry, require HigherTFAlignment's own 20/120 (MAFastPeriod/MAPeriod) alignment to match the entry direction; mismatch skips this touch, episode stays armed for a later one (TEST, untested)
-input ENUM_TIMEFRAMES HigherTFAlignment = PERIOD_H1; // first guess -- the docx checks W/D/H8/H4/H2/H1/M30/M15 ALL simultaneously, which is far more restrictive than checking just one; H1 picked as the most directly implied single timeframe (both docs reference it specifically, e.g. the avoid-zone rule "1시간 이상봉 기본비+장기이평"), NEEDS USER CONFIRMATION (TEST, untested)
+input ENUM_TIMEFRAMES HigherTFAlignment = PERIOD_H1; // CONFIRMED working (7th backtest) -- the docx checks W/D/H8/H4/H2/H1/M30/M15 ALL simultaneously; this + HigherTFAlignment2 are a 2-timeframe scoped version (TEST, confirmed as a filter, exact TF choice still a guess)
+input bool   UseHigherTFAlignment2  = true;      // NEW 2026-11-21 (user request): a SECOND higher timeframe that must ALSO be aligned with the entry direction (TEST, untested)
+input ENUM_TIMEFRAMES HigherTFAlignment2 = PERIOD_H4; // first guess for the second required timeframe (TEST, untested)
 
 input group "=== Time filter (NEW 2026-11-21, per checklist '새벽 2시 이후 신규 금지'; window CONFIRMED by user as KST 02:00-08:00) ==="
 input bool   UseSkipHourKST       = true; // block NEW entries in [SkipHourStartKST,SkipHourEndKST) KST; does not affect baskets already open (TEST, untested)
@@ -294,7 +310,8 @@ datetime g_lastFlipBarSeen=0;
 
 int hMA=INVALID_HANDLE, hMAFast=INVALID_HANDLE, hATR=INVALID_HANDLE;
 int hMAFlipSlow=INVALID_HANDLE, hMAFlipFast=INVALID_HANDLE;
-int hMAHtfSlow=INVALID_HANDLE, hMAHtfFast=INVALID_HANDLE; // higher-timeframe alignment filter (NEW 2026-11-21)
+int hMAHtfSlow=INVALID_HANDLE, hMAHtfFast=INVALID_HANDLE;   // higher-timeframe alignment filter #1 (NEW 2026-11-21)
+int hMAHtf2Slow=INVALID_HANDLE, hMAHtf2Fast=INVALID_HANDLE; // higher-timeframe alignment filter #2 (NEW 2026-11-21)
 int f_log=INVALID_HANDLE;
 
 //+------------------------------------------------------------------+
@@ -413,16 +430,17 @@ void UpdateFlipRegime()
 
 //+------------------------------------------------------------------+
 //| Higher-timeframe alignment check (NEW 2026-11-21, per 탑다운 분석     |
-//| 매뉴얼 '탑다운 분석 방향과 일치하는지 확인'). Read fresh at entry time,   |
-//| not bar-cached -- this is only called once per prospective entry,    |
-//| not every tick. Returns true iff HigherTFAlignment's own 20/120       |
+//| 매뉴얼 '탑다운 분석 방향과 일치하는지 확인'; EXTENDED to a second         |
+//| required timeframe 2026-11-21 per user request). Read fresh at       |
+//| entry time, not bar-cached -- called once per prospective entry,     |
+//| not every tick. Returns true iff the given fast/slow MA pair's        |
 //| (closed-bar) alignment matches dir (bullish for BUY, bearish SELL).   |
 //+------------------------------------------------------------------+
-bool HigherTFAligned(int dir)
+bool TFAligned(int dir,int hFast,int hSlow)
 {
    double fast1[1],slow1[1];
-   if(CopyBuffer(hMAHtfFast,0,1,1,fast1)<1) return false;
-   if(CopyBuffer(hMAHtfSlow,0,1,1,slow1)<1) return false;
+   if(CopyBuffer(hFast,0,1,1,fast1)<1) return false;
+   if(CopyBuffer(hSlow,0,1,1,slow1)<1) return false;
    bool bullish=fast1[0]>slow1[0];
    return (dir>0) ? bullish : !bullish;
 }
@@ -743,9 +761,12 @@ int OnInit()
    hMAFlipFast=iMA(_Symbol,RegimeFlipTimeframe,MAFastPeriod,0,MODE_SMA,PRICE_CLOSE);
    hMAHtfSlow =iMA(_Symbol,HigherTFAlignment,MAPeriod,0,MODE_SMA,PRICE_CLOSE);
    hMAHtfFast =iMA(_Symbol,HigherTFAlignment,MAFastPeriod,0,MODE_SMA,PRICE_CLOSE);
+   hMAHtf2Slow=iMA(_Symbol,HigherTFAlignment2,MAPeriod,0,MODE_SMA,PRICE_CLOSE);
+   hMAHtf2Fast=iMA(_Symbol,HigherTFAlignment2,MAFastPeriod,0,MODE_SMA,PRICE_CLOSE);
    if(hMA==INVALID_HANDLE || hMAFast==INVALID_HANDLE || hATR==INVALID_HANDLE ||
       hMAFlipSlow==INVALID_HANDLE || hMAFlipFast==INVALID_HANDLE ||
-      hMAHtfSlow==INVALID_HANDLE || hMAHtfFast==INVALID_HANDLE) return INIT_FAILED;
+      hMAHtfSlow==INVALID_HANDLE || hMAHtfFast==INVALID_HANDLE ||
+      hMAHtf2Slow==INVALID_HANDLE || hMAHtf2Fast==INVALID_HANDLE) return INIT_FAILED;
 
    f_log=FileOpen("XAU_M3_MATOUCHGRID_test_LOG.csv",FILE_READ|FILE_WRITE|FILE_CSV|FILE_ANSI|FILE_SHARE_READ,',');
    if(f_log!=INVALID_HANDLE)
@@ -768,6 +789,7 @@ int OnInit()
        " | UseRegimeFlipExit="+(UseRegimeFlipExit?"true":"false")+" RegimeFlipMinProfitSteps="+DoubleToString(RegimeFlipMinProfitSteps,2)+
        " RegimeFlipTimeframe="+EnumToString(RegimeFlipTimeframe)+
        " | UseHigherTFAlignment="+(UseHigherTFAlignment?"true":"false")+" HigherTFAlignment="+EnumToString(HigherTFAlignment)+
+       " UseHigherTFAlignment2="+(UseHigherTFAlignment2?"true":"false")+" HigherTFAlignment2="+EnumToString(HigherTFAlignment2)+
        " | UseSkipHourKST="+(UseSkipHourKST?"true":"false")+" SkipHourStartKST="+IntegerToString(SkipHourStartKST)+
        " SkipHourEndKST="+IntegerToString(SkipHourEndKST)+
        " | Magic="+IntegerToString((int)MagicNumber)+" | orders="+(EnableLiveOrders?"ENABLED":"DRY"));
@@ -787,6 +809,8 @@ void OnDeinit(const int reason)
    if(hMAFlipFast!=INVALID_HANDLE) IndicatorRelease(hMAFlipFast);
    if(hMAHtfSlow!=INVALID_HANDLE)  IndicatorRelease(hMAHtfSlow);
    if(hMAHtfFast!=INVALID_HANDLE)  IndicatorRelease(hMAHtfFast);
+   if(hMAHtf2Slow!=INVALID_HANDLE) IndicatorRelease(hMAHtf2Slow);
+   if(hMAHtf2Fast!=INVALID_HANDLE) IndicatorRelease(hMAHtf2Fast);
 }
 
 void OnTradeTransaction(const MqlTradeTransaction &trans,const MqlTradeRequest &request,const MqlTradeResult &result)
@@ -851,9 +875,14 @@ void OnTick()
             }
          }
 
-         if(UseHigherTFAlignment && !HigherTFAligned(g_awaitDir))
+         if(UseHigherTFAlignment && !TFAligned(g_awaitDir,hMAHtfFast,hMAHtfSlow))
          {
             Log("ENTRY_SKIPPED","HigherTFAlignment ("+EnumToString(HigherTFAlignment)+") not aligned with "+(g_awaitDir>0?"BUY":"SELL")+" -- episode stays armed, retry on a later touch");
+            return;
+         }
+         if(UseHigherTFAlignment2 && !TFAligned(g_awaitDir,hMAHtf2Fast,hMAHtf2Slow))
+         {
+            Log("ENTRY_SKIPPED","HigherTFAlignment2 ("+EnumToString(HigherTFAlignment2)+") not aligned with "+(g_awaitDir>0?"BUY":"SELL")+" -- episode stays armed, retry on a later touch");
             return;
          }
 
