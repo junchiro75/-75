@@ -186,8 +186,34 @@
 //| regime-flip check from the M3 entry cross entirely -- M3 still drives     |
 //| ARM/entry, a SEPARATE M15 20/120 cross (own handles, own bar-cadence      |
 //| tracking) drives ONLY the regime-flip-against-basket detection. M15 is    |
-//| a first-guess middle ground between M3 (too noisy) and H1 (too slow),    |
-//| not yet backtested.                                                      |
+//| a first-guess middle ground between M3 (too noisy) and H1 (too slow).    |
+//|                                                                     |
+//| SIXTH BACKTEST (2026-11-21, 6th revision as above): NET +$2,736.52, PF    |
+//| 1.010037, RF 0.117275, Sharpe 0.100096, Balance DD 18.40% ($22,169.95,    |
+//| best of backtests 3/5/6) on 2,188 baskets, avg holding 8:20:33 (was       |
+//| 2:26:09), win rate 49.86% (near coin-flip), avg win $252.42/avg loss      |
+//| -$245.56 (nearly symmetric). Close-reason tally: SL 804 (37%), TP 604     |
+//| (28%, up sharply from BT3's 3.8%), REGIME_FLIP ~780 (36%) -- a much       |
+//| healthier three-way split than BT5's 79% regime-flip domination; M15      |
+//| fixed the over-triggering as intended. But PF~1.01 again -- across SIX    |
+//| backtests spanning very different exit configurations (unconditional     |
+//| breakeven, regime-flip-only on M3, regime-flip-only on M15), the          |
+//| mechanical 20/120-cross + 120MA-touch + DCA-grid signal itself keeps      |
+//| converging to PF~1.00-1.01, i.e. no real edge before costs, regardless    |
+//| of exit tuning. This points at the ENTRY side, not further exit           |
+//| iteration, as where the actual edge (if any) must come from.              |
+//|                                                                     |
+//| SEVENTH REVISION (2026-11-21, user's choice from two deferred options --  |
+//| higher-TF alignment vs the avoid-zones filter -- picked alignment         |
+//| first): UseHigherTFAlignment/HigherTFAlignment added, per 탑다운 분석       |
+//| 매뉴얼's "탑다운 분석 방향과 일치하는지 확인". The docx checks NINE             |
+//| timeframes (주/일/8H/4H/2H/1H/30M/15M) simultaneously; this is a scoped    |
+//| first pass checking only ONE (default H1, a guess -- both documents       |
+//| reference H1 specifically, e.g. the avoid-zone rule "1시간 이상봉 기본비+    |
+//| 장기이평"). At the moment of entry, H1's own 20/120 (MAFastPeriod/          |
+//| MAPeriod) alignment must match the entry direction, else that touch is    |
+//| skipped and the cross episode stays armed for a later one. Not yet        |
+//| backtested.                                                              |
 //+------------------------------------------------------------------+
 #property strict
 #include <Trade/Trade.mqh>
@@ -219,6 +245,10 @@ input group "=== Regime-flip breakeven exit (RENAMED 2026-11-21: UseBreakevenExi
 input bool   UseRegimeFlipExit        = true; // if the regime flips AGAINST an open basket's direction, close immediately once avg price reaches breakeven+RegimeFlipMinProfitSteps; while still aligned, UseSwingTP/hard SL are the ONLY exits (TEST, untested)
 input double RegimeFlipMinProfitSteps = 0;    // 0 = breakeven ("본절"); positive = require a small profit margin first ("약수익") (TEST, untested)
 input ENUM_TIMEFRAMES RegimeFlipTimeframe = PERIOD_M15; // REVISED 2026-11-21: timeframe for the regime-flip check, DECOUPLED from the M3 entry cross. M3's own 20/120 cross flipped against 79% of baskets before they ever reached SL/TP (too noisy); the user also flagged H1 as too slow relative to typical basket lifetimes (1-5 hours) -- M15 is a first-guess middle ground, untested (TEST, untested)
+
+input group "=== Higher-timeframe alignment filter (NEW 2026-11-21, per 탑다운 분석 매뉴얼 docx: '탑다운 분석 방향과 일치하는지 확인' -- first scoped piece of the deferred multi-timeframe confluence, ONE timeframe only) ==="
+input bool   UseHigherTFAlignment   = true;      // at the moment of entry, require HigherTFAlignment's own 20/120 (MAFastPeriod/MAPeriod) alignment to match the entry direction; mismatch skips this touch, episode stays armed for a later one (TEST, untested)
+input ENUM_TIMEFRAMES HigherTFAlignment = PERIOD_H1; // first guess -- the docx checks W/D/H8/H4/H2/H1/M30/M15 ALL simultaneously, which is far more restrictive than checking just one; H1 picked as the most directly implied single timeframe (both docs reference it specifically, e.g. the avoid-zone rule "1시간 이상봉 기본비+장기이평"), NEEDS USER CONFIRMATION (TEST, untested)
 
 input group "=== Time filter (NEW 2026-11-21, per checklist '새벽 2시 이후 신규 금지'; window CONFIRMED by user as KST 02:00-08:00) ==="
 input bool   UseSkipHourKST       = true; // block NEW entries in [SkipHourStartKST,SkipHourEndKST) KST; does not affect baskets already open (TEST, untested)
@@ -264,6 +294,7 @@ datetime g_lastFlipBarSeen=0;
 
 int hMA=INVALID_HANDLE, hMAFast=INVALID_HANDLE, hATR=INVALID_HANDLE;
 int hMAFlipSlow=INVALID_HANDLE, hMAFlipFast=INVALID_HANDLE;
+int hMAHtfSlow=INVALID_HANDLE, hMAHtfFast=INVALID_HANDLE; // higher-timeframe alignment filter (NEW 2026-11-21)
 int f_log=INVALID_HANDLE;
 
 //+------------------------------------------------------------------+
@@ -378,6 +409,22 @@ void UpdateFlipRegime()
          Log("REGIME_FLIPPED_AGAINST_BASKET","("+EnumToString(RegimeFlipTimeframe)+") basket dir="+(g_dir>0?"BUY":"SELL")+" -- will close at breakeven+"+DoubleToString(RegimeFlipMinProfitSteps,2)+" steps ASAP");
       }
    }
+}
+
+//+------------------------------------------------------------------+
+//| Higher-timeframe alignment check (NEW 2026-11-21, per 탑다운 분석     |
+//| 매뉴얼 '탑다운 분석 방향과 일치하는지 확인'). Read fresh at entry time,   |
+//| not bar-cached -- this is only called once per prospective entry,    |
+//| not every tick. Returns true iff HigherTFAlignment's own 20/120       |
+//| (closed-bar) alignment matches dir (bullish for BUY, bearish SELL).   |
+//+------------------------------------------------------------------+
+bool HigherTFAligned(int dir)
+{
+   double fast1[1],slow1[1];
+   if(CopyBuffer(hMAHtfFast,0,1,1,fast1)<1) return false;
+   if(CopyBuffer(hMAHtfSlow,0,1,1,slow1)<1) return false;
+   bool bullish=fast1[0]>slow1[0];
+   return (dir>0) ? bullish : !bullish;
 }
 
 //+------------------------------------------------------------------+
@@ -694,8 +741,11 @@ int OnInit()
    hATR   =iATR(_Symbol,Timeframe,StepATRPeriod);
    hMAFlipSlow=iMA(_Symbol,RegimeFlipTimeframe,MAPeriod,0,MODE_SMA,PRICE_CLOSE);
    hMAFlipFast=iMA(_Symbol,RegimeFlipTimeframe,MAFastPeriod,0,MODE_SMA,PRICE_CLOSE);
+   hMAHtfSlow =iMA(_Symbol,HigherTFAlignment,MAPeriod,0,MODE_SMA,PRICE_CLOSE);
+   hMAHtfFast =iMA(_Symbol,HigherTFAlignment,MAFastPeriod,0,MODE_SMA,PRICE_CLOSE);
    if(hMA==INVALID_HANDLE || hMAFast==INVALID_HANDLE || hATR==INVALID_HANDLE ||
-      hMAFlipSlow==INVALID_HANDLE || hMAFlipFast==INVALID_HANDLE) return INIT_FAILED;
+      hMAFlipSlow==INVALID_HANDLE || hMAFlipFast==INVALID_HANDLE ||
+      hMAHtfSlow==INVALID_HANDLE || hMAHtfFast==INVALID_HANDLE) return INIT_FAILED;
 
    f_log=FileOpen("XAU_M3_MATOUCHGRID_test_LOG.csv",FILE_READ|FILE_WRITE|FILE_CSV|FILE_ANSI|FILE_SHARE_READ,',');
    if(f_log!=INVALID_HANDLE)
@@ -717,6 +767,7 @@ int OnInit()
        " MinSwingTPStep="+DoubleToString(MinSwingTPStep,2)+
        " | UseRegimeFlipExit="+(UseRegimeFlipExit?"true":"false")+" RegimeFlipMinProfitSteps="+DoubleToString(RegimeFlipMinProfitSteps,2)+
        " RegimeFlipTimeframe="+EnumToString(RegimeFlipTimeframe)+
+       " | UseHigherTFAlignment="+(UseHigherTFAlignment?"true":"false")+" HigherTFAlignment="+EnumToString(HigherTFAlignment)+
        " | UseSkipHourKST="+(UseSkipHourKST?"true":"false")+" SkipHourStartKST="+IntegerToString(SkipHourStartKST)+
        " SkipHourEndKST="+IntegerToString(SkipHourEndKST)+
        " | Magic="+IntegerToString((int)MagicNumber)+" | orders="+(EnableLiveOrders?"ENABLED":"DRY"));
@@ -734,6 +785,8 @@ void OnDeinit(const int reason)
    if(hATR!=INVALID_HANDLE)        IndicatorRelease(hATR);
    if(hMAFlipSlow!=INVALID_HANDLE) IndicatorRelease(hMAFlipSlow);
    if(hMAFlipFast!=INVALID_HANDLE) IndicatorRelease(hMAFlipFast);
+   if(hMAHtfSlow!=INVALID_HANDLE)  IndicatorRelease(hMAHtfSlow);
+   if(hMAHtfFast!=INVALID_HANDLE)  IndicatorRelease(hMAHtfFast);
 }
 
 void OnTradeTransaction(const MqlTradeTransaction &trans,const MqlTradeRequest &request,const MqlTradeResult &result)
@@ -796,6 +849,12 @@ void OnTick()
                Log("ENTRY_SKIPPED","KST hour in ["+IntegerToString(SkipHourStartKST)+","+IntegerToString(SkipHourEndKST)+") -- episode stays armed, retry on a later touch");
                return;
             }
+         }
+
+         if(UseHigherTFAlignment && !HigherTFAligned(g_awaitDir))
+         {
+            Log("ENTRY_SKIPPED","HigherTFAlignment ("+EnumToString(HigherTFAlignment)+") not aligned with "+(g_awaitDir>0?"BUY":"SELL")+" -- episode stays armed, retry on a later touch");
+            return;
          }
 
          g_dir=g_awaitDir;
