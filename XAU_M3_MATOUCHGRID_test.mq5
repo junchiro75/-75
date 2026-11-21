@@ -22,10 +22,15 @@
 //|     UseATRStep (step=ATR(StepATRPeriod)*StepATRMult, price units)   |
 //|     or, if false, a fixed GridStepPoints. The manual tool's author   |
 //|     described eyeballing recent volatility and re-typing the step    |
-//|     by hand (~50pt variance range / 5 steps = 10pt step in their own |
-//|     example, matching GridStepPoints=10's default here) -- ATR is    |
-//|     the natural automatic stand-in for that eyeballed volatility     |
-//|     read, but the StepATRMult=0.2 default is an UNVALIDATED guess.   |
+//|     by hand (~$50 variance range / 5 steps = $10 step in their own   |
+//|     example -- trader "포인트"=$1 for gold, matching GridStepPoints=  |
+//|     1000's default here, i.e. 1000*_Point=$10 on this 2-decimal-     |
+//|     digit symbol). ATR is the natural automatic stand-in for that    |
+//|     eyeballed volatility read, but the original StepATRMult=0.2      |
+//|     default produced only ~$0.12 (100x too small, see first-backtest |
+//|     note below) -- UNRESOLVED how to rescale ATR-based step properly;|
+//|     UseATRStep=false with the corrected GridStepPoints=1000 is the   |
+//|     safer next test.                                                 |
 //|  3) EXIT: the manual tool had NO take-profit mechanism at all        |
 //|     (purely discretionary). UseBasketTrailStop is a NEW addition,    |
 //|     not in the original tool, needed to make this backtestable:      |
@@ -64,6 +69,21 @@
 //| backtest shows pathological immediate-re-entry churn right at the     |
 //| shared-SL exit price, a CooldownBars input is the straightforward      |
 //| fix, deferred until that's actually observed.                         |
+//|                                                                     |
+//| FIRST BACKTEST (2026-11-21, StepATRMult=0.2/TrailTriggerStep=1.0/     |
+//| TrailDistanceStep=0.5, REJECTED): NET -$61,760.29, PF 0.885345, RF    |
+//| -0.725167, Sharpe -5.0, Balance DD 85.14% ($85,142.47) on 64,281      |
+//| baskets (2025.01-2026.10), avg holding time 1:36 (min 1 second).      |
+//| Order-level inspection found a UNIT-SCALE BUG: GridStepPoints and the |
+//| ATR-based step both multiply by MQL5's native _Point (=$0.01 on this  |
+//| 2-decimal-digit symbol), but the cafe-post example this was built     |
+//| from ("변동폭 50포인트, 10포인트 간격") uses trader convention where 1  |
+//| "포인트"=$1 for gold -- a 100x mismatch. The actual ATR-based step     |
+//| that ran was ~$0.12 (confirmed from grid-leg level/SL spacing in the  |
+//| report), not the ~$10 the article's own example implies, so the whole |
+//| grid/trail structure operated at tick-noise scale instead of genuine  |
+//| swing scale. This is the dominant cause of the overtrading/DD, well   |
+//| above the trail-vs-step tightness also present at that scale.         |
 //+------------------------------------------------------------------+
 #property strict
 #include <Trade/Trade.mqh>
@@ -78,7 +98,7 @@ input group "=== Grid step sizing (manual tool had a user-typed box; this automa
 input bool   UseATRStep          = true;  // true: step=ATR(StepATRPeriod)*StepATRMult (price units); false: fixed GridStepPoints (TEST, untested)
 input int    StepATRPeriod       = 14;    // (TEST, untested)
 input double StepATRMult         = 0.2;   // first-guess only, no backtest run yet (TEST, untested)
-input double GridStepPoints      = 10;    // used only when UseATRStep=false, in points (matches manual tool author's own "10포인트 간격" example) (TEST, untested)
+input double GridStepPoints      = 1000;  // used only when UseATRStep=false; multiplied by _Point (=$0.01 on this symbol), so 1000 = $10 -- trader convention is 1 "포인트"=$1 for gold, NOT MQL5's native _Point; matches manual tool author's own "10포인트 간격"=$10 example (REVISED from 10=$0.10 after first backtest's 100x unit-scale bug, see header) (TEST, untested)
 
 input group "=== Grid/basket structure (same semantics as MATouchGridManual_EA.mq5) ==="
 input double Lots                = 0.1;   // lot size, SAME for every leg (first entry + all grid legs) -- max basket exposure = Lots*(1+GridCount) (TEST, untested)
