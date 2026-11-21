@@ -129,9 +129,7 @@
 //|    ("역배열: 본절 or 약수익 오면 즉시 정리") rather than waiting on the     |
 //|    normal swing TP or the gentler breakeven-recovery arm/trail.         |
 //|  - UseSkipHourKST added, per "새벽 2시 이후 신규 금지": blocks NEW         |
-//|    entries in a KST window. The source gives a start (02:00) but NO     |
-//|    end hour -- SkipHourEndKST is a GUESS (09:00, the low-liquidity      |
-//|    pre-Tokyo/London window), flagged for the user to confirm/correct.   |
+//|    entries in [02:00,08:00) KST, window CONFIRMED BY USER (2026-11-21). |
 //|  - NOT IMPLEMENTED (scope flagged, needs the user's input before        |
 //|    building): the "탑다운 분석 매뉴얼" docx describes a FULL 9-timeframe  |
 //|    (주/일/8H/4H/2H/1H/30M/15M/3M) cascade, each checked for 5 things     |
@@ -183,10 +181,10 @@ input group "=== Regime-flip handling (NEW 2026-11-21, per checklist '04 정배/
 input bool   UseRegimeFlipExit        = true; // if the 20/120 regime flips AGAINST an open basket's direction, close immediately once avg price reaches breakeven+RegimeFlipMinProfitSteps, instead of waiting on UseSwingTP/UseBreakevenExit (TEST, untested)
 input double RegimeFlipMinProfitSteps = 0;    // 0 = breakeven ("본절"); positive = require a small profit margin first ("약수익") (TEST, untested)
 
-input group "=== Time filter (NEW 2026-11-21, per checklist '새벽 2시 이후 신규 금지' -- end hour NOT given in source, GUESSED) ==="
+input group "=== Time filter (NEW 2026-11-21, per checklist '새벽 2시 이후 신규 금지'; window CONFIRMED by user as KST 02:00-08:00) ==="
 input bool   UseSkipHourKST       = true; // block NEW entries in [SkipHourStartKST,SkipHourEndKST) KST; does not affect baskets already open (TEST, untested)
 input int    SkipHourStartKST     = 2;    // source says "2시 이후" -- this part is direct (TEST, untested)
-input int    SkipHourEndKST       = 9;    // GUESSED (not specified in source) -- picked to span the low-liquidity window before Tokyo/London; NEEDS USER CONFIRMATION (TEST, untested)
+input int    SkipHourEndKST       = 8;    // CONFIRMED by user (2026-11-21): block [02:00,08:00) KST (TEST, untested)
 
 input group "=== Misc ==="
 input ulong  MagicNumber          = 95016300; // Magic number (unused by any other model in this repo)
