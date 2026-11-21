@@ -351,6 +351,53 @@
 //| across the backtest's 2025.01.01-2026.12.31 span; if that logs 0, this    |
 //| filter is a silent no-op and the feature does not work in this tester.    |
 //| Not yet backtested.                                                      |
+//|                                                                     |
+//| FOURTEENTH BACKTEST (2026-11-21, UseAvoidEconCalendar=true test):         |
+//| result was BYTE-IDENTICAL to the zone-1-only baseline (NET $31,651.25,    |
+//| PF 1.338244, RF 2.117905, 976 trades, all to the decimal) -- CONFIRMS     |
+//| the filter never fired even once. Strategy Tester has no calendar data    |
+//| cached for this period/symbol; the feature may still work live but is    |
+//| unverifiable in this tester. Set aside per user request, not removed.    |
+//|                                                                     |
+//| FIFTEENTH BACKTEST (2026-11-21, UseHigherTFAlignment2=false test, H4      |
+//| gate removed, everything else at the confirmed baseline): baskets        |
+//| 429->670 (+56%), but NET $31,651.25->$11,756.32 (-63%), PF 1.338->1.087,  |
+//| RF 2.118->0.611, Sharpe 1.938->0.673, Balance DD 9.88%->13.82%, Equity DD |
+//| 11.75%->15.67%. H4 alignment CONFIRMED to earn its keep (filters bad      |
+//| trades, not just volume) -- reverted, stays true going forward.           |
+//|                                                                     |
+//| BASKET-DEPTH DIAGNOSTIC (2026-11-21, custom Python reconstruction of the  |
+//| zone-1-only baseline's order/deal tables, 429 baskets): close reason      |
+//| breakdown -- SL 196 (45.7%, ALL losses, sum -$88,212.90, avg -$450.07),   |
+//| FLIP/regime-flip-exit 166 (38.7%, 97.6% win rate, sum +$97,767.50, the    |
+//| SINGLE BIGGEST profit source, bigger than TP), TP 66 (15.4%, 100% win     |
+//| rate, sum +$20,029.30). By depth reached: 1-leg (114) and 2-leg (83)      |
+//| baskets have a 0% SL rate and are PURE PROFIT ($87,851.20 combined,       |
+//| zero losses); ALL 196 SL losses -- and 84.5% of the 232 full-depth        |
+//| (3-leg) baskets -- occur ONLY once every grid leg has filled. An earlier  |
+//| IQR-outlier pass (26 baskets, 6%, contributing +$74,173.20) had looked    |
+//| like a few lucky trades carried the whole backtest, but re-examined by    |
+//| close reason that turned out to be the FLIP mechanism working exactly as  |
+//| designed (92% of those outliers closed via FLIP, avg hold 96.3h) -- not   |
+//| noise. This depth breakdown directly motivated the 16th revision below.   |
+//|                                                                     |
+//| SIXTEENTH REVISION (2026-11-21, per user request, directly targeting the  |
+//| basket-depth diagnostic above): two new checks, both reusing             |
+//| BadSignalAgainstDir(dir) -- true if ANY of M3's own 20/120 cross, H1's    |
+//| price-vs-20MA, or H4's fast/slow MA cross now disagrees with dir (NOT     |
+//| the H1 BB4 exhaustion signal, which is an entry-timing trick, not a       |
+//| sustained regime read). (1) UseLastLegConfirm: right before the LAST      |
+//| grid leg would fill (GridCount-1 legs already in, one pending), re-run    |
+//| BadSignalAgainstDir -- if true, cancel that leg so the basket caps below  |
+//| the full-depth cohort where ALL SL losses occur. (2) UseFullDepthBad-     |
+//| SignalExit: once a basket DOES reach full depth, if BadSignalAgainstDir   |
+//| fires, arm the SAME breakeven-or-better close as UseRegimeFlipExit (sets  |
+//| g_regimeFlippedAgainstBasket) -- a second, faster-reacting trigger source |
+//| alongside RegimeFlipTimeframe's own slower M15 cross, not a replacement   |
+//| for it. User's own framing: "구간매매하는 사람들" re-check direction        |
+//| mid-ladder and bail at breakeven if it looks wrong, maximize if it still  |
+//| looks right -- this is that, built on the exact depth/reason split found  |
+//| above. Not yet backtested.                                               |
 //+------------------------------------------------------------------+
 #property strict
 #include <Trade/Trade.mqh>
@@ -382,6 +429,10 @@ input group "=== Regime-flip breakeven exit (RENAMED 2026-11-21: UseBreakevenExi
 input bool   UseRegimeFlipExit        = true; // if the regime flips AGAINST an open basket's direction, close immediately once avg price reaches breakeven+RegimeFlipMinProfitSteps; while still aligned, UseSwingTP/hard SL are the ONLY exits (TEST, untested)
 input double RegimeFlipMinProfitSteps = 0;    // 0 = breakeven ("본절"); positive = require a small profit margin first ("약수익") (TEST, untested)
 input ENUM_TIMEFRAMES RegimeFlipTimeframe = PERIOD_M15; // REVISED 2026-11-21: timeframe for the regime-flip check, DECOUPLED from the M3 entry cross. M3's own 20/120 cross flipped against 79% of baskets before they ever reached SL/TP (too noisy); the user also flagged H1 as too slow relative to typical basket lifetimes (1-5 hours) -- M15 is a first-guess middle ground, untested (TEST, untested)
+
+input group "=== Late-grid direction re-confirm (NEW 2026-11-21, per user request, motivated by a basket-depth breakdown showing ALL SL losses -- 84.5% of full-depth baskets, $0 losses below full depth -- occur only once every grid leg has filled; '구간매매' traders reportedly re-check direction mid-ladder and bail at breakeven if it looks wrong) ==="
+input bool   UseLastLegConfirm        = true; // right before the LAST grid leg (GridCount-th) is allowed to fill, re-check that M3's own 20/120 cross, H1's price-vs-20MA, and H4's fast/slow MA cross (ANY one disagreeing counts) still agree with the basket direction g_dir -- if not, cancel that leg's pending order so the basket caps at GridCount-1 legs instead of reaching the full-depth cohort where all SL losses occur (TEST, untested, user-specified logic)
+input bool   UseFullDepthBadSignalExit = true; // once the basket reaches FULL depth (every grid leg filled) AND the SAME M3/H1/H4 bad-signal check fires, arm the SAME breakeven-or-better close as UseRegimeFlipExit (reuses g_regimeFlippedAgainstBasket + RegimeFlipMinProfitSteps) -- an ADDITIONAL, faster-reacting trigger source alongside RegimeFlipTimeframe's own cross, not a replacement for it (TEST, untested, user-specified logic)
 
 input group "=== H1 price-vs-MA direction override (REVISED 2026-11-21, REPLACES the 7th revision's H1 skip-gate per user's own strategy description) ==="
 input bool   UseHigherTFAlignment   = true;      // at the moment of entry, HigherTFAlignment's CURRENT price vs its own MAFastPeriod(20) MA DETERMINES the final trade direction -- overrides the M3 cross's direction when they disagree, rather than skipping (TEST, untested, user-specified logic)
@@ -451,6 +502,7 @@ bool     g_flipRegimeKnown=false;
 bool     g_flipRegimeBullish=false;
 bool     g_regimeFlippedAgainstBasket=false; // set true when the RegimeFlipTimeframe regime flips while GS_BASKET is open and no longer matches g_dir
 datetime g_lastFlipBarSeen=0;
+bool     g_lastLegChecked=false; // NEW 2026-11-21: consumed once per basket by the UseLastLegConfirm re-check right before the LAST grid leg is allowed to fill
 
 int hMA=INVALID_HANDLE, hMAFast=INVALID_HANDLE, hATR=INVALID_HANDLE;
 int hMAFlipSlow=INVALID_HANDLE, hMAFlipFast=INVALID_HANDLE;
@@ -636,6 +688,24 @@ int DecideFinalDirByBB4(int crossDir,bool &fired)
 }
 
 //+------------------------------------------------------------------+
+//| Late-grid re-confirm signal (NEW 2026-11-21, per user request):    |
+//| true if ANY of M3's own 20/120 cross (g_regimeBullish), H1's       |
+//| live price-vs-20MA (DecideFinalDir), or H4's fast/slow MA cross    |
+//| (TFAligned) now disagrees with dir. Used both to gate the LAST     |
+//| grid leg (UseLastLegConfirm) and to arm an early breakeven exit    |
+//| once a basket is at full depth (UseFullDepthBadSignalExit). Does   |
+//| NOT include the H1 BB4 exhaustion signal -- that is an entry-timing|
+//| trick, not a sustained regime read.                                |
+//+------------------------------------------------------------------+
+bool BadSignalAgainstDir(int dir)
+{
+   if(g_regimeKnown && (g_regimeBullish!=(dir>0))) return true;
+   if(DecideFinalDir(dir)!=dir) return true;
+   if(!TFAligned(dir,hMAHtf2Fast,hMAHtf2Slow)) return true;
+   return false;
+}
+
+//+------------------------------------------------------------------+
 //| Avoid zone #1 (NEW 2026-11-21, per checklist '피해야 할 구간 4가지'    |
 //| #1 "1시간 이상봉 기본비+장기이평"): true if HigherTFAlignment's BB4      |
 //| upper OR lower band sits within AvoidBB4MAOverlapPts of its own       |
@@ -773,6 +843,25 @@ void DeletePendings()
    }
 }
 
+//+------------------------------------------------------------------+
+//| Cancel just the LAST grid leg's pending order (NEW 2026-11-21, for |
+//| UseLastLegConfirm) -- leaves any already-filled legs and any       |
+//| earlier-numbered pending legs untouched.                           |
+//+------------------------------------------------------------------+
+void DeleteLastLegPending()
+{
+   string cmt=StringFormat("MTG_G%d",GridCount);
+   for(int i=OrdersTotal()-1;i>=0;i--)
+   {
+      ulong t=OrderGetTicket(i);
+      if(t==0 || !OrderSelect(t)) continue;
+      if(!IsMine((ulong)OrderGetInteger(ORDER_MAGIC),OrderGetString(ORDER_SYMBOL))) continue;
+      if(OrderGetString(ORDER_COMMENT)!=cmt) continue;
+      if(!trade.OrderDelete(t))
+         Log("LASTLEG_DELETE_FAIL",IntegerToString((int)trade.ResultRetcode())+" #"+IntegerToString((long)t));
+   }
+}
+
 void CloseAllPositions()
 {
    for(int i=PositionsTotal()-1;i>=0;i--)
@@ -826,6 +915,7 @@ void PlaceGrid(double step,double tpCandidate)
    g_step=step;
    g_sl=NP(g_p0-g_dir*SLMult*step);
    g_basketOpenTime=TimeCurrent();
+   g_lastLegChecked=false; // NEW 2026-11-21: re-arm the UseLastLegConfirm check for this fresh basket
 
    //--- validate the swing-extreme TP: must be favorable by at least
    //    MinSwingTPStep steps from P0, else there's no real target to give
@@ -913,6 +1003,38 @@ void PlaceGrid(double step,double tpCandidate)
 //+------------------------------------------------------------------+
 void UpdateBasketExits()
 {
+   //--- Late-grid re-confirm (NEW 2026-11-21, per user request): right before
+   //    the LAST grid leg would fill (P0 + GridCount-1 legs already filled,
+   //    one pending leg left), re-check M3/H1/H4 still agree with g_dir.
+   //    Basket-depth breakdown showed ALL SL losses (84.5% of full-depth
+   //    baskets, $0 below full depth) happen only once every leg has filled --
+   //    this targets exactly that transition.
+   if(UseLastLegConfirm && !g_lastLegChecked && GridCount>=1 && CountPositions()==GridCount)
+   {
+      g_lastLegChecked=true;
+      if(BadSignalAgainstDir(g_dir))
+      {
+         Log("LASTLEG_RECONFIRM_FAIL","M3/H1/H4 no longer agree with "+(g_dir>0?"BUY":"SELL")+" after "+IntegerToString(GridCount-1)+" grid leg(s) -- canceling the last leg");
+         DeleteLastLegPending();
+      }
+      else
+         Log("LASTLEG_RECONFIRM_OK","direction still confirmed after "+IntegerToString(GridCount-1)+" grid leg(s) -- last leg stays armed");
+   }
+
+   //--- Full-depth bad-signal early exit (NEW 2026-11-21, per user request,
+   //    "구간매매" convention -- re-check mid-ladder, bail at breakeven if
+   //    wrong): once every leg is filled, if the SAME M3/H1/H4 signal turns
+   //    against g_dir, arm the SAME breakeven-or-better close as
+   //    UseRegimeFlipExit below. An ADDITIONAL, faster trigger source
+   //    alongside RegimeFlipTimeframe's own (slower) cross -- not a
+   //    replacement for it.
+   if(UseFullDepthBadSignalExit && !g_regimeFlippedAgainstBasket &&
+      CountPositions()==GridCount+1 && BadSignalAgainstDir(g_dir))
+   {
+      Log("FULLDEPTH_BADSIGNAL_FLAG","M3/H1/H4 turned against "+(g_dir>0?"BUY":"SELL")+" at full depth -- arming breakeven-or-better close");
+      g_regimeFlippedAgainstBasket=true;
+   }
+
    double sumVolPrice=0, sumVol=0;
    for(int i=PositionsTotal()-1;i>=0;i--)
    {
@@ -1046,6 +1168,7 @@ int OnInit()
        " MinSwingTPStep="+DoubleToString(MinSwingTPStep,2)+
        " | UseRegimeFlipExit="+(UseRegimeFlipExit?"true":"false")+" RegimeFlipMinProfitSteps="+DoubleToString(RegimeFlipMinProfitSteps,2)+
        " RegimeFlipTimeframe="+EnumToString(RegimeFlipTimeframe)+
+       " | UseLastLegConfirm="+(UseLastLegConfirm?"true":"false")+" UseFullDepthBadSignalExit="+(UseFullDepthBadSignalExit?"true":"false")+
        " | UseHigherTFAlignment="+(UseHigherTFAlignment?"true":"false")+" HigherTFAlignment="+EnumToString(HigherTFAlignment)+
        " CounterTrendTPShrink="+DoubleToString(CounterTrendTPShrink,2)+
        " UseHtfBB4Exhaustion="+(UseHtfBB4Exhaustion?"true":"false")+
