@@ -445,6 +445,19 @@
 //| UseProfitTrail default CHANGED to false; reverted to the confirmed        |
 //| 17th-revision baseline (UseLastLegConfirm=true, UseFullDepthBadSignal-    |
 //| Exit=false, everything else unchanged).                                  |
+//|                                                                     |
+//| TWENTIETH REVISION (2026-11-22, DIAGNOSTIC ONLY, no behavior change, per   |
+//| user request): g_peakFavSteps tracks the running max of favSteps (the    |
+//| same favorable-distance-in-steps already used by UseProfitTrail/         |
+//| UseRegimeFlipExit) over each basket's WHOLE life, logged on the existing  |
+//| BASKET_CLOSED line as "peakFavSteps=". Goal: cross-reference against     |
+//| which baskets closed via SL (per the deals table's "sl ..." comment) to  |
+//| find the average max-favorable-excursion among baskets that EVENTUALLY   |
+//| lost, as a possible data-driven profit-lock threshold (the 19th          |
+//| backtest's guessed $50/$10 trail was rejected -- this is step 1 toward a  |
+//| better-calibrated number instead of another guess). Needs the EA's own   |
+//| XAU_M3_MATOUCHGRID_test_LOG.csv (not the Strategy Tester's xlsx report)   |
+//| to read back -- not yet backtested/analyzed.                            |
 //+------------------------------------------------------------------+
 #property strict
 #include <Trade/Trade.mqh>
@@ -557,6 +570,7 @@ datetime g_lastFlipBarSeen=0;
 bool     g_lastLegChecked=false; // NEW 2026-11-21: consumed once per basket by the UseLastLegConfirm re-check right before the LAST grid leg is allowed to fill
 bool     g_profitTrailArmed=false;    // NEW 2026-11-21: true once favSteps has ever reached ProfitTrailActivateSteps for the current basket
 double   g_profitTrailBestPrice=0;    // NEW 2026-11-21: best (most favorable) price seen since the trail armed
+double   g_peakFavSteps=-1000000;     // NEW 2026-11-22: diagnostic-only (no behavior change) -- running max of favSteps over the basket's whole life, logged at BASKET_CLOSED so SL-destined baskets' max favorable excursion can be analyzed afterward
 
 int hMA=INVALID_HANDLE, hMAFast=INVALID_HANDLE, hATR=INVALID_HANDLE;
 int hMAFlipSlow=INVALID_HANDLE, hMAFlipFast=INVALID_HANDLE;
@@ -971,6 +985,7 @@ void PlaceGrid(double step,double tpCandidate)
    g_basketOpenTime=TimeCurrent();
    g_lastLegChecked=false; // NEW 2026-11-21: re-arm the UseLastLegConfirm check for this fresh basket
    g_profitTrailArmed=false; g_profitTrailBestPrice=0; // NEW 2026-11-21: re-arm the profit trail for this fresh basket
+   g_peakFavSteps=-1000000; // NEW 2026-11-22: reset the diagnostic MFE tracker for this fresh basket
 
    //--- validate the swing-extreme TP: must be favorable by at least
    //    MinSwingTPStep steps from P0, else there's no real target to give
@@ -1105,6 +1120,7 @@ void UpdateBasketExits()
    MqlTick q; if(!SymbolInfoTick(_Symbol,q)) return;
    double curPrice=(g_dir>0)?q.bid:q.ask;
    double favSteps=(g_dir>0 ? (curPrice-avgEntry) : (avgEntry-curPrice))/g_step;
+   if(favSteps>g_peakFavSteps) g_peakFavSteps=favSteps; // NEW 2026-11-22: diagnostic-only MFE tracker, no behavior change
 
    //--- Profit trail (NEW 2026-11-21, per user request): once favSteps has
    //    EVER reached ProfitTrailActivateSteps (default 5.0 = $50, 2x the
@@ -1188,7 +1204,8 @@ void FinalizeBasketIfFlat()
 
    Log("BASKET_CLOSED","dir="+(g_dir>0?"BUY":"SELL")+" P0="+DoubleToString(g_p0,_Digits)+
        " step="+DoubleToString(g_step,_Digits)+" finalSL="+DoubleToString(g_sl,_Digits)+
-       " finalTP="+DoubleToString(g_tp,_Digits)+" basketProfit="+DoubleToString(basketProfit,2));
+       " finalTP="+DoubleToString(g_tp,_Digits)+" basketProfit="+DoubleToString(basketProfit,2)+
+       " peakFavSteps="+DoubleToString(g_peakFavSteps,3));
 
    g_state=GS_IDLE; g_dir=0; g_p0=0; g_step=0; g_sl=0; g_tp=0; g_basketOpenTime=0;
    g_regimeFlippedAgainstBasket=false;
