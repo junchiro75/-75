@@ -647,6 +647,21 @@
 //| magics are in that cursor's window; a safe fix would track each slot's   |
 //| own position ticket IDs at open time and sum only those specific         |
 //| tickets' deals at close, instead of a magic+time-window scan.            |
+//|                                                                     |
+//| THIRTY-FIRST BACKTEST (2026-11-24, UseSkipHourKST off vs on, on the      |
+//| confirmed MaxConcurrentBaskets=7+TIGHTSWING combo): OFF beat ON on       |
+//| every metric -- NET $70,949.54->$83,537.62, PF 1.398->1.409, RF          |
+//| 3.055->3.720, Sharpe 2.746->2.807, Balance DD 9.34%->8.72%, Equity DD    |
+//| 13.34%->12.01%, baskets ~1405->1609. Per-basket reconstruction of the    |
+//| OFF run (bypassing the basketProfit bug above, matching real deals       |
+//| directly) confirmed WHY: baskets opened in the 02:00-08:00 KST window    |
+//| are NOT disproportionately risky -- 319 of 1,609 baskets (19.8%)         |
+//| contributed $14,329.89 (19.6% of realized profit), avg $44.92/basket    |
+//| vs $45.64/basket elsewhere -- essentially proportional. The ban was      |
+//| pure opportunity cost under this architecture, not real risk reduction.  |
+//|                                                                     |
+//| THIRTY-FIRST REVISION (2026-11-24, per user confirmation): UseSkipHourKST|
+//| default true->false. This is now the confirmed default.                 |
 //+------------------------------------------------------------------+
 #property strict
 #include <Trade/Trade.mqh>
@@ -730,7 +745,7 @@ input string AvoidEconCalendarCurrency       = "USD"; // only count calendar eve
 input ENUM_CALENDAR_EVENT_IMPORTANCE AvoidEconCalendarMinImportance = CALENDAR_IMPORTANCE_HIGH; // minimum calendar importance to count as a qualifying event (TEST, untested)
 
 input group "=== Time filter (NEW 2026-11-21, per checklist '새벽 2시 이후 신규 금지'; window CONFIRMED by user as KST 02:00-08:00) ==="
-input bool   UseSkipHourKST       = true; // block NEW entries in [SkipHourStartKST,SkipHourEndKST) KST; does not affect baskets already open (TEST, untested)
+input bool   UseSkipHourKST       = false; // block NEW entries in [SkipHourStartKST,SkipHourEndKST) KST; does not affect baskets already open (REVERSED 2026-11-24: on the MaxConcurrentBaskets=7+TIGHTSWING combo, turning this OFF raised NET $70,950->$83,538, RF 3.055->3.720, Sharpe 2.746->2.807, and LOWERED both DD%s -- per-basket reconstruction showed the 02-08 KST window contributes proportionally (19.8% of baskets, 19.6% of profit, avg profit/basket $44.92 vs $45.64 elsewhere), so the ban was pure opportunity cost with no real risk-avoidance benefit under this architecture. CONFIRMED false.)
 input int    SkipHourStartKST     = 2;    // source says "2시 이후" -- this part is direct (TEST, untested)
 input int    SkipHourEndKST       = 8;    // CONFIRMED by user (2026-11-21): block [02:00,08:00) KST (TEST, untested)
 
