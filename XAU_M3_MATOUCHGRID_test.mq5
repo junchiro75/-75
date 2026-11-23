@@ -523,11 +523,68 @@
 //| existing one-basket-at-a-time ceiling and all the filters added since    |
 //| the original unfiltered "every touch" test (H1/BB4/H4/avoid-zones/last-  |
 //| leg-confirm). Tests whether those filters alone can keep "every touch"    |
-//| profitable at much higher frequency. Default false. Not yet backtested.   |
+//| profitable at much higher frequency. Default false.                      |
+//|                                                                     |
+//| TWENTY-FIFTH BACKTEST (2026-11-23, UseEveryTouchEntry=true test,          |
+//| UseSkipHourKST restored to true): baskets 429->473 (+10%) -- almost        |
+//| IDENTICAL to the session-gated test's +9%. CONCLUSION: neither touch-     |
+//| consumption rule (first-touch/session-gated/every-touch) is the real      |
+//| bottleneck. The actual ceiling is the one-basket-at-a-time state machine  |
+//| combined with long average holds (11-12h, up to 140h) -- most of the day  |
+//| is spent with a basket already open, so loosening the touch-consumption   |
+//| rule barely matters. NET $26,890.70->$23,288.81 (-13%), RF 2.636->1.885,  |
+//| Sharpe 1.973->1.663, Equity DD 8.36%->10.16%. Net negative again.         |
+//|                                                                     |
+//| User then asked to remove UseRegimeFlipExit entirely to see how much of   |
+//| the long holds are "waiting on it". TWENTY-SIXTH BACKTEST (2026-11-23,    |
+//| UseRegimeFlipExit=false): catastrophic -- only 6 trades in the WHOLE      |
+//| 22-month test, avg hold 3,792h (158 days), max 11,290h (470 days). With   |
+//| no FLIP exit, a basket that doesn't reach the hard SL or swing TP just    |
+//| never closes, and since only one basket can be open at a time, this       |
+//| stalls the entire EA for months. UseRegimeFlipExit is not just the        |
+//| biggest profit source -- it's a structural release valve the EA needs to  |
+//| keep trading at all. Reverted to true immediately.                        |
+//|                                                                     |
+//| TWENTY-SEVENTH REVISION (2026-11-23, per user's 3-part request: given     |
+//| the long-hold problem is structural (one basket at a time + wide SL/TP),  |
+//| test (1) concurrent baskets, (2) tighter SL/TP with no concurrency, (3)   |
+//| both together):                                                           |
+//|                                                                     |
+//| (1) MaxConcurrentBaskets: the WHOLE basket-state block (g_state/g_dir/    |
+//| g_p0/g_step/g_sl/g_tp/g_basketOpenTime/g_regimeFlippedAgainstBasket/      |
+//| g_lastLegChecked/g_profitTrailArmed/g_profitTrailBestPrice/               |
+//| g_peakFavSteps) is now an array of MAX_BASKET_SLOTS(5) slots instead of a  |
+//| single scalar set. Each slot trades under its own magic number           |
+//| (MagicNumber+slot, via SlotMagic()) so positions/orders stay cleanly      |
+//| separated per slot using the existing magic-based IsMine() filtering      |
+//| (now takes an explicit expectedMagic param). On a touch, the entry logic  |
+//| finds the first IDLE slot and opens there instead of refusing outright    |
+//| when a basket is already open; MaxConcurrentBaskets=1 reproduces the      |
+//| ORIGINAL single-basket behavior exactly. RecoverState() now scans each    |
+//| slot's magic range independently on restart. The shared cross-episode     |
+//| signal (g_awaitDir) and session-gating state stay global (there is only   |
+//| one M3 cross signal; "one entry per session" still means across ALL       |
+//| slots collectively, not per slot).                                        |
+//|                                                                     |
+//| (2) UseFixedRRTp/FixedRRRatio: per user pushback that SwingLookbackBars   |
+//| (bar-count based) doesn't reliably scale the ACTUAL price distance of the  |
+//| TP target (fewer bars doesn't mean a closer high/low, it's still market-  |
+//| dependent) -- added a true fixed-distance alternative: TP = P0 +/-        |
+//| SLMult*step*FixedRRRatio, i.e. a hard multiple of the SAME SL distance     |
+//| (e.g. SL=$12.5, FixedRRRatio=2.0 -> TP=$25; 1.5 -> TP=$18.75, exactly the  |
+//| user's own framing). SUPERSEDES UseSwingTP entirely when true (mutually   |
+//| exclusive -- CounterTrendTPShrink does NOT apply to this path, that was   |
+//| designed specifically for the swing-target mechanism). Both this AND the  |
+//| existing bar-count-based UseSwingTP (with a smaller SwingLookbackBars)    |
+//| are left available so both of the user's proposed TP approaches can be    |
+//| tested and compared.                                                       |
+//|                                                                     |
+//| Not yet backtested.                                                       |
 //+------------------------------------------------------------------+
 #property strict
 #include <Trade/Trade.mqh>
 CTrade trade;
+#define MAX_BASKET_SLOTS 5
 
 input group "=== Signal: 20/120 cross + first 120MA pullback touch (REVISED 2026-11-21, TEST/untested) ==="
 input ENUM_TIMEFRAMES Timeframe  = PERIOD_M3; // signal timeframe (manual tool was fixed M3) (TEST, untested)
@@ -541,6 +598,7 @@ input int    AsiaSessionStartKST    = 9;    // Asia session start, KST hour (~To
 input int    EuropeSessionStartKST  = 17;   // Europe session start, KST hour (~London open, 08:00 UTC) -- also marks the Asia session's end (TEST, untested)
 input int    USSessionStartKST      = 22;   // US session start, KST hour (~New York open, 13:00 UTC) -- also marks the Europe session's end; the US session wraps past midnight to AsiaSessionStartKST (TEST, untested)
 input bool   UseEveryTouchEntry     = false; // NEW 2026-11-23, per user request: re-test the ORIGINAL first backtest's "every touch" gating (g_awaitDir never zeroed, no session cap either) but WITH all the filters added since (H1/BB4/H4/avoid-zones/last-leg-confirm) -- the original "every touch" test (PF~1.01, no edge) had NONE of those filters yet, so this checks whether they alone can keep it profitable at much higher frequency. SUPERSEDES UseSessionGatedEntry entirely when true (no session cap applied, only the existing one-basket-at-a-time ceiling) (TEST, untested, user-specified logic)
+input int    MaxConcurrentBaskets   = 1;    // NEW 2026-11-23, per user request: number of baskets allowed open AT THE SAME TIME (1 = original behavior, no concurrency). Each slot trades under its own magic number (MagicNumber+slot) so positions stay cleanly separated. Clamped to [1,5] at OnInit (TEST, untested, user-specified logic)
 
 input group "=== Grid step sizing (manual tool had a user-typed box; this automates it, TEST/untested) ==="
 input bool   UseATRStep          = true;  // true: step=ATR(StepATRPeriod)*StepATRMult (price units); false: fixed GridStepPoints (TEST, untested)
@@ -557,6 +615,8 @@ input group "=== Take-profit: nearby swing high/low (REVISED 2026-11-21: was cro
 input bool   UseSwingTP           = true;  // BUY target = highest high over SwingLookbackBars bars at entry ("전고점 역전"); SELL target = lowest low over SwingLookbackBars bars at entry ("전저점 역전") (TEST, untested)
 input int    SwingLookbackBars    = 50;    // lookback window (signal-TF bars, ending at the bar before entry) for the swing extreme (CONFIRMED over 20: NET $30,220->$25,870, RF 2.03->1.49, DD worse at 20 -- 50 stays)
 input double MinSwingTPStep       = 1.0;   // minimum favorable distance from P0 to the swing target, in steps -- if the swing level doesn't clear this (target too close/behind), skip the hard TP for this basket and rely on SL/breakeven-exit only (TEST, untested)
+input bool   UseFixedRRTp         = false; // NEW 2026-11-23, per user request: TP = P0 +/- SLMult*step*FixedRRRatio -- a hard multiple of the SAME SL distance, so risk:reward stays constant regardless of market conditions (unlike the bar-count-based swing target above, which doesn't reliably scale the actual price distance). SUPERSEDES UseSwingTP entirely when true; CounterTrendTPShrink does NOT apply to this path (TEST, untested, user-specified logic)
+input double FixedRRRatio         = 2.0;   // TP distance = SL distance * this ratio (e.g. SL=$12.5: 2.0->TP=$25, 1.5->TP=$18.75) (TEST, untested)
 
 input group "=== Profit trail: lock in gains after N steps favorable (NEW 2026-11-21, per user request -- UseSwingTP/UseRegimeFlipExit are UNCHANGED and can still fire; this is an ADDITIONAL protective layer so a big unrealized gain can't fully round-trip before either of those would otherwise catch it) ==="
 input bool   UseProfitTrail            = false; // once a basket's favorable move (avg entry to current price, in steps) reaches ProfitTrailActivateSteps, arm a trailing stop that follows the best favorable price by ProfitTrailDistanceSteps, FLOORED at breakeven (avg entry) so it can never lock in a loss once armed (REJECTED 2026-11-21: NET $26,890.70->$4,956.80, RF 2.636->0.386, max win $3,334->$1,059 -- cut the FLIP mechanism's big wins short just like the removed UseBreakevenExit; default now OFF, see dated backtest note)
@@ -616,16 +676,31 @@ input bool   EnableLiveOrders     = false; // Enable live orders
 //| State                                                              |
 //+------------------------------------------------------------------+
 enum ENUM_GSTATE { GS_IDLE=0, GS_BASKET=1 };
-ENUM_GSTATE g_state=GS_IDLE;
-int      g_dir=0;          // +1 long basket, -1 short basket
-double   g_p0=0;           // first-leg fill price
-double   g_step=0;         // step used for this basket (fixed once placed)
-double   g_sl=0;           // current shared SL for the whole basket
-double   g_tp=0;           // hard swing-high/low TP for the whole basket, 0 = none
-datetime g_basketOpenTime=0;
+
+// NEW 2026-11-23: the whole per-basket state block below is now an array of
+// MAX_BASKET_SLOTS independent slots (see MaxConcurrentBaskets) instead of a
+// single scalar basket -- slot[s] trades under magic SlotMagic(s). With
+// MaxConcurrentBaskets=1 only slot 0 is ever used, reproducing the original
+// single-basket behavior exactly.
+int      g_maxSlots=1;                    // clamped copy of MaxConcurrentBaskets, set in OnInit
+ENUM_GSTATE g_state[MAX_BASKET_SLOTS];
+int      g_dir[MAX_BASKET_SLOTS];          // +1 long basket, -1 short basket
+double   g_p0[MAX_BASKET_SLOTS];           // first-leg fill price
+double   g_step[MAX_BASKET_SLOTS];         // step used for this basket (fixed once placed)
+double   g_sl[MAX_BASKET_SLOTS];           // current shared SL for the whole basket
+double   g_tp[MAX_BASKET_SLOTS];           // hard TP for the whole basket, 0 = none
+datetime g_basketOpenTime[MAX_BASKET_SLOTS];
+bool     g_regimeFlippedAgainstBasket[MAX_BASKET_SLOTS]; // set true when the RegimeFlipTimeframe regime flips while this slot is open and no longer matches g_dir[slot]
+bool     g_lastLegChecked[MAX_BASKET_SLOTS];    // NEW 2026-11-21: consumed once per basket by the UseLastLegConfirm re-check right before the LAST grid leg is allowed to fill
+bool     g_profitTrailArmed[MAX_BASKET_SLOTS];       // NEW 2026-11-21: true once favSteps has ever reached ProfitTrailActivateSteps for the current basket
+double   g_profitTrailBestPrice[MAX_BASKET_SLOTS];   // NEW 2026-11-21: best (most favorable) price seen since the trail armed
+double   g_peakFavSteps[MAX_BASKET_SLOTS];     // NEW 2026-11-22: diagnostic-only -- running max of favSteps over the basket's whole life, logged at BASKET_CLOSED
+
+ulong SlotMagic(int slot){ return MagicNumber+(ulong)slot; } // NEW 2026-11-23
 
 // Cross-episode state (REVISED 2026-11-21): g_awaitDir!=0 means a golden/dead
 // cross has fired and we're waiting for the FIRST 120MA touch to trade it.
+// SHARED across all slots -- there is only one M3 cross signal.
 int      g_awaitDir=0;         // 0=no pending cross episode; +1=golden cross (wait to BUY); -1=dead cross (wait to SELL)
 int      g_awaitBarsElapsed=0;
 datetime g_lastBarSeen=0;      // shared new-bar detector for cross-check + wait-timeout counting
@@ -637,18 +712,13 @@ bool     g_regimeBullish=false;
 
 // Regime tracking on RegimeFlipTimeframe (REVISED 2026-11-21, decoupled from
 // the entry cross -- M3's own cross flipped against 79% of baskets before
-// they reached SL/TP). Used ONLY to detect a regime flip AGAINST an open
-// basket (REGIME-FLIP exit, see UpdateBasketExits).
+// they reached SL/TP). Used ONLY to detect a regime flip AGAINST open
+// basket(s) (REGIME-FLIP exit, see UpdateFlipRegime/UpdateBasketExits).
 bool     g_flipRegimeKnown=false;
 bool     g_flipRegimeBullish=false;
-bool     g_regimeFlippedAgainstBasket=false; // set true when the RegimeFlipTimeframe regime flips while GS_BASKET is open and no longer matches g_dir
 datetime g_lastFlipBarSeen=0;
-bool     g_lastLegChecked=false; // NEW 2026-11-21: consumed once per basket by the UseLastLegConfirm re-check right before the LAST grid leg is allowed to fill
-bool     g_profitTrailArmed=false;    // NEW 2026-11-21: true once favSteps has ever reached ProfitTrailActivateSteps for the current basket
-double   g_profitTrailBestPrice=0;    // NEW 2026-11-21: best (most favorable) price seen since the trail armed
-double   g_peakFavSteps=-1000000;     // NEW 2026-11-22: diagnostic-only (no behavior change) -- running max of favSteps over the basket's whole life, logged at BASKET_CLOSED so SL-destined baskets' max favorable excursion can be analyzed afterward
 int      g_lastSessionIdx=-1;         // NEW 2026-11-23: which session (0=Asia,1=Europe,2=US, see SessionIndex()) as of the last tick
-bool     g_sessionEntryUsed=false;    // NEW 2026-11-23: consumed once an entry fires in the current session block (UseSessionGatedEntry)
+bool     g_sessionEntryUsed=false;    // NEW 2026-11-23: consumed once an entry fires in the current session block (UseSessionGatedEntry) -- shared across slots, "one per session" means across ALL slots collectively
 
 int hMA=INVALID_HANDLE, hMAFast=INVALID_HANDLE, hATR=INVALID_HANDLE;
 int hMAFlipSlow=INVALID_HANDLE, hMAFlipFast=INVALID_HANDLE;
@@ -761,13 +831,14 @@ void UpdateFlipRegime()
    if(bullish==g_flipRegimeBullish) return; // no flip
    g_flipRegimeBullish=bullish;
 
-   if(g_state==GS_BASKET && !g_regimeFlippedAgainstBasket)
+   for(int slot=0;slot<g_maxSlots;slot++) // NEW 2026-11-23: check every open slot, not just one
    {
-      bool basketIsBullish=(g_dir>0);
+      if(g_state[slot]!=GS_BASKET || g_regimeFlippedAgainstBasket[slot]) continue;
+      bool basketIsBullish=(g_dir[slot]>0);
       if(basketIsBullish!=bullish)
       {
-         g_regimeFlippedAgainstBasket=true;
-         Log("REGIME_FLIPPED_AGAINST_BASKET","("+EnumToString(RegimeFlipTimeframe)+") basket dir="+(g_dir>0?"BUY":"SELL")+" -- will close at breakeven+"+DoubleToString(RegimeFlipMinProfitSteps,2)+" steps ASAP");
+         g_regimeFlippedAgainstBasket[slot]=true;
+         Log("REGIME_FLIPPED_AGAINST_BASKET","slot="+IntegerToString(slot)+" ("+EnumToString(RegimeFlipTimeframe)+") basket dir="+(g_dir[slot]>0?"BUY":"SELL")+" -- will close at breakeven+"+DoubleToString(RegimeFlipMinProfitSteps,2)+" steps ASAP");
       }
    }
 }
@@ -992,27 +1063,29 @@ int SessionIndex(int kstHour)
    return 2;
 }
 
-bool IsMine(ulong magic,string sym){ return magic==MagicNumber && sym==_Symbol; }
+bool IsMine(ulong magic,string sym,ulong expectedMagic){ return magic==expectedMagic && sym==_Symbol; } // NEW 2026-11-23: expectedMagic param (was hardcoded to MagicNumber) so each slot's own SlotMagic() can be checked
 
-int CountPositions()
+int CountPositions(int slot)
 {
+   ulong expectedMagic=SlotMagic(slot);
    int c=0;
    for(int i=PositionsTotal()-1;i>=0;i--)
    {
       ulong t=PositionGetTicket(i);
       if(t==0 || !PositionSelectByTicket(t)) continue;
-      if(IsMine((ulong)PositionGetInteger(POSITION_MAGIC),PositionGetString(POSITION_SYMBOL))) c++;
+      if(IsMine((ulong)PositionGetInteger(POSITION_MAGIC),PositionGetString(POSITION_SYMBOL),expectedMagic)) c++;
    }
    return c;
 }
 
-void DeletePendings()
+void DeletePendings(int slot)
 {
+   ulong expectedMagic=SlotMagic(slot);
    for(int i=OrdersTotal()-1;i>=0;i--)
    {
       ulong t=OrderGetTicket(i);
       if(t==0 || !OrderSelect(t)) continue;
-      if(!IsMine((ulong)OrderGetInteger(ORDER_MAGIC),OrderGetString(ORDER_SYMBOL))) continue;
+      if(!IsMine((ulong)OrderGetInteger(ORDER_MAGIC),OrderGetString(ORDER_SYMBOL),expectedMagic)) continue;
       if(!trade.OrderDelete(t))
          Log("PENDING_DELETE_FAIL",IntegerToString((int)trade.ResultRetcode())+" #"+IntegerToString((long)t));
    }
@@ -1023,27 +1096,29 @@ void DeletePendings()
 //| UseLastLegConfirm) -- leaves any already-filled legs and any       |
 //| earlier-numbered pending legs untouched.                           |
 //+------------------------------------------------------------------+
-void DeleteLastLegPending()
+void DeleteLastLegPending(int slot)
 {
+   ulong expectedMagic=SlotMagic(slot);
    string cmt=StringFormat("MTG_G%d",GridCount);
    for(int i=OrdersTotal()-1;i>=0;i--)
    {
       ulong t=OrderGetTicket(i);
       if(t==0 || !OrderSelect(t)) continue;
-      if(!IsMine((ulong)OrderGetInteger(ORDER_MAGIC),OrderGetString(ORDER_SYMBOL))) continue;
+      if(!IsMine((ulong)OrderGetInteger(ORDER_MAGIC),OrderGetString(ORDER_SYMBOL),expectedMagic)) continue;
       if(OrderGetString(ORDER_COMMENT)!=cmt) continue;
       if(!trade.OrderDelete(t))
          Log("LASTLEG_DELETE_FAIL",IntegerToString((int)trade.ResultRetcode())+" #"+IntegerToString((long)t));
    }
 }
 
-void CloseAllPositions()
+void CloseAllPositions(int slot)
 {
+   ulong expectedMagic=SlotMagic(slot);
    for(int i=PositionsTotal()-1;i>=0;i--)
    {
       ulong t=PositionGetTicket(i);
       if(t==0 || !PositionSelectByTicket(t)) continue;
-      if(!IsMine((ulong)PositionGetInteger(POSITION_MAGIC),PositionGetString(POSITION_SYMBOL))) continue;
+      if(!IsMine((ulong)PositionGetInteger(POSITION_MAGIC),PositionGetString(POSITION_SYMBOL),expectedMagic)) continue;
       if(!trade.PositionClose(t))
          Log("CLOSE_FAIL",IntegerToString((int)trade.ResultRetcode())+" #"+IntegerToString((long)t));
    }
@@ -1052,97 +1127,113 @@ void CloseAllPositions()
 //+------------------------------------------------------------------+
 //| First entry (auto equivalent of manual tool's DoFirstEntry)        |
 //+------------------------------------------------------------------+
-bool DoFirstEntry()
+bool DoFirstEntry(int slot)
 {
    if(!EnableLiveOrders)
    {
       MqlTick q; if(!SymbolInfoTick(_Symbol,q)) return false;
-      g_p0=(g_dir>0?q.ask:q.bid);
-      Log("DRY_FIRST_ENTRY",(g_dir>0?"BUY":"SELL")+string(" @~")+DoubleToString(g_p0,_Digits));
+      g_p0[slot]=(g_dir[slot]>0?q.ask:q.bid);
+      Log("DRY_FIRST_ENTRY","slot="+IntegerToString(slot)+" "+(g_dir[slot]>0?"BUY":"SELL")+string(" @~")+DoubleToString(g_p0[slot],_Digits));
       return true;
    }
 
+   trade.SetExpertMagicNumber(SlotMagic(slot)); // NEW 2026-11-23: route this slot's orders to its own magic
    double lot=NormLot(Lots);
-   bool ok=(g_dir>0 ? trade.Buy(lot,_Symbol,0.0,0.0,0.0,"MTG_P0") : trade.Sell(lot,_Symbol,0.0,0.0,0.0,"MTG_P0"));
+   bool ok=(g_dir[slot]>0 ? trade.Buy(lot,_Symbol,0.0,0.0,0.0,"MTG_P0") : trade.Sell(lot,_Symbol,0.0,0.0,0.0,"MTG_P0"));
    if(!ok)
    {
       Log("FIRST_ENTRY_FAIL",IntegerToString((int)trade.ResultRetcode())+" | "+trade.ResultRetcodeDescription());
       return false;
    }
 
-   g_p0=trade.ResultPrice();
-   if(g_p0<=0)
+   g_p0[slot]=trade.ResultPrice();
+   if(g_p0[slot]<=0)
    {
       ulong deal=trade.ResultDeal();
-      if(deal>0 && HistoryDealSelect(deal)) g_p0=HistoryDealGetDouble(deal,DEAL_PRICE);
+      if(deal>0 && HistoryDealSelect(deal)) g_p0[slot]=HistoryDealGetDouble(deal,DEAL_PRICE);
    }
-   if(g_p0<=0) g_p0=(g_dir>0?SymbolInfoDouble(_Symbol,SYMBOL_ASK):SymbolInfoDouble(_Symbol,SYMBOL_BID));
+   if(g_p0[slot]<=0) g_p0[slot]=(g_dir[slot]>0?SymbolInfoDouble(_Symbol,SYMBOL_ASK):SymbolInfoDouble(_Symbol,SYMBOL_BID));
 
-   Log("FIRST_ENTRY_OK",(g_dir>0?"BUY":"SELL")+" @"+DoubleToString(g_p0,_Digits));
+   Log("FIRST_ENTRY_OK","slot="+IntegerToString(slot)+" "+(g_dir[slot]>0?"BUY":"SELL")+" @"+DoubleToString(g_p0[slot],_Digits));
    return true;
 }
 
 //+------------------------------------------------------------------+
 //| Grid placement (auto equivalent of manual tool's PlaceGrid)        |
 //+------------------------------------------------------------------+
-void PlaceGrid(double step,double tpCandidate)
+void PlaceGrid(int slot,double step,double tpCandidate)
 {
-   g_step=step;
-   g_sl=NP(g_p0-g_dir*SLMult*step);
-   g_basketOpenTime=TimeCurrent();
-   g_lastLegChecked=false; // NEW 2026-11-21: re-arm the UseLastLegConfirm check for this fresh basket
-   g_profitTrailArmed=false; g_profitTrailBestPrice=0; // NEW 2026-11-21: re-arm the profit trail for this fresh basket
-   g_peakFavSteps=-1000000; // NEW 2026-11-22: reset the diagnostic MFE tracker for this fresh basket
+   g_step[slot]=step;
+   g_sl[slot]=NP(g_p0[slot]-g_dir[slot]*SLMult*step);
+   g_basketOpenTime[slot]=TimeCurrent();
+   g_lastLegChecked[slot]=false; // NEW 2026-11-21: re-arm the UseLastLegConfirm check for this fresh basket
+   g_profitTrailArmed[slot]=false; g_profitTrailBestPrice[slot]=0; // NEW 2026-11-21: re-arm the profit trail for this fresh basket
+   g_peakFavSteps[slot]=-1000000; // NEW 2026-11-22: reset the diagnostic MFE tracker for this fresh basket
 
-   //--- validate the swing-extreme TP: must be favorable by at least
-   //    MinSwingTPStep steps from P0, else there's no real target to give
-   //    (e.g. the prior swing extreme sits behind or too close to entry) --
-   //    fall back to no hard TP (hard SL / UseRegimeFlipExit only) for this basket.
-   g_tp=0;
-   if(UseSwingTP && tpCandidate>0)
+   //--- TP: either a fixed risk:reward multiple of the SL distance
+   //    (UseFixedRRTp, NEW 2026-11-23) or the swing-extreme target validated
+   //    to be favorable by at least MinSwingTPStep steps from P0 (if it
+   //    doesn't clear this -- e.g. too close/behind -- fall back to no hard
+   //    TP, hard SL / UseRegimeFlipExit only, for this basket).
+   g_tp[slot]=0;
+   if(UseFixedRRTp)
    {
-      double favDist=(g_dir>0) ? (tpCandidate-g_p0) : (g_p0-tpCandidate);
+      double fixedDist=SLMult*step*FixedRRRatio;
+      double tpCand=g_p0[slot]+g_dir[slot]*fixedDist;
+      double cushion=MinStopDistance()+_Point;
+      MqlTick qtp; if(SymbolInfoTick(_Symbol,qtp))
+      {
+         if(g_dir[slot]>0){ if(tpCand<qtp.ask+cushion) tpCand=qtp.ask+cushion; }
+         else             { if(tpCand>qtp.bid-cushion) tpCand=qtp.bid-cushion; }
+      }
+      g_tp[slot]=NP(tpCand);
+   }
+   else if(UseSwingTP && tpCandidate>0)
+   {
+      double favDist=(g_dir[slot]>0) ? (tpCandidate-g_p0[slot]) : (g_p0[slot]-tpCandidate);
       if(favDist>=MinSwingTPStep*step)
       {
          double cushion=MinStopDistance()+_Point;
          double tpCand=tpCandidate;
          MqlTick qtp; if(SymbolInfoTick(_Symbol,qtp))
          {
-            if(g_dir>0){ if(tpCand<qtp.ask+cushion) tpCand=qtp.ask+cushion; }
-            else       { if(tpCand>qtp.bid-cushion) tpCand=qtp.bid-cushion; }
+            if(g_dir[slot]>0){ if(tpCand<qtp.ask+cushion) tpCand=qtp.ask+cushion; }
+            else             { if(tpCand>qtp.bid-cushion) tpCand=qtp.bid-cushion; }
          }
-         g_tp=NP(tpCand);
+         g_tp[slot]=NP(tpCand);
       }
       else
-         Log("SWING_TP_REJECTED","target="+DoubleToString(tpCandidate,_Digits)+" too close/behind P0="+DoubleToString(g_p0,_Digits)+" (favDist<"+DoubleToString(MinSwingTPStep,2)+" steps) -- no hard TP this basket");
+         Log("SWING_TP_REJECTED","slot="+IntegerToString(slot)+" target="+DoubleToString(tpCandidate,_Digits)+" too close/behind P0="+DoubleToString(g_p0[slot],_Digits)+" (favDist<"+DoubleToString(MinSwingTPStep,2)+" steps) -- no hard TP this basket");
    }
 
    if(!EnableLiveOrders)
    {
-      Log("DRY_GRID","P0="+DoubleToString(g_p0,_Digits)+" step="+DoubleToString(step,_Digits)+" SL="+DoubleToString(g_sl,_Digits)+" TP="+DoubleToString(g_tp,_Digits));
-      g_state=GS_BASKET;
+      Log("DRY_GRID","slot="+IntegerToString(slot)+" P0="+DoubleToString(g_p0[slot],_Digits)+" step="+DoubleToString(step,_Digits)+" SL="+DoubleToString(g_sl[slot],_Digits)+" TP="+DoubleToString(g_tp[slot],_Digits));
+      g_state[slot]=GS_BASKET;
       return;
    }
 
+   trade.SetExpertMagicNumber(SlotMagic(slot)); // NEW 2026-11-23
    double bid=SymbolInfoDouble(_Symbol,SYMBOL_BID), ask=SymbolInfoDouble(_Symbol,SYMBOL_ASK);
 
    //--- already past the hard SL at the moment the grid would be placed -> close immediately (matches manual tool)
-   if((g_dir>0 && bid<=g_sl) || (g_dir<0 && ask>=g_sl))
+   if((g_dir[slot]>0 && bid<=g_sl[slot]) || (g_dir[slot]<0 && ask>=g_sl[slot]))
    {
-      Log("GRID_ALREADY_PAST_SL","closing immediately, SL="+DoubleToString(g_sl,_Digits));
-      CloseAllPositions();
-      DeletePendings();
-      g_state=GS_IDLE;
+      Log("GRID_ALREADY_PAST_SL","slot="+IntegerToString(slot)+" closing immediately, SL="+DoubleToString(g_sl[slot],_Digits));
+      CloseAllPositions(slot);
+      DeletePendings(slot);
+      g_state[slot]=GS_IDLE;
       return;
    }
 
    //--- 1) set SL+TP on the first-entry position
+   ulong expectedMagic=SlotMagic(slot);
    for(int i=PositionsTotal()-1;i>=0;i--)
    {
       ulong t=PositionGetTicket(i);
       if(t==0 || !PositionSelectByTicket(t)) continue;
-      if(!IsMine((ulong)PositionGetInteger(POSITION_MAGIC),PositionGetString(POSITION_SYMBOL))) continue;
-      if(!trade.PositionModify(t,g_sl,g_tp))
+      if(!IsMine((ulong)PositionGetInteger(POSITION_MAGIC),PositionGetString(POSITION_SYMBOL),expectedMagic)) continue;
+      if(!trade.PositionModify(t,g_sl[slot],g_tp[slot]))
          Log("GRID_SL_SET_FAIL",IntegerToString((int)trade.ResultRetcode()));
    }
 
@@ -1151,34 +1242,34 @@ void PlaceGrid(double step,double tpCandidate)
    double minDist=MinStopDistance();
    for(int k=1;k<=GridCount;k++)
    {
-      double level=NP(g_p0-g_dir*k*step);
+      double level=NP(g_p0[slot]-g_dir[slot]*k*step);
       string cmt=StringFormat("MTG_G%d",k);
       bool ok;
-      bool passed=(g_dir>0)?(ask<=level+minDist):(bid>=level-minDist);
+      bool passed=(g_dir[slot]>0)?(ask<=level+minDist):(bid>=level-minDist);
       if(passed)
       {
-         ok=(g_dir>0 ? trade.Buy(lot,_Symbol,0.0,g_sl,g_tp,cmt) : trade.Sell(lot,_Symbol,0.0,g_sl,g_tp,cmt));
-         Log("GRID_LEG_MARKET",IntegerToString(k)+" level="+DoubleToString(level,_Digits)+" "+(ok?"FILLED":"FAILED"));
+         ok=(g_dir[slot]>0 ? trade.Buy(lot,_Symbol,0.0,g_sl[slot],g_tp[slot],cmt) : trade.Sell(lot,_Symbol,0.0,g_sl[slot],g_tp[slot],cmt));
+         Log("GRID_LEG_MARKET","slot="+IntegerToString(slot)+" "+IntegerToString(k)+" level="+DoubleToString(level,_Digits)+" "+(ok?"FILLED":"FAILED"));
       }
       else
       {
-         ok=(g_dir>0 ? trade.BuyLimit (lot,level,_Symbol,g_sl,g_tp,ORDER_TIME_GTC,0,cmt)
-                     : trade.SellLimit(lot,level,_Symbol,g_sl,g_tp,ORDER_TIME_GTC,0,cmt));
-         Log("GRID_LEG_PENDING",IntegerToString(k)+" level="+DoubleToString(level,_Digits)+" "+(ok?"PLACED":"FAILED"));
+         ok=(g_dir[slot]>0 ? trade.BuyLimit (lot,level,_Symbol,g_sl[slot],g_tp[slot],ORDER_TIME_GTC,0,cmt)
+                           : trade.SellLimit(lot,level,_Symbol,g_sl[slot],g_tp[slot],ORDER_TIME_GTC,0,cmt));
+         Log("GRID_LEG_PENDING","slot="+IntegerToString(slot)+" "+IntegerToString(k)+" level="+DoubleToString(level,_Digits)+" "+(ok?"PLACED":"FAILED"));
       }
       if(!ok) Log("GRID_LEG_RETCODE",IntegerToString((int)trade.ResultRetcode())+" | "+trade.ResultRetcodeDescription());
       bid=SymbolInfoDouble(_Symbol,SYMBOL_BID); ask=SymbolInfoDouble(_Symbol,SYMBOL_ASK);
    }
 
-   g_state=GS_BASKET;
-   Log("GRID_COMPLETE","P0="+DoubleToString(g_p0,_Digits)+" step="+DoubleToString(step,_Digits)+" SL="+DoubleToString(g_sl,_Digits)+" TP="+DoubleToString(g_tp,_Digits));
+   g_state[slot]=GS_BASKET;
+   Log("GRID_COMPLETE","slot="+IntegerToString(slot)+" P0="+DoubleToString(g_p0[slot],_Digits)+" step="+DoubleToString(step,_Digits)+" SL="+DoubleToString(g_sl[slot],_Digits)+" TP="+DoubleToString(g_tp[slot],_Digits));
 }
 
 //+------------------------------------------------------------------+
 //| Basket exits (NEW -- not in the manual tool): the ONLY exit handled  |
 //| here is the regime-flip breakeven close (see comment inside).        |
 //+------------------------------------------------------------------+
-void UpdateBasketExits()
+void UpdateBasketExits(int slot)
 {
    //--- Late-grid re-confirm (NEW 2026-11-21, per user request): right before
    //    the LAST grid leg would fill (P0 + GridCount-1 legs already filled,
@@ -1186,16 +1277,16 @@ void UpdateBasketExits()
    //    Basket-depth breakdown showed ALL SL losses (84.5% of full-depth
    //    baskets, $0 below full depth) happen only once every leg has filled --
    //    this targets exactly that transition.
-   if(UseLastLegConfirm && !g_lastLegChecked && GridCount>=1 && CountPositions()==GridCount)
+   if(UseLastLegConfirm && !g_lastLegChecked[slot] && GridCount>=1 && CountPositions(slot)==GridCount)
    {
-      g_lastLegChecked=true;
-      if(BadSignalAgainstDir(g_dir))
+      g_lastLegChecked[slot]=true;
+      if(BadSignalAgainstDir(g_dir[slot]))
       {
-         Log("LASTLEG_RECONFIRM_FAIL","M3/H1/H4 no longer agree with "+(g_dir>0?"BUY":"SELL")+" after "+IntegerToString(GridCount-1)+" grid leg(s) -- canceling the last leg");
-         DeleteLastLegPending();
+         Log("LASTLEG_RECONFIRM_FAIL","slot="+IntegerToString(slot)+" M3/H1/H4 no longer agree with "+(g_dir[slot]>0?"BUY":"SELL")+" after "+IntegerToString(GridCount-1)+" grid leg(s) -- canceling the last leg");
+         DeleteLastLegPending(slot);
       }
       else
-         Log("LASTLEG_RECONFIRM_OK","direction still confirmed after "+IntegerToString(GridCount-1)+" grid leg(s) -- last leg stays armed");
+         Log("LASTLEG_RECONFIRM_OK","slot="+IntegerToString(slot)+" direction still confirmed after "+IntegerToString(GridCount-1)+" grid leg(s) -- last leg stays armed");
    }
 
    //--- Full-depth bad-signal early exit (NEW 2026-11-21, per user request,
@@ -1205,19 +1296,20 @@ void UpdateBasketExits()
    //    UseRegimeFlipExit below. An ADDITIONAL, faster trigger source
    //    alongside RegimeFlipTimeframe's own (slower) cross -- not a
    //    replacement for it.
-   if(UseFullDepthBadSignalExit && !g_regimeFlippedAgainstBasket &&
-      CountPositions()==GridCount+1 && BadSignalAgainstDir(g_dir))
+   if(UseFullDepthBadSignalExit && !g_regimeFlippedAgainstBasket[slot] &&
+      CountPositions(slot)==GridCount+1 && BadSignalAgainstDir(g_dir[slot]))
    {
-      Log("FULLDEPTH_BADSIGNAL_FLAG","M3/H1/H4 turned against "+(g_dir>0?"BUY":"SELL")+" at full depth -- arming breakeven-or-better close");
-      g_regimeFlippedAgainstBasket=true;
+      Log("FULLDEPTH_BADSIGNAL_FLAG","slot="+IntegerToString(slot)+" M3/H1/H4 turned against "+(g_dir[slot]>0?"BUY":"SELL")+" at full depth -- arming breakeven-or-better close");
+      g_regimeFlippedAgainstBasket[slot]=true;
    }
 
+   ulong expectedMagic=SlotMagic(slot);
    double sumVolPrice=0, sumVol=0;
    for(int i=PositionsTotal()-1;i>=0;i--)
    {
       ulong t=PositionGetTicket(i);
       if(t==0 || !PositionSelectByTicket(t)) continue;
-      if(!IsMine((ulong)PositionGetInteger(POSITION_MAGIC),PositionGetString(POSITION_SYMBOL))) continue;
+      if(!IsMine((ulong)PositionGetInteger(POSITION_MAGIC),PositionGetString(POSITION_SYMBOL),expectedMagic)) continue;
       double vol=PositionGetDouble(POSITION_VOLUME), op=PositionGetDouble(POSITION_PRICE_OPEN);
       sumVol+=vol; sumVolPrice+=vol*op;
    }
@@ -1225,9 +1317,9 @@ void UpdateBasketExits()
    double avgEntry=sumVolPrice/sumVol;
 
    MqlTick q; if(!SymbolInfoTick(_Symbol,q)) return;
-   double curPrice=(g_dir>0)?q.bid:q.ask;
-   double favSteps=(g_dir>0 ? (curPrice-avgEntry) : (avgEntry-curPrice))/g_step;
-   if(favSteps>g_peakFavSteps) g_peakFavSteps=favSteps; // NEW 2026-11-22: diagnostic-only MFE tracker, no behavior change
+   double curPrice=(g_dir[slot]>0)?q.bid:q.ask;
+   double favSteps=(g_dir[slot]>0 ? (curPrice-avgEntry) : (avgEntry-curPrice))/g_step[slot];
+   if(favSteps>g_peakFavSteps[slot]) g_peakFavSteps[slot]=favSteps; // NEW 2026-11-22: diagnostic-only MFE tracker, no behavior change
 
    //--- Profit trail (NEW 2026-11-21, per user request): once favSteps has
    //    EVER reached ProfitTrailActivateSteps (default 5.0 = $50, 2x the
@@ -1242,26 +1334,26 @@ void UpdateBasketExits()
    //    $611->-$4,410) -- this only engages after a much larger move.
    if(UseProfitTrail)
    {
-      if(!g_profitTrailArmed && favSteps>=ProfitTrailActivateSteps)
+      if(!g_profitTrailArmed[slot] && favSteps>=ProfitTrailActivateSteps)
       {
-         g_profitTrailArmed=true;
-         g_profitTrailBestPrice=curPrice;
-         Log("PROFIT_TRAIL_ARMED","favSteps="+DoubleToString(favSteps,2)+" >= "+DoubleToString(ProfitTrailActivateSteps,2));
+         g_profitTrailArmed[slot]=true;
+         g_profitTrailBestPrice[slot]=curPrice;
+         Log("PROFIT_TRAIL_ARMED","slot="+IntegerToString(slot)+" favSteps="+DoubleToString(favSteps,2)+" >= "+DoubleToString(ProfitTrailActivateSteps,2));
       }
-      if(g_profitTrailArmed)
+      if(g_profitTrailArmed[slot])
       {
-         if(g_dir>0) g_profitTrailBestPrice=MathMax(g_profitTrailBestPrice,curPrice);
-         else        g_profitTrailBestPrice=MathMin(g_profitTrailBestPrice,curPrice);
+         if(g_dir[slot]>0) g_profitTrailBestPrice[slot]=MathMax(g_profitTrailBestPrice[slot],curPrice);
+         else              g_profitTrailBestPrice[slot]=MathMin(g_profitTrailBestPrice[slot],curPrice);
 
-         double trailStop=(g_dir>0) ? g_profitTrailBestPrice-ProfitTrailDistanceSteps*g_step
-                                     : g_profitTrailBestPrice+ProfitTrailDistanceSteps*g_step;
-         trailStop=(g_dir>0) ? MathMax(trailStop,avgEntry) : MathMin(trailStop,avgEntry);
+         double trailStop=(g_dir[slot]>0) ? g_profitTrailBestPrice[slot]-ProfitTrailDistanceSteps*g_step[slot]
+                                           : g_profitTrailBestPrice[slot]+ProfitTrailDistanceSteps*g_step[slot];
+         trailStop=(g_dir[slot]>0) ? MathMax(trailStop,avgEntry) : MathMin(trailStop,avgEntry);
 
-         bool trailHit=(g_dir>0) ? (curPrice<=trailStop) : (curPrice>=trailStop);
+         bool trailHit=(g_dir[slot]>0) ? (curPrice<=trailStop) : (curPrice>=trailStop);
          if(trailHit)
          {
-            Log("PROFIT_TRAIL_CLOSE","best="+DoubleToString(g_profitTrailBestPrice,_Digits)+" trailStop="+DoubleToString(trailStop,_Digits)+" cur="+DoubleToString(curPrice,_Digits));
-            if(EnableLiveOrders) CloseAllPositions();
+            Log("PROFIT_TRAIL_CLOSE","slot="+IntegerToString(slot)+" best="+DoubleToString(g_profitTrailBestPrice[slot],_Digits)+" trailStop="+DoubleToString(trailStop,_Digits)+" cur="+DoubleToString(curPrice,_Digits));
+            if(EnableLiveOrders) CloseAllPositions(slot);
             else Log("PROFIT_TRAIL_CLOSE_DRY","would close now (EnableLiveOrders=false)");
             return;
          }
@@ -1278,72 +1370,79 @@ void UpdateBasketExits()
    //    65%->54%, avg win $125->$56) showed it was cutting aligned-trend
    //    winners short before they reached the real target, exactly as the
    //    user flagged.
-   if(!UseRegimeFlipExit || !g_regimeFlippedAgainstBasket) return;
+   if(!UseRegimeFlipExit || !g_regimeFlippedAgainstBasket[slot]) return;
    if(favSteps<RegimeFlipMinProfitSteps) return;
 
-   Log("REGIME_FLIP_CLOSE","favSteps="+DoubleToString(favSteps,3)+" >= RegimeFlipMinProfitSteps="+DoubleToString(RegimeFlipMinProfitSteps,2));
-   if(EnableLiveOrders) CloseAllPositions();
+   Log("REGIME_FLIP_CLOSE","slot="+IntegerToString(slot)+" favSteps="+DoubleToString(favSteps,3)+" >= RegimeFlipMinProfitSteps="+DoubleToString(RegimeFlipMinProfitSteps,2));
+   if(EnableLiveOrders) CloseAllPositions(slot);
    else Log("REGIME_FLIP_CLOSE_DRY","would close now (EnableLiveOrders=false)");
-   g_regimeFlippedAgainstBasket=false; // consumed -- avoid repeated close attempts
+   g_regimeFlippedAgainstBasket[slot]=false; // consumed -- avoid repeated close attempts
 }
 
 //+------------------------------------------------------------------+
 //| Basket close / finalize                                            |
 //+------------------------------------------------------------------+
-void FinalizeBasketIfFlat()
+void FinalizeBasketIfFlat(int slot)
 {
-   if(CountPositions()>0) return;
-   DeletePendings();
+   if(CountPositions(slot)>0) return;
+   DeletePendings(slot);
 
+   ulong expectedMagic=SlotMagic(slot);
    double basketProfit=0;
-   if(g_basketOpenTime>0 && HistorySelect(g_basketOpenTime-1,TimeCurrent()))
+   if(g_basketOpenTime[slot]>0 && HistorySelect(g_basketOpenTime[slot]-1,TimeCurrent()))
    {
       int total=HistoryDealsTotal();
       for(int d=0;d<total;d++)
       {
          ulong dt=HistoryDealGetTicket(d);
          if(dt==0) continue;
-         if((ulong)HistoryDealGetInteger(dt,DEAL_MAGIC)!=MagicNumber) continue;
+         if((ulong)HistoryDealGetInteger(dt,DEAL_MAGIC)!=expectedMagic) continue;
          if(HistoryDealGetString(dt,DEAL_SYMBOL)!=_Symbol) continue;
          basketProfit+=HistoryDealGetDouble(dt,DEAL_PROFIT)+HistoryDealGetDouble(dt,DEAL_SWAP)+HistoryDealGetDouble(dt,DEAL_COMMISSION);
       }
    }
 
-   Log("BASKET_CLOSED","dir="+(g_dir>0?"BUY":"SELL")+" P0="+DoubleToString(g_p0,_Digits)+
-       " step="+DoubleToString(g_step,_Digits)+" finalSL="+DoubleToString(g_sl,_Digits)+
-       " finalTP="+DoubleToString(g_tp,_Digits)+" basketProfit="+DoubleToString(basketProfit,2)+
-       " peakFavSteps="+DoubleToString(g_peakFavSteps,3));
+   Log("BASKET_CLOSED","slot="+IntegerToString(slot)+" dir="+(g_dir[slot]>0?"BUY":"SELL")+" P0="+DoubleToString(g_p0[slot],_Digits)+
+       " step="+DoubleToString(g_step[slot],_Digits)+" finalSL="+DoubleToString(g_sl[slot],_Digits)+
+       " finalTP="+DoubleToString(g_tp[slot],_Digits)+" basketProfit="+DoubleToString(basketProfit,2)+
+       " peakFavSteps="+DoubleToString(g_peakFavSteps[slot],3));
 
-   g_state=GS_IDLE; g_dir=0; g_p0=0; g_step=0; g_sl=0; g_tp=0; g_basketOpenTime=0;
-   g_regimeFlippedAgainstBasket=false;
+   g_state[slot]=GS_IDLE; g_dir[slot]=0; g_p0[slot]=0; g_step[slot]=0; g_sl[slot]=0; g_tp[slot]=0; g_basketOpenTime[slot]=0;
+   g_regimeFlippedAgainstBasket[slot]=false;
 }
 
 //+------------------------------------------------------------------+
 //| Restart recovery (auto equivalent of manual tool's RecoverState)   |
+//| NEW 2026-11-23: scans each slot's own magic range independently.    |
 //+------------------------------------------------------------------+
 void RecoverState()
 {
-   ulong firstTicket=0; datetime earliest=0;
-   for(int i=PositionsTotal()-1;i>=0;i--)
+   for(int slot=0;slot<g_maxSlots;slot++)
    {
-      ulong t=PositionGetTicket(i);
-      if(t==0 || !PositionSelectByTicket(t)) continue;
-      if(!IsMine((ulong)PositionGetInteger(POSITION_MAGIC),PositionGetString(POSITION_SYMBOL))) continue;
-      datetime ot=(datetime)PositionGetInteger(POSITION_TIME);
-      if(earliest==0 || ot<earliest){ earliest=ot; firstTicket=t; }
-   }
-   if(firstTicket==0){ g_state=GS_IDLE; return; }
+      g_state[slot]=GS_IDLE;
+      ulong expectedMagic=SlotMagic(slot);
+      ulong firstTicket=0; datetime earliest=0;
+      for(int i=PositionsTotal()-1;i>=0;i--)
+      {
+         ulong t=PositionGetTicket(i);
+         if(t==0 || !PositionSelectByTicket(t)) continue;
+         if(!IsMine((ulong)PositionGetInteger(POSITION_MAGIC),PositionGetString(POSITION_SYMBOL),expectedMagic)) continue;
+         datetime ot=(datetime)PositionGetInteger(POSITION_TIME);
+         if(earliest==0 || ot<earliest){ earliest=ot; firstTicket=t; }
+      }
+      if(firstTicket==0) continue; // slot stays idle
 
-   PositionSelectByTicket(firstTicket);
-   g_dir=(PositionGetInteger(POSITION_TYPE)==POSITION_TYPE_BUY)?1:-1;
-   g_p0=PositionGetDouble(POSITION_PRICE_OPEN);
-   g_sl=PositionGetDouble(POSITION_SL);
-   g_tp=PositionGetDouble(POSITION_TP);
-   g_basketOpenTime=earliest;
-   g_step=(g_sl>0 && SLMult>0) ? MathAbs(g_p0-g_sl)/SLMult : GetStep();
-   g_state=GS_BASKET;
-   Log("RECOVERED","dir="+(g_dir>0?"BUY":"SELL")+" P0="+DoubleToString(g_p0,_Digits)+
-       " step="+DoubleToString(g_step,_Digits)+" SL="+DoubleToString(g_sl,_Digits)+" TP="+DoubleToString(g_tp,_Digits));
+      PositionSelectByTicket(firstTicket);
+      g_dir[slot]=(PositionGetInteger(POSITION_TYPE)==POSITION_TYPE_BUY)?1:-1;
+      g_p0[slot]=PositionGetDouble(POSITION_PRICE_OPEN);
+      g_sl[slot]=PositionGetDouble(POSITION_SL);
+      g_tp[slot]=PositionGetDouble(POSITION_TP);
+      g_basketOpenTime[slot]=earliest;
+      g_step[slot]=(g_sl[slot]>0 && SLMult>0) ? MathAbs(g_p0[slot]-g_sl[slot])/SLMult : GetStep();
+      g_state[slot]=GS_BASKET;
+      Log("RECOVERED","slot="+IntegerToString(slot)+" dir="+(g_dir[slot]>0?"BUY":"SELL")+" P0="+DoubleToString(g_p0[slot],_Digits)+
+          " step="+DoubleToString(g_step[slot],_Digits)+" SL="+DoubleToString(g_sl[slot],_Digits)+" TP="+DoubleToString(g_tp[slot],_Digits));
+   }
 }
 
 //+------------------------------------------------------------------+
@@ -1351,6 +1450,7 @@ void RecoverState()
 //+------------------------------------------------------------------+
 int OnInit()
 {
+   g_maxSlots=(int)MathMax(1,MathMin(MAX_BASKET_SLOTS,MaxConcurrentBaskets)); // NEW 2026-11-23
    hMA    =iMA(_Symbol,Timeframe,MAPeriod,0,MODE_SMA,PRICE_CLOSE);
    hMAFast=iMA(_Symbol,Timeframe,MAFastPeriod,0,MODE_SMA,PRICE_CLOSE);
    hATR   =iATR(_Symbol,Timeframe,StepATRPeriod);
@@ -1382,12 +1482,12 @@ int OnInit()
        " MAPeriod="+IntegerToString(MAPeriod)+" MaxWaitBars="+IntegerToString(MaxWaitBars)+
        " | UseSessionGatedEntry="+(UseSessionGatedEntry?"true":"false")+" AsiaSessionStartKST="+IntegerToString(AsiaSessionStartKST)+
        " EuropeSessionStartKST="+IntegerToString(EuropeSessionStartKST)+" USSessionStartKST="+IntegerToString(USSessionStartKST)+
-       " UseEveryTouchEntry="+(UseEveryTouchEntry?"true":"false")+
+       " UseEveryTouchEntry="+(UseEveryTouchEntry?"true":"false")+" MaxConcurrentBaskets="+IntegerToString(g_maxSlots)+
        " | UseATRStep="+(UseATRStep?"true":"false")+" StepATRPeriod="+IntegerToString(StepATRPeriod)+
        " StepATRMult="+DoubleToString(StepATRMult,2)+" GridStepPoints="+DoubleToString(GridStepPoints,1)+
        " | Lots="+DoubleToString(Lots,2)+" GridCount="+IntegerToString(GridCount)+" SLMult="+DoubleToString(SLMult,2)+
        " | UseSwingTP="+(UseSwingTP?"true":"false")+" SwingLookbackBars="+IntegerToString(SwingLookbackBars)+
-       " MinSwingTPStep="+DoubleToString(MinSwingTPStep,2)+
+       " MinSwingTPStep="+DoubleToString(MinSwingTPStep,2)+" UseFixedRRTp="+(UseFixedRRTp?"true":"false")+" FixedRRRatio="+DoubleToString(FixedRRRatio,2)+
        " | UseProfitTrail="+(UseProfitTrail?"true":"false")+" ProfitTrailActivateSteps="+DoubleToString(ProfitTrailActivateSteps,2)+
        " ProfitTrailDistanceSteps="+DoubleToString(ProfitTrailDistanceSteps,2)+
        " | UseRegimeFlipExit="+(UseRegimeFlipExit?"true":"false")+" RegimeFlipMinProfitSteps="+DoubleToString(RegimeFlipMinProfitSteps,2)+
@@ -1422,8 +1522,7 @@ int OnInit()
           " -- if this is 0, Strategy Tester has no calendar data cached and UseAvoidEconCalendar will never fire (check terminal calendar cache/internet access during the test)");
    }
 
-   g_state=GS_IDLE;
-   RecoverState();
+   RecoverState(); // NEW 2026-11-23: initializes g_state[] for every slot (IDLE unless an open position is found)
    return INIT_SUCCEEDED;
 }
 
@@ -1446,13 +1545,14 @@ void OnTradeTransaction(const MqlTradeTransaction &trans,const MqlTradeRequest &
 {
    if(trans.type!=TRADE_TRANSACTION_DEAL_ADD) return;
    if(!HistoryDealSelect(trans.deal)) return;
-   if((ulong)HistoryDealGetInteger(trans.deal,DEAL_MAGIC)!=MagicNumber) return;
+   ulong dealMagic=(ulong)HistoryDealGetInteger(trans.deal,DEAL_MAGIC);
+   if(dealMagic<MagicNumber || dealMagic>=MagicNumber+(ulong)MAX_BASKET_SLOTS) return; // NEW 2026-11-23: any slot's magic range
    if(HistoryDealGetString(trans.deal,DEAL_SYMBOL)!=_Symbol) return;
    if((long)HistoryDealGetInteger(trans.deal,DEAL_ENTRY)!=DEAL_ENTRY_OUT) return;
 
    ulong posId=(ulong)HistoryDealGetInteger(trans.deal,DEAL_POSITION_ID);
    double profit=HistoryDealGetDouble(trans.deal,DEAL_PROFIT)+HistoryDealGetDouble(trans.deal,DEAL_SWAP)+HistoryDealGetDouble(trans.deal,DEAL_COMMISSION);
-   Log("GRID_LEG_CLOSED","posId="+IntegerToString((long)posId)+" profit="+DoubleToString(profit,2));
+   Log("GRID_LEG_CLOSED","slot="+IntegerToString((int)(dealMagic-MagicNumber))+" posId="+IntegerToString((long)posId)+" profit="+DoubleToString(profit,2));
 }
 
 void OnTick()
@@ -1494,111 +1594,116 @@ void OnTick()
       g_sessionEntryUsed=false;
    }
 
-   switch(g_state)
+   //--- per-slot maintenance (NEW 2026-11-23): every slot that currently has
+   //    a basket open gets its exits checked/finalized, every tick,
+   //    regardless of whether any OTHER slot is free or busy.
+   for(int s=0;s<g_maxSlots;s++)
    {
-      case GS_IDLE:
+      if(g_state[s]!=GS_BASKET) continue;
+      FinalizeBasketIfFlat(s);
+      if(g_state[s]==GS_BASKET) UpdateBasketExits(s);
+   }
+
+   //--- entry attempt (NEW 2026-11-23: across all basket slots) ---
+   if(g_awaitDir==0) return; // no cross episode currently awaiting its first 120MA touch
+   double ma; if(!GetMA(ma)) return;
+   double bid=SymbolInfoDouble(_Symbol,SYMBOL_BID);
+   bool touched=(g_awaitDir>0)?(bid<=ma):(bid>=ma);
+   if(!touched) return;
+
+   int freeSlot=-1;
+   for(int s=0;s<g_maxSlots;s++) if(g_state[s]==GS_IDLE){ freeSlot=s; break; }
+   if(freeSlot<0)
+   {
+      Log("ENTRY_SKIPPED","all "+IntegerToString(g_maxSlots)+" basket slot(s) busy -- episode stays armed, retry later");
+      return;
+   }
+
+   if(!UseEveryTouchEntry && UseSessionGatedEntry && g_sessionEntryUsed)
+   {
+      Log("ENTRY_SKIPPED","session already used ("+IntegerToString(g_lastSessionIdx)+"=0:Asia/1:Europe/2:US) -- episode stays armed, retry next session");
+      return;
+   }
+
+   if(UseSkipHourKST)
+   {
+      int kstHour=KST_Hour(TimeCurrent());
+      bool inSkip=(kstHour>=SkipHourStartKST && kstHour<SkipHourEndKST);
+      if(inSkip)
       {
-         if(g_awaitDir==0) return; // no cross episode currently awaiting its first 120MA touch
-         double ma; if(!GetMA(ma)) return;
-         double bid=SymbolInfoDouble(_Symbol,SYMBOL_BID);
-         bool touched=(g_awaitDir>0)?(bid<=ma):(bid>=ma);
-         if(!touched) return;
-
-         if(!UseEveryTouchEntry && UseSessionGatedEntry && g_sessionEntryUsed)
-         {
-            Log("ENTRY_SKIPPED","session already used ("+IntegerToString(g_lastSessionIdx)+"=0:Asia/1:Europe/2:US) -- episode stays armed, retry next session");
-            return;
-         }
-
-         if(UseSkipHourKST)
-         {
-            int kstHour=KST_Hour(TimeCurrent());
-            bool inSkip=(kstHour>=SkipHourStartKST && kstHour<SkipHourEndKST);
-            if(inSkip)
-            {
-               Log("ENTRY_SKIPPED","KST hour in ["+IntegerToString(SkipHourStartKST)+","+IntegerToString(SkipHourEndKST)+") -- episode stays armed, retry on a later touch");
-               return;
-            }
-         }
-
-         //--- Decide the final direction. Priority order (highest first):
-         //    1) H1 BB4(4,4) exhaustion fade (UseHtfBB4Exhaustion)
-         //    2) H1 price-vs-20MA override (UseHigherTFAlignment)
-         //    3) the M3 cross's own direction (g_awaitDir), unchanged
-         int finalDir=g_awaitDir;
-         bool bb4Fired=false;
-         if(UseHtfBB4Exhaustion)
-         {
-            int bb4Dir=DecideFinalDirByBB4(g_awaitDir,bb4Fired);
-            if(bb4Fired) finalDir=bb4Dir;
-         }
-         if(!bb4Fired && UseHigherTFAlignment) finalDir=DecideFinalDir(g_awaitDir);
-         bool isCounterTrend=(finalDir!=g_awaitDir);
-         if(bb4Fired)
-            Log("HTF_BB4_EXHAUSTION_OVERRIDE","M3 cross dir="+(g_awaitDir>0?"BUY":"SELL")+" -> BB4 fade dir="+(finalDir>0?"BUY":"SELL")+" ("+EnumToString(HigherTFAlignment)+" candle touched the band)");
-         else if(isCounterTrend)
-            Log("H1_DIRECTION_OVERRIDE","M3 cross dir="+(g_awaitDir>0?"BUY":"SELL")+" -> H1 override dir="+(finalDir>0?"BUY":"SELL")+" (counter-trend, shrunk TP)");
-
-         if(UseH1H4DisagreeReversal)
-         {
-            int h1Dir=DecideFinalDir(finalDir);
-            int h4Dir=CrossDir(hMAHtf2Fast,hMAHtf2Slow,h1Dir);
-            if(h1Dir!=h4Dir)
-            {
-               Log("H1H4_DISAGREE_REVERSE","H1 dir="+(h1Dir>0?"BUY":"SELL")+" H4 dir="+(h4Dir>0?"BUY":"SELL")+" disagree -- inverting finalDir "+(finalDir>0?"BUY":"SELL")+" -> "+(finalDir<0?"BUY":"SELL"));
-               finalDir=-finalDir;
-               isCounterTrend=(finalDir!=g_awaitDir);
-            }
-         }
-         else if(UseHigherTFAlignment2 && !TFAligned(finalDir,hMAHtf2Fast,hMAHtf2Slow))
-         {
-            Log("ENTRY_SKIPPED","HigherTFAlignment2 ("+EnumToString(HigherTFAlignment2)+") not aligned with "+(finalDir>0?"BUY":"SELL")+" -- episode stays armed, retry on a later touch");
-            return;
-         }
-
-         if(UseAvoidBB4MAOverlap && InAvoidZoneBB4MAOverlap())
-         {
-            Log("ENTRY_SKIPPED","Avoid zone #1: "+EnumToString(HigherTFAlignment)+" BB4+120MA overlap (상위저항) -- episode stays armed, retry on a later touch");
-            return;
-         }
-         if(UseAvoidFakeBreakout && InAvoidZoneFakeBreakout(finalDir))
-         {
-            Log("ENTRY_SKIPPED","Avoid zone #2: "+EnumToString(HigherTFAlignment)+" failed breakout (가짜돌파) in dir="+(finalDir>0?"BUY":"SELL")+" -- episode stays armed, retry on a later touch");
-            return;
-         }
-         if(UseAvoidEconCalendar && InAvoidZoneEconCalendar())
-         {
-            Log("ENTRY_SKIPPED","Avoid zone #4: "+AvoidEconCalendarCurrency+" high-importance calendar event within -"+IntegerToString(AvoidEconCalendarMinutesBefore)+"/+"+IntegerToString(AvoidEconCalendarMinutesAfter)+" min -- episode stays armed, retry on a later touch");
-            return;
-         }
-
-         g_dir=finalDir;
-         if(!UseEveryTouchEntry && !UseSessionGatedEntry) g_awaitDir=0; // consume -- only the FIRST touch after this cross enters (UseSessionGatedEntry/UseEveryTouchEntry keep it armed for the next touch instead)
-
-         if(!DoFirstEntry())
-         {
-            g_awaitDir=g_dir; g_dir=0; // restore, retry next tick
-            return;
-         }
-         if(UseSessionGatedEntry) g_sessionEntryUsed=true; // NEW 2026-11-23: consumed only on a SUCCESSFUL entry, for this session block
-         double step=GetStep();
-         double tpCandidate=0;
-         if(UseSwingTP)
-         {
-            double rawTarget=(g_dir>0) ? SwingHigh(SwingLookbackBars) : SwingLow(SwingLookbackBars);
-            if(rawTarget>0)
-               tpCandidate = isCounterTrend ? (g_p0+g_dir*MathAbs(rawTarget-g_p0)*CounterTrendTPShrink) : rawTarget;
-         }
-         PlaceGrid(step,tpCandidate);
-         return;
-      }
-
-      case GS_BASKET:
-      {
-         FinalizeBasketIfFlat();
-         if(g_state==GS_BASKET) UpdateBasketExits();
+         Log("ENTRY_SKIPPED","KST hour in ["+IntegerToString(SkipHourStartKST)+","+IntegerToString(SkipHourEndKST)+") -- episode stays armed, retry on a later touch");
          return;
       }
    }
+
+   //--- Decide the final direction. Priority order (highest first):
+   //    1) H1 BB4(4,4) exhaustion fade (UseHtfBB4Exhaustion)
+   //    2) H1 price-vs-20MA override (UseHigherTFAlignment)
+   //    3) the M3 cross's own direction (g_awaitDir), unchanged
+   int finalDir=g_awaitDir;
+   bool bb4Fired=false;
+   if(UseHtfBB4Exhaustion)
+   {
+      int bb4Dir=DecideFinalDirByBB4(g_awaitDir,bb4Fired);
+      if(bb4Fired) finalDir=bb4Dir;
+   }
+   if(!bb4Fired && UseHigherTFAlignment) finalDir=DecideFinalDir(g_awaitDir);
+   bool isCounterTrend=(finalDir!=g_awaitDir);
+   if(bb4Fired)
+      Log("HTF_BB4_EXHAUSTION_OVERRIDE","M3 cross dir="+(g_awaitDir>0?"BUY":"SELL")+" -> BB4 fade dir="+(finalDir>0?"BUY":"SELL")+" ("+EnumToString(HigherTFAlignment)+" candle touched the band)");
+   else if(isCounterTrend)
+      Log("H1_DIRECTION_OVERRIDE","M3 cross dir="+(g_awaitDir>0?"BUY":"SELL")+" -> H1 override dir="+(finalDir>0?"BUY":"SELL")+" (counter-trend, shrunk TP)");
+
+   if(UseH1H4DisagreeReversal)
+   {
+      int h1Dir=DecideFinalDir(finalDir);
+      int h4Dir=CrossDir(hMAHtf2Fast,hMAHtf2Slow,h1Dir);
+      if(h1Dir!=h4Dir)
+      {
+         Log("H1H4_DISAGREE_REVERSE","H1 dir="+(h1Dir>0?"BUY":"SELL")+" H4 dir="+(h4Dir>0?"BUY":"SELL")+" disagree -- inverting finalDir "+(finalDir>0?"BUY":"SELL")+" -> "+(finalDir<0?"BUY":"SELL"));
+         finalDir=-finalDir;
+         isCounterTrend=(finalDir!=g_awaitDir);
+      }
+   }
+   else if(UseHigherTFAlignment2 && !TFAligned(finalDir,hMAHtf2Fast,hMAHtf2Slow))
+   {
+      Log("ENTRY_SKIPPED","HigherTFAlignment2 ("+EnumToString(HigherTFAlignment2)+") not aligned with "+(finalDir>0?"BUY":"SELL")+" -- episode stays armed, retry on a later touch");
+      return;
+   }
+
+   if(UseAvoidBB4MAOverlap && InAvoidZoneBB4MAOverlap())
+   {
+      Log("ENTRY_SKIPPED","Avoid zone #1: "+EnumToString(HigherTFAlignment)+" BB4+120MA overlap (상위저항) -- episode stays armed, retry on a later touch");
+      return;
+   }
+   if(UseAvoidFakeBreakout && InAvoidZoneFakeBreakout(finalDir))
+   {
+      Log("ENTRY_SKIPPED","Avoid zone #2: "+EnumToString(HigherTFAlignment)+" failed breakout (가짜돌파) in dir="+(finalDir>0?"BUY":"SELL")+" -- episode stays armed, retry on a later touch");
+      return;
+   }
+   if(UseAvoidEconCalendar && InAvoidZoneEconCalendar())
+   {
+      Log("ENTRY_SKIPPED","Avoid zone #4: "+AvoidEconCalendarCurrency+" high-importance calendar event within -"+IntegerToString(AvoidEconCalendarMinutesBefore)+"/+"+IntegerToString(AvoidEconCalendarMinutesAfter)+" min -- episode stays armed, retry on a later touch");
+      return;
+   }
+
+   g_dir[freeSlot]=finalDir;
+   if(!UseEveryTouchEntry && !UseSessionGatedEntry) g_awaitDir=0; // consume -- only the FIRST touch after this cross enters (UseSessionGatedEntry/UseEveryTouchEntry keep it armed for the next touch instead)
+
+   if(!DoFirstEntry(freeSlot))
+   {
+      g_awaitDir=g_dir[freeSlot]; g_dir[freeSlot]=0; // restore, retry next tick
+      return;
+   }
+   if(UseSessionGatedEntry) g_sessionEntryUsed=true; // NEW 2026-11-23: consumed only on a SUCCESSFUL entry, for this session block
+   double step=GetStep();
+   double tpCandidate=0;
+   if(UseSwingTP)
+   {
+      double rawTarget=(g_dir[freeSlot]>0) ? SwingHigh(SwingLookbackBars) : SwingLow(SwingLookbackBars);
+      if(rawTarget>0)
+         tpCandidate = isCounterTrend ? (g_p0[freeSlot]+g_dir[freeSlot]*MathAbs(rawTarget-g_p0[freeSlot])*CounterTrendTPShrink) : rawTarget;
+   }
+   PlaceGrid(freeSlot,step,tpCandidate);
 }
 //+------------------------------------------------------------------+
