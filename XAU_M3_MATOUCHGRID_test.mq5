@@ -618,6 +618,35 @@
 //| 50-bar/single-basket setup on every metric (NET $26,890->$70,950, PF     |
 //| 1.319->1.398, RF ?->3.055, Sharpe 1.973->2.746). This is now the         |
 //| confirmed default.                                                       |
+//|                                                                     |
+//| KNOWN DIAGNOSTIC-ONLY BUG (2026-11-24, found while cross-checking the    |
+//| MaxConcurrentBaskets=7 confirmed run's LOG.csv against the real deals    |
+//| table): when 2+ slots are finalized via FinalizeBasketIfFlat's           |
+//| HistorySelect(g_basketOpenTime[slot]-1,TimeCurrent())+magic-filter scan  |
+//| (line ~1429) in the SAME simultaneous REGIME_FLIP_CLOSE event (all       |
+//| slots closing at the identical broker timestamp -- confirmed via         |
+//| 2026.01.13 09:30:00: 7 baskets closed together), the logged              |
+//| "basketProfit=" value is WRONG for every slot except the one processed   |
+//| LAST in that tick -- most of the real pooled profit gets misattributed   |
+//| onto that one slot's BASKET_CLOSED line (e.g. slot 6 logged              |
+//| basketProfit=14752.08 while slots 0-5, whose REAL deals each show        |
+//| +$1,100-1,600 per leg in the raw deals sheet, were all logged as a flat  |
+//| -3.00/-commission-only). g_peakFavSteps (tracked live, not via           |
+//| HistorySelect) is UNAFFECTED and correctly shows these baskets were      |
+//| deep in profit. This is DIAGNOSTIC-ONLY -- order placement, SL/TP,       |
+//| magic-number routing, and the real MT5 account ledger (hence every       |
+//| NET/PF/RF/Sharpe number already reported, and the MaxConcurrentBaskets=7 |
+//| decision) are all UNAFFECTED, since those come from MT5's own deal       |
+//| history totals directly, not from this per-basket log line. Any past or |
+//| future "profit broken down by concurrency level" analysis built from    |
+//| basketProfit in the LOG.csv is UNRELIABLE and should be disregarded --   |
+//| only the official MT5 report/optimizer totals are trustworthy for that.  |
+//| Not fixed (diagnostic-only, no live-trading impact); root cause not      |
+//| fully isolated -- suspect HistorySelect's single global deal-cursor      |
+//| being re-queried per-slot within the same tick while multiple slots'     |
+//| magics are in that cursor's window; a safe fix would track each slot's   |
+//| own position ticket IDs at open time and sum only those specific         |
+//| tickets' deals at close, instead of a magic+time-window scan.            |
 //+------------------------------------------------------------------+
 #property strict
 #include <Trade/Trade.mqh>
