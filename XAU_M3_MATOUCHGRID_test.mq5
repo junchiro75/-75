@@ -593,7 +593,31 @@
 //|                                                                     |
 //| TWENTY-NINTH REVISION (2026-11-23, per user request): MAX_BASKET_SLOTS    |
 //| raised 5->10 to continue the sweep (6/7/8/9/10) and find where the trend  |
-//| actually turns. Not yet backtested.                                      |
+//| actually turns.                                                          |
+//|                                                                     |
+//| THIRTIETH BACKTEST (2026-11-24, MT5 built-in Optimizer, MaxConcurrentBaskets|
+//| 6/7/8/9/10 on the TIGHTSWING combo): the trend FINALLY turns -- 6: NET    |
+//| $66,268/PF 1.377/RF 3.052/Sharpe 2.682/DD 12.97%; 7: NET $70,950/PF 1.398/|
+//| RF 3.055 (PEAK)/Sharpe 2.746 (PEAK)/DD 13.34%; 8: NET $72,768 (PEAK)/PF   |
+//| 1.399 (PEAK)/RF 2.942/Sharpe 2.702/DD 13.93%; 9: NET $70,632/PF 1.382/RF  |
+//| 2.855/Sharpe 2.577/DD 14.10%; 10: NET $70,792/PF 1.381/RF 2.862/Sharpe    |
+//| 2.541/DD 14.09%. Risk-adjusted metrics (RF/Sharpe) peak at 7; raw NET/PF  |
+//| peak at 8; 9-10 are worse than both on every metric -- Equity DD also no |
+//| longer plateaus past 6, climbing steadily through 9 (unlike the 1-5      |
+//| sweep's plateau from 3 onward), confirming the diversification benefit   |
+//| runs out and extra slots past ~8 add pure risk instead.                  |
+//|                                                                     |
+//| THIRTIETH REVISION (2026-11-24, per user's explicit choice of 7 over 8,  |
+//| prioritizing risk-adjusted return): MaxConcurrentBaskets default 1->7,   |
+//| UseATRStep default true->false, GridStepPoints default 1000->500 (the    |
+//| TIGHTSWING combo is now baked into the file's defaults). SwingLookbackBars|
+//| default changed 50->20, SUPERSEDING the old "CONFIRMED over 20" note     |
+//| below -- that confirmation was measured under the single-basket (no      |
+//| concurrency) architecture; under concurrent baskets the faster-resolving |
+//| 20-bar swing target combined with 7 concurrent slots outperforms the old |
+//| 50-bar/single-basket setup on every metric (NET $26,890->$70,950, PF     |
+//| 1.319->1.398, RF ?->3.055, Sharpe 1.973->2.746). This is now the         |
+//| confirmed default.                                                       |
 //+------------------------------------------------------------------+
 #property strict
 #include <Trade/Trade.mqh>
@@ -612,13 +636,13 @@ input int    AsiaSessionStartKST    = 9;    // Asia session start, KST hour (~To
 input int    EuropeSessionStartKST  = 17;   // Europe session start, KST hour (~London open, 08:00 UTC) -- also marks the Asia session's end (TEST, untested)
 input int    USSessionStartKST      = 22;   // US session start, KST hour (~New York open, 13:00 UTC) -- also marks the Europe session's end; the US session wraps past midnight to AsiaSessionStartKST (TEST, untested)
 input bool   UseEveryTouchEntry     = false; // NEW 2026-11-23, per user request: re-test the ORIGINAL first backtest's "every touch" gating (g_awaitDir never zeroed, no session cap either) but WITH all the filters added since (H1/BB4/H4/avoid-zones/last-leg-confirm) -- the original "every touch" test (PF~1.01, no edge) had NONE of those filters yet, so this checks whether they alone can keep it profitable at much higher frequency. SUPERSEDES UseSessionGatedEntry entirely when true (no session cap applied, only the existing one-basket-at-a-time ceiling) (TEST, untested, user-specified logic)
-input int    MaxConcurrentBaskets   = 1;    // NEW 2026-11-23, per user request: number of baskets allowed open AT THE SAME TIME (1 = original behavior, no concurrency). Each slot trades under its own magic number (MagicNumber+slot) so positions stay cleanly separated. Clamped to [1,10] at OnInit (TEST, untested, user-specified logic)
+input int    MaxConcurrentBaskets   = 7;    // NEW 2026-11-23, per user request: number of baskets allowed open AT THE SAME TIME (1 = original behavior, no concurrency). Each slot trades under its own magic number (MagicNumber+slot) so positions stay cleanly separated. Clamped to [1,10] at OnInit (CONFIRMED 2026-11-24: 6-10 sweep via MT5 Optimizer on the TIGHTSWING combo found RF/Sharpe peak at 7, NET/PF peak at 8, 9-10 worse on every metric -- user chose 7 for best risk-adjusted return, see header)
 
 input group "=== Grid step sizing (manual tool had a user-typed box; this automates it, TEST/untested) ==="
-input bool   UseATRStep          = true;  // true: step=ATR(StepATRPeriod)*StepATRMult (price units); false: fixed GridStepPoints (TEST, untested)
-input int    StepATRPeriod       = 14;    // (TEST, untested)
-input double StepATRMult         = 0.2;   // first-guess only, no backtest run yet (TEST, untested)
-input double GridStepPoints      = 1000;  // used only when UseATRStep=false; multiplied by _Point (=$0.01 on this symbol), so 1000 = $10 -- trader convention is 1 "포인트"=$1 for gold, NOT MQL5's native _Point; matches manual tool author's own "10포인트 간격"=$10 example (REVISED from 10=$0.10 after first backtest's 100x unit-scale bug, see header) (TEST, untested)
+input bool   UseATRStep          = false; // true: step=ATR(StepATRPeriod)*StepATRMult (price units); false: fixed GridStepPoints (CONFIRMED 2026-11-24: false, as part of the TIGHTSWING combo baked into defaults -- see THIRTIETH REVISION in header)
+input int    StepATRPeriod       = 14;    // unused while UseATRStep=false (TEST, untested)
+input double StepATRMult         = 0.2;   // unused while UseATRStep=false (TEST, untested)
+input double GridStepPoints      = 500;   // used only when UseATRStep=false; multiplied by _Point (=$0.01 on this symbol), so 500 = $5 -- trader convention is 1 "포인트"=$1 for gold, NOT MQL5's native _Point (CONFIRMED 2026-11-24 at 500/$5, the TIGHTSWING value, over the old 1000/$10 -- see THIRTIETH REVISION in header)
 
 input group "=== Grid/basket structure (REVISED 2026-11-21: GridCount/SLMult CONFIRMED by user after a 5/3/2/1 sweep -- see dated backtest note) ==="
 input double Lots                = 0.1;   // lot size, SAME for every leg (first entry + all grid legs) -- max basket exposure = Lots*(1+GridCount) (TEST, untested)
@@ -627,7 +651,7 @@ input double SLMult               = 2.5;  // shared basket SL = P0 -/+ SLMult*st
 
 input group "=== Take-profit: nearby swing high/low (REVISED 2026-11-21: was cross-regime extreme, hit only 3.8% of baskets -- now a rolling lookback at entry time) ==="
 input bool   UseSwingTP           = true;  // BUY target = highest high over SwingLookbackBars bars at entry ("전고점 역전"); SELL target = lowest low over SwingLookbackBars bars at entry ("전저점 역전") (TEST, untested)
-input int    SwingLookbackBars    = 50;    // lookback window (signal-TF bars, ending at the bar before entry) for the swing extreme (CONFIRMED over 20: NET $30,220->$25,870, RF 2.03->1.49, DD worse at 20 -- 50 stays)
+input int    SwingLookbackBars    = 20;    // lookback window (signal-TF bars, ending at the bar before entry) for the swing extreme (REVERSED 2026-11-24: the old "50 stays" confirmation below was measured under the single-basket architecture; under concurrent baskets (MaxConcurrentBaskets=7) the faster-resolving 20-bar target wins decisively -- see THIRTIETH REVISION in header. Old note for reference: CONFIRMED-THEN over 20 under single-basket: NET $30,220->$25,870, RF 2.03->1.49, DD worse at 20)
 input double MinSwingTPStep       = 1.0;   // minimum favorable distance from P0 to the swing target, in steps -- if the swing level doesn't clear this (target too close/behind), skip the hard TP for this basket and rely on SL/breakeven-exit only (TEST, untested)
 input bool   UseFixedRRTp         = false; // NEW 2026-11-23, per user request: TP = P0 +/- SLMult*step*FixedRRRatio -- a hard multiple of the SAME SL distance, so risk:reward stays constant regardless of market conditions (unlike the bar-count-based swing target above, which doesn't reliably scale the actual price distance). SUPERSEDES UseSwingTP entirely when true; CounterTrendTPShrink does NOT apply to this path (TEST, untested, user-specified logic)
 input double FixedRRRatio         = 2.0;   // TP distance = SL distance * this ratio (e.g. SL=$12.5: 2.0->TP=$25, 1.5->TP=$18.75) (TEST, untested)
