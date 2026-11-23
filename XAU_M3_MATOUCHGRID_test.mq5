@@ -553,7 +553,7 @@
 //| (1) MaxConcurrentBaskets: the WHOLE basket-state block (g_state/g_dir/    |
 //| g_p0/g_step/g_sl/g_tp/g_basketOpenTime/g_regimeFlippedAgainstBasket/      |
 //| g_lastLegChecked/g_profitTrailArmed/g_profitTrailBestPrice/               |
-//| g_peakFavSteps) is now an array of MAX_BASKET_SLOTS(5) slots instead of a  |
+//| g_peakFavSteps) is now an array of MAX_BASKET_SLOTS slots instead of a    |
 //| single scalar set. Each slot trades under its own magic number           |
 //| (MagicNumber+slot, via SlotMagic()) so positions/orders stay cleanly      |
 //| separated per slot using the existing magic-based IsMine() filtering      |
@@ -579,12 +579,26 @@
 //| are left available so both of the user's proposed TP approaches can be    |
 //| tested and compared.                                                       |
 //|                                                                     |
-//| Not yet backtested.                                                       |
+//| TWENTY-EIGHTH BACKTEST (2026-11-23, MaxConcurrentBaskets 1/2/3/4/5 sweep   |
+//| on top of the TIGHTSWING combo -- GridStepPoints=500, SwingLookbackBars=  |
+//| 20): monotonically rising on EVERY quality metric, no peak found even at  |
+//| the old hard cap of 5 -- baskets 619->966->1142->1242->1324 (basket-count |
+//| gains shrinking: +347/+176/+100/+82), NET $13,372->$20,877->$38,138->     |
+//| $50,096->$57,994, PF 1.157->1.162->1.253->1.310->1.341 (now ABOVE the     |
+//| confirmed baseline's 1.319), RF 1.287->1.534->2.202->2.761->2.901, Sharpe |
+//| 1.244->1.333->2.094->2.410->2.534 (well above baseline's 1.973). Balance  |
+//| DD/Equity DD plateaued from 3 onward (~10%/~12-13%, not climbing further  |
+//| even as NET keeps rising) -- diversification across slots, not just      |
+//| more risk piled on. No reversal yet at the cap.                          |
+//|                                                                     |
+//| TWENTY-NINTH REVISION (2026-11-23, per user request): MAX_BASKET_SLOTS    |
+//| raised 5->10 to continue the sweep (6/7/8/9/10) and find where the trend  |
+//| actually turns. Not yet backtested.                                      |
 //+------------------------------------------------------------------+
 #property strict
 #include <Trade/Trade.mqh>
 CTrade trade;
-#define MAX_BASKET_SLOTS 5
+#define MAX_BASKET_SLOTS 10 // RAISED 2026-11-23 from 5, per user request, after the 1-5 sweep showed NET/PF/RF/Sharpe still rising with no peak at the old cap
 
 input group "=== Signal: 20/120 cross + first 120MA pullback touch (REVISED 2026-11-21, TEST/untested) ==="
 input ENUM_TIMEFRAMES Timeframe  = PERIOD_M3; // signal timeframe (manual tool was fixed M3) (TEST, untested)
@@ -598,7 +612,7 @@ input int    AsiaSessionStartKST    = 9;    // Asia session start, KST hour (~To
 input int    EuropeSessionStartKST  = 17;   // Europe session start, KST hour (~London open, 08:00 UTC) -- also marks the Asia session's end (TEST, untested)
 input int    USSessionStartKST      = 22;   // US session start, KST hour (~New York open, 13:00 UTC) -- also marks the Europe session's end; the US session wraps past midnight to AsiaSessionStartKST (TEST, untested)
 input bool   UseEveryTouchEntry     = false; // NEW 2026-11-23, per user request: re-test the ORIGINAL first backtest's "every touch" gating (g_awaitDir never zeroed, no session cap either) but WITH all the filters added since (H1/BB4/H4/avoid-zones/last-leg-confirm) -- the original "every touch" test (PF~1.01, no edge) had NONE of those filters yet, so this checks whether they alone can keep it profitable at much higher frequency. SUPERSEDES UseSessionGatedEntry entirely when true (no session cap applied, only the existing one-basket-at-a-time ceiling) (TEST, untested, user-specified logic)
-input int    MaxConcurrentBaskets   = 1;    // NEW 2026-11-23, per user request: number of baskets allowed open AT THE SAME TIME (1 = original behavior, no concurrency). Each slot trades under its own magic number (MagicNumber+slot) so positions stay cleanly separated. Clamped to [1,5] at OnInit (TEST, untested, user-specified logic)
+input int    MaxConcurrentBaskets   = 1;    // NEW 2026-11-23, per user request: number of baskets allowed open AT THE SAME TIME (1 = original behavior, no concurrency). Each slot trades under its own magic number (MagicNumber+slot) so positions stay cleanly separated. Clamped to [1,10] at OnInit (TEST, untested, user-specified logic)
 
 input group "=== Grid step sizing (manual tool had a user-typed box; this automates it, TEST/untested) ==="
 input bool   UseATRStep          = true;  // true: step=ATR(StepATRPeriod)*StepATRMult (price units); false: fixed GridStepPoints (TEST, untested)
