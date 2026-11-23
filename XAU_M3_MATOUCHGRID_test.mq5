@@ -488,6 +488,22 @@
 //| the old skip-gate correctly avoided entirely; betting against both       |
 //| directions made it worse, not better. UseH1H4DisagreeReversal stays      |
 //| false (default).                                                         |
+//|                                                                     |
+//| TWENTY-THIRD REVISION (2026-11-23, per user request: "3분 장기이평매매는    |
+//| 보통 하루 3번 나온다는데 우리껀 1번도 안 나온다" -- the gap is the 'first      |
+//| touch per cross episode' design (deliberately chosen over the ORIGINAL   |
+//| first backtest's 'every touch', which had PF~1.01, no edge) plus all the |
+//| stacked filters since): UseSessionGatedEntry added as a different        |
+//| frequency lever -- instead of consuming g_awaitDir after the first entry |
+//| per cross, allow one entry per KST-defined session (Asia/Europe/US, new  |
+//| SessionIndex() helper) block, keeping g_awaitDir armed across sessions   |
+//| (still overwritten immediately by a fresh opposite cross via            |
+//| UpdateRegimeAndCross as before). Still capped at one basket open at a    |
+//| time by the existing state machine. Default false (existing 'first      |
+//| touch, then consume' behavior unchanged). User also asked to test this  |
+//| with UseSkipHourKST temporarily OFF (so the US-session window, which     |
+//| wraps through 22:00-09:00 KST, isn't cut by the 02:00-08:00 ban). Not    |
+//| yet backtested.                                                          |
 //+------------------------------------------------------------------+
 #property strict
 #include <Trade/Trade.mqh>
@@ -498,6 +514,12 @@ input ENUM_TIMEFRAMES Timeframe  = PERIOD_M3; // signal timeframe (manual tool w
 input int    MAFastPeriod         = 20;   // fast SMA, used ONLY to detect golden/dead cross against MAPeriod -- NEW, not in manual tool (TEST, untested)
 input int    MAPeriod            = 120;  // long-term SMA period -- cross-detection slow leg AND the pullback-touch entry level (TEST, untested, ported from manual tool default)
 input int    MaxWaitBars         = 0;    // give up on a cross episode (no entry) after N new signal-TF bars with no 120MA touch, 0 = wait indefinitely for THIS cross (a new opposite cross still overrides it immediately regardless of this setting) (TEST, untested)
+
+input group "=== Session-gated entry (NEW 2026-11-23, per user request: 하루 세션당 1번 -- '3분 장기이평매매는 보통 하루 3번'이라는 통념과 지금 모델의 '크로스당 첫 터치만' 빈도 격차를 좁혀보는 실험) ==="
+input bool   UseSessionGatedEntry   = false; // instead of the default 'first touch after a cross, then consume until the next opposite cross' gating, allow at most ONE entry per KST-defined session (Asia/Europe/US) block -- g_awaitDir is NOT zeroed after firing (stays armed for the next session's touch, using whatever direction is current) unless a new cross overwrites it; still capped at one basket open at a time by the existing state machine (TEST, untested, user-specified logic)
+input int    AsiaSessionStartKST    = 9;    // Asia session start, KST hour (~Tokyo/Sydney open, 00:00 UTC) -- also marks the US session's end (TEST, untested)
+input int    EuropeSessionStartKST  = 17;   // Europe session start, KST hour (~London open, 08:00 UTC) -- also marks the Asia session's end (TEST, untested)
+input int    USSessionStartKST      = 22;   // US session start, KST hour (~New York open, 13:00 UTC) -- also marks the Europe session's end; the US session wraps past midnight to AsiaSessionStartKST (TEST, untested)
 
 input group "=== Grid step sizing (manual tool had a user-typed box; this automates it, TEST/untested) ==="
 input bool   UseATRStep          = true;  // true: step=ATR(StepATRPeriod)*StepATRMult (price units); false: fixed GridStepPoints (TEST, untested)
@@ -604,6 +626,8 @@ bool     g_lastLegChecked=false; // NEW 2026-11-21: consumed once per basket by 
 bool     g_profitTrailArmed=false;    // NEW 2026-11-21: true once favSteps has ever reached ProfitTrailActivateSteps for the current basket
 double   g_profitTrailBestPrice=0;    // NEW 2026-11-21: best (most favorable) price seen since the trail armed
 double   g_peakFavSteps=-1000000;     // NEW 2026-11-22: diagnostic-only (no behavior change) -- running max of favSteps over the basket's whole life, logged at BASKET_CLOSED so SL-destined baskets' max favorable excursion can be analyzed afterward
+int      g_lastSessionIdx=-1;         // NEW 2026-11-23: which session (0=Asia,1=Europe,2=US, see SessionIndex()) as of the last tick
+bool     g_sessionEntryUsed=false;    // NEW 2026-11-23: consumed once an entry fires in the current session block (UseSessionGatedEntry)
 
 int hMA=INVALID_HANDLE, hMAFast=INVALID_HANDLE, hATR=INVALID_HANDLE;
 int hMAFlipSlow=INVALID_HANDLE, hMAFlipFast=INVALID_HANDLE;
@@ -930,6 +954,21 @@ int KST_Hour(datetime server_now)
    int offsetHours=IsEUDST(server_now)?6:7;
    MqlDateTime t; TimeToStruct(server_now+offsetHours*3600,t);
    return t.hour;
+}
+
+//+------------------------------------------------------------------+
+//| Session index from a KST hour (NEW 2026-11-23, for                |
+//| UseSessionGatedEntry): 0=Asia [AsiaSessionStartKST,EuropeSession-  |
+//| StartKST), 1=Europe [EuropeSessionStartKST,USSessionStartKST),     |
+//| 2=US -- everything else, i.e. [USSessionStartKST,24) U             |
+//| [0,AsiaSessionStartKST), wrapping past midnight. Assumes the three |
+//| inputs are given in increasing order (Asia < Europe < US).         |
+//+------------------------------------------------------------------+
+int SessionIndex(int kstHour)
+{
+   if(kstHour>=AsiaSessionStartKST && kstHour<EuropeSessionStartKST) return 0;
+   if(kstHour>=EuropeSessionStartKST && kstHour<USSessionStartKST)  return 1;
+   return 2;
 }
 
 bool IsMine(ulong magic,string sym){ return magic==MagicNumber && sym==_Symbol; }
@@ -1320,6 +1359,8 @@ int OnInit()
 
    Log("START",string("TF=")+EnumToString(Timeframe)+" | MAFastPeriod="+IntegerToString(MAFastPeriod)+
        " MAPeriod="+IntegerToString(MAPeriod)+" MaxWaitBars="+IntegerToString(MaxWaitBars)+
+       " | UseSessionGatedEntry="+(UseSessionGatedEntry?"true":"false")+" AsiaSessionStartKST="+IntegerToString(AsiaSessionStartKST)+
+       " EuropeSessionStartKST="+IntegerToString(EuropeSessionStartKST)+" USSessionStartKST="+IntegerToString(USSessionStartKST)+
        " | UseATRStep="+(UseATRStep?"true":"false")+" StepATRPeriod="+IntegerToString(StepATRPeriod)+
        " StepATRMult="+DoubleToString(StepATRMult,2)+" GridStepPoints="+DoubleToString(GridStepPoints,1)+
        " | Lots="+DoubleToString(Lots,2)+" GridCount="+IntegerToString(GridCount)+" SLMult="+DoubleToString(SLMult,2)+
@@ -1420,6 +1461,17 @@ void OnTick()
       UpdateFlipRegime(); // may set g_regimeFlippedAgainstBasket
    }
 
+   //--- session bookkeeping (NEW 2026-11-23, for UseSessionGatedEntry):
+   //    checked every tick (hour-based, not bar-based) -- re-arms
+   //    g_sessionEntryUsed whenever the KST hour crosses into a new
+   //    session block.
+   int curSessionIdx=SessionIndex(KST_Hour(TimeCurrent()));
+   if(curSessionIdx!=g_lastSessionIdx)
+   {
+      g_lastSessionIdx=curSessionIdx;
+      g_sessionEntryUsed=false;
+   }
+
    switch(g_state)
    {
       case GS_IDLE:
@@ -1429,6 +1481,12 @@ void OnTick()
          double bid=SymbolInfoDouble(_Symbol,SYMBOL_BID);
          bool touched=(g_awaitDir>0)?(bid<=ma):(bid>=ma);
          if(!touched) return;
+
+         if(UseSessionGatedEntry && g_sessionEntryUsed)
+         {
+            Log("ENTRY_SKIPPED","session already used ("+IntegerToString(g_lastSessionIdx)+"=0:Asia/1:Europe/2:US) -- episode stays armed, retry next session");
+            return;
+         }
 
          if(UseSkipHourKST)
          {
@@ -1493,13 +1551,14 @@ void OnTick()
          }
 
          g_dir=finalDir;
-         g_awaitDir=0; // consume -- only the FIRST touch after this cross enters
+         if(!UseSessionGatedEntry) g_awaitDir=0; // consume -- only the FIRST touch after this cross enters (UseSessionGatedEntry keeps it armed for the next session's touch instead)
 
          if(!DoFirstEntry())
          {
             g_awaitDir=g_dir; g_dir=0; // restore, retry next tick
             return;
          }
+         if(UseSessionGatedEntry) g_sessionEntryUsed=true; // NEW 2026-11-23: consumed only on a SUCCESSFUL entry, for this session block
          double step=GetStep();
          double tpCandidate=0;
          if(UseSwingTP)
