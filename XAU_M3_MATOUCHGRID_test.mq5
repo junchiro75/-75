@@ -457,7 +457,28 @@
 //| backtest's guessed $50/$10 trail was rejected -- this is step 1 toward a  |
 //| better-calibrated number instead of another guess). Needs the EA's own   |
 //| XAU_M3_MATOUCHGRID_test_LOG.csv (not the Strategy Tester's xlsx report)   |
-//| to read back -- not yet backtested/analyzed.                            |
+//| to read back. The follow-up log-based MFE analysis found the loser/      |
+//| winner MFE distributions overlap too heavily to support any clean        |
+//| threshold-based early exit (SL median MFE $9.16 vs TP's own minimum      |
+//| $8.65) -- that avenue was dropped. A max-wait-after-flip-armed time cap   |
+//| was also checked and dropped: ALL 22 armed-then-SL baskets resolved      |
+//| within 12h anyway (no loss-savings from any cap), while FLIP's rare      |
+//| long-wait baskets (up to 136h) are worth $2,800+ and would be cut short.  |
+//|                                                                     |
+//| TWENTY-FIRST REVISION (2026-11-23, per user request: "1시간봉하고           |
+//| 4시간봉하고 일치하지 않을때 반대방향으로 진입하면"): UseH1H4DisagreeReversal     |
+//| added. Compares H1's OWN price-vs-20MA read (DecideFinalDir) against     |
+//| H4's OWN fast/slow MA cross direction (new CrossDir() helper -- unlike   |
+//| TFAligned, returns the actual direction, not just "does it match X") --  |
+//| if they disagree with EACH OTHER (independent of what the BB4/H1-        |
+//| override/M3-cross chain already decided), INVERTS finalDir instead of    |
+//| entering it as-is. When true, this SUPERSEDES the existing               |
+//| UseHigherTFAlignment2 skip-gate entirely (mutually exclusive by          |
+//| construction: after inverting, finalDir always equals h4Dir, so the old  |
+//| skip-gate would be a no-op anyway). isCounterTrend is recomputed after   |
+//| any inversion so CounterTrendTPShrink still applies correctly. Default   |
+//| false (UseHigherTFAlignment2=true stays the confirmed behavior). Not     |
+//| yet backtested.                                                          |
 //+------------------------------------------------------------------+
 #property strict
 #include <Trade/Trade.mqh>
@@ -510,6 +531,9 @@ input bool   UseHtfBB4Exhaustion = true; // at a golden cross, if HigherTFAlignm
 input group "=== Second higher-timeframe alignment filter (NEW 2026-11-21, per user request -- UNCHANGED skip-gate semantics, now checked against the FINAL direction after the H1 override above) ==="
 input bool   UseHigherTFAlignment2  = true;      // a SECOND higher timeframe that must ALSO be aligned with the FINAL (post-H1-override) direction, else this touch is skipped (TEST, untested)
 input ENUM_TIMEFRAMES HigherTFAlignment2 = PERIOD_H4; // first guess for the second required timeframe (TEST, untested)
+
+input group "=== H1/H4 disagreement reversal (NEW 2026-11-23, per user request: '1시간봉하고 4시간봉하고 일치하지 않을때 반대방향으로 진입하면') ==="
+input bool   UseH1H4DisagreeReversal = false; // if HigherTFAlignment's price-vs-20MA direction (H1) and HigherTFAlignment2's own fast/slow MA cross direction (H4) disagree with EACH OTHER, INVERT the already-decided finalDir (from the BB4/H1-override/M3-cross chain above) instead of running the UseHigherTFAlignment2 skip-gate below -- when true, SUPERSEDES UseHigherTFAlignment2 entirely regardless of its own value (TEST, untested, user-specified logic)
 
 input group "=== Avoid zone #1: H1 기본비+장기이평 겹침 '상위저항' (NEW 2026-11-21, per checklist '피해야 할 구간 4가지': '상위 시간봉에서 기본비(박스)와 장기이평이 겹치는 자리. 뚫리면 한 방향으로 미친듯이 간다. 건드리면 손절 확정') ==="
 input bool   UseAvoidBB4MAOverlap    = true; // skip ANY entry (regardless of direction) if HigherTFAlignment's BB4(4,4) upper OR lower band sits within AvoidBB4MAOverlapPts of HigherTFAlignment's own 120-period MA -- a "loaded" confluence level (TEST, untested, user-specified logic)
@@ -709,6 +733,20 @@ bool TFAligned(int dir,int hFast,int hSlow)
    if(CopyBuffer(hSlow,0,1,1,slow1)<1) return false;
    bool bullish=fast1[0]>slow1[0];
    return (dir>0) ? bullish : !bullish;
+}
+
+//+------------------------------------------------------------------+
+//| Raw cross direction (NEW 2026-11-23, for UseH1H4DisagreeReversal): |
+//| +1 if fast>slow, -1 otherwise -- unlike TFAligned, this returns the|
+//| ACTUAL direction rather than "does it match dir", so H1's and H4's |
+//| own reads can be compared directly against each other.             |
+//+------------------------------------------------------------------+
+int CrossDir(int hFast,int hSlow,int fallback)
+{
+   double fast1[1],slow1[1];
+   if(CopyBuffer(hFast,0,1,1,fast1)<1) return fallback;
+   if(CopyBuffer(hSlow,0,1,1,slow1)<1) return fallback;
+   return (fast1[0]>slow1[0]) ? +1 : -1;
 }
 
 //+------------------------------------------------------------------+
@@ -1287,6 +1325,7 @@ int OnInit()
        " CounterTrendTPShrink="+DoubleToString(CounterTrendTPShrink,2)+
        " UseHtfBB4Exhaustion="+(UseHtfBB4Exhaustion?"true":"false")+
        " UseHigherTFAlignment2="+(UseHigherTFAlignment2?"true":"false")+" HigherTFAlignment2="+EnumToString(HigherTFAlignment2)+
+       " | UseH1H4DisagreeReversal="+(UseH1H4DisagreeReversal?"true":"false")+
        " | UseAvoidBB4MAOverlap="+(UseAvoidBB4MAOverlap?"true":"false")+" AvoidBB4MAOverlapPts="+DoubleToString(AvoidBB4MAOverlapPts,1)+
        " UseAvoidFakeBreakout="+(UseAvoidFakeBreakout?"true":"false")+" FakeBreakoutLookbackBars="+IntegerToString(FakeBreakoutLookbackBars)+
        " | UseAvoidEconCalendar="+(UseAvoidEconCalendar?"true":"false")+" AvoidEconCalendarMinutesBefore="+IntegerToString(AvoidEconCalendarMinutesBefore)+
@@ -1411,7 +1450,18 @@ void OnTick()
          else if(isCounterTrend)
             Log("H1_DIRECTION_OVERRIDE","M3 cross dir="+(g_awaitDir>0?"BUY":"SELL")+" -> H1 override dir="+(finalDir>0?"BUY":"SELL")+" (counter-trend, shrunk TP)");
 
-         if(UseHigherTFAlignment2 && !TFAligned(finalDir,hMAHtf2Fast,hMAHtf2Slow))
+         if(UseH1H4DisagreeReversal)
+         {
+            int h1Dir=DecideFinalDir(finalDir);
+            int h4Dir=CrossDir(hMAHtf2Fast,hMAHtf2Slow,h1Dir);
+            if(h1Dir!=h4Dir)
+            {
+               Log("H1H4_DISAGREE_REVERSE","H1 dir="+(h1Dir>0?"BUY":"SELL")+" H4 dir="+(h4Dir>0?"BUY":"SELL")+" disagree -- inverting finalDir "+(finalDir>0?"BUY":"SELL")+" -> "+(finalDir<0?"BUY":"SELL"));
+               finalDir=-finalDir;
+               isCounterTrend=(finalDir!=g_awaitDir);
+            }
+         }
+         else if(UseHigherTFAlignment2 && !TFAligned(finalDir,hMAHtf2Fast,hMAHtf2Slow))
          {
             Log("ENTRY_SKIPPED","HigherTFAlignment2 ("+EnumToString(HigherTFAlignment2)+") not aligned with "+(finalDir>0?"BUY":"SELL")+" -- episode stays armed, retry on a later touch");
             return;
