@@ -502,8 +502,28 @@
 //| time by the existing state machine. Default false (existing 'first      |
 //| touch, then consume' behavior unchanged). User also asked to test this  |
 //| with UseSkipHourKST temporarily OFF (so the US-session window, which     |
-//| wraps through 22:00-09:00 KST, isn't cut by the 02:00-08:00 ban). Not    |
-//| yet backtested.                                                          |
+//| wraps through 22:00-09:00 KST, isn't cut by the 02:00-08:00 ban).         |
+//|                                                                     |
+//| TWENTY-THIRD BACKTEST (2026-11-23, UseSessionGatedEntry=true +            |
+//| UseSkipHourKST=false test): baskets only 429->467 (+9%, far short of the  |
+//| ~3x needed to approach "3/day") -- the session cap wasn't the real        |
+//| bottleneck; the 120MA touch itself doesn't recur reliably within every    |
+//| session, and the prior basket is often still open into the next session. |
+//| NET $26,890.70->$23,597.31 (-12%), PF 1.3191->1.259433, RF 2.635687->     |
+//| 2.052999, Sharpe 1.972821->1.713588, Equity DD 8.36%->9.31% (Balance DD   |
+//| improved slightly, 9.41%->8.51%). Net negative for a small frequency      |
+//| gain -- user then asked whether "every touch" had ever been re-tested    |
+//| WITH the current filter stack (only the very first, completely           |
+//| unfiltered backtest ever tested "every touch", at PF~1.01).               |
+//|                                                                     |
+//| TWENTY-FOURTH REVISION (2026-11-23, per that question): UseEveryTouchEntry|
+//| added -- g_awaitDir is never zeroed and no session cap is applied either |
+//| (SUPERSEDES UseSessionGatedEntry entirely when true), so EVERY touch      |
+//| while a cross regime persists can fire an entry, gated only by the        |
+//| existing one-basket-at-a-time ceiling and all the filters added since    |
+//| the original unfiltered "every touch" test (H1/BB4/H4/avoid-zones/last-  |
+//| leg-confirm). Tests whether those filters alone can keep "every touch"    |
+//| profitable at much higher frequency. Default false. Not yet backtested.   |
 //+------------------------------------------------------------------+
 #property strict
 #include <Trade/Trade.mqh>
@@ -520,6 +540,7 @@ input bool   UseSessionGatedEntry   = false; // instead of the default 'first to
 input int    AsiaSessionStartKST    = 9;    // Asia session start, KST hour (~Tokyo/Sydney open, 00:00 UTC) -- also marks the US session's end (TEST, untested)
 input int    EuropeSessionStartKST  = 17;   // Europe session start, KST hour (~London open, 08:00 UTC) -- also marks the Asia session's end (TEST, untested)
 input int    USSessionStartKST      = 22;   // US session start, KST hour (~New York open, 13:00 UTC) -- also marks the Europe session's end; the US session wraps past midnight to AsiaSessionStartKST (TEST, untested)
+input bool   UseEveryTouchEntry     = false; // NEW 2026-11-23, per user request: re-test the ORIGINAL first backtest's "every touch" gating (g_awaitDir never zeroed, no session cap either) but WITH all the filters added since (H1/BB4/H4/avoid-zones/last-leg-confirm) -- the original "every touch" test (PF~1.01, no edge) had NONE of those filters yet, so this checks whether they alone can keep it profitable at much higher frequency. SUPERSEDES UseSessionGatedEntry entirely when true (no session cap applied, only the existing one-basket-at-a-time ceiling) (TEST, untested, user-specified logic)
 
 input group "=== Grid step sizing (manual tool had a user-typed box; this automates it, TEST/untested) ==="
 input bool   UseATRStep          = true;  // true: step=ATR(StepATRPeriod)*StepATRMult (price units); false: fixed GridStepPoints (TEST, untested)
@@ -1361,6 +1382,7 @@ int OnInit()
        " MAPeriod="+IntegerToString(MAPeriod)+" MaxWaitBars="+IntegerToString(MaxWaitBars)+
        " | UseSessionGatedEntry="+(UseSessionGatedEntry?"true":"false")+" AsiaSessionStartKST="+IntegerToString(AsiaSessionStartKST)+
        " EuropeSessionStartKST="+IntegerToString(EuropeSessionStartKST)+" USSessionStartKST="+IntegerToString(USSessionStartKST)+
+       " UseEveryTouchEntry="+(UseEveryTouchEntry?"true":"false")+
        " | UseATRStep="+(UseATRStep?"true":"false")+" StepATRPeriod="+IntegerToString(StepATRPeriod)+
        " StepATRMult="+DoubleToString(StepATRMult,2)+" GridStepPoints="+DoubleToString(GridStepPoints,1)+
        " | Lots="+DoubleToString(Lots,2)+" GridCount="+IntegerToString(GridCount)+" SLMult="+DoubleToString(SLMult,2)+
@@ -1482,7 +1504,7 @@ void OnTick()
          bool touched=(g_awaitDir>0)?(bid<=ma):(bid>=ma);
          if(!touched) return;
 
-         if(UseSessionGatedEntry && g_sessionEntryUsed)
+         if(!UseEveryTouchEntry && UseSessionGatedEntry && g_sessionEntryUsed)
          {
             Log("ENTRY_SKIPPED","session already used ("+IntegerToString(g_lastSessionIdx)+"=0:Asia/1:Europe/2:US) -- episode stays armed, retry next session");
             return;
@@ -1551,7 +1573,7 @@ void OnTick()
          }
 
          g_dir=finalDir;
-         if(!UseSessionGatedEntry) g_awaitDir=0; // consume -- only the FIRST touch after this cross enters (UseSessionGatedEntry keeps it armed for the next session's touch instead)
+         if(!UseEveryTouchEntry && !UseSessionGatedEntry) g_awaitDir=0; // consume -- only the FIRST touch after this cross enters (UseSessionGatedEntry/UseEveryTouchEntry keep it armed for the next touch instead)
 
          if(!DoFirstEntry())
          {

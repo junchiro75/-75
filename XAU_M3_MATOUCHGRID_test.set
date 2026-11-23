@@ -6,6 +6,7 @@ UseSessionGatedEntry=false
 AsiaSessionStartKST=9
 EuropeSessionStartKST=17
 USSessionStartKST=22
+UseEveryTouchEntry=false
 UseATRStep=false
 StepATRPeriod=14
 StepATRMult=0.2
