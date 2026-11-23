@@ -477,8 +477,17 @@
 //| construction: after inverting, finalDir always equals h4Dir, so the old  |
 //| skip-gate would be a no-op anyway). isCounterTrend is recomputed after   |
 //| any inversion so CounterTrendTPShrink still applies correctly. Default   |
-//| false (UseHigherTFAlignment2=true stays the confirmed behavior). Not     |
-//| yet backtested.                                                          |
+//| false (UseHigherTFAlignment2=true stays the confirmed behavior).         |
+//|                                                                     |
+//| TWENTY-SECOND BACKTEST (2026-11-23, UseH1H4DisagreeReversal=true test,   |
+//| everything else at the confirmed baseline): NET $26,890.70->$7,328.21    |
+//| (-73%), PF 1.3191->1.057426 (near breakeven), RF 2.635687->0.644076      |
+//| (collapsed), Sharpe 1.972821->0.467478, Equity DD 8.36%->10.59%. Trades  |
+//| rose 762->1,068 (skip-gate rejections became forced reversed entries     |
+//| instead). REJECTED -- H1/H4 disagreement is a low-conviction situation   |
+//| the old skip-gate correctly avoided entirely; betting against both       |
+//| directions made it worse, not better. UseH1H4DisagreeReversal stays      |
+//| false (default).                                                         |
 //+------------------------------------------------------------------+
 #property strict
 #include <Trade/Trade.mqh>
@@ -533,7 +542,7 @@ input bool   UseHigherTFAlignment2  = true;      // a SECOND higher timeframe th
 input ENUM_TIMEFRAMES HigherTFAlignment2 = PERIOD_H4; // first guess for the second required timeframe (TEST, untested)
 
 input group "=== H1/H4 disagreement reversal (NEW 2026-11-23, per user request: '1시간봉하고 4시간봉하고 일치하지 않을때 반대방향으로 진입하면') ==="
-input bool   UseH1H4DisagreeReversal = false; // if HigherTFAlignment's price-vs-20MA direction (H1) and HigherTFAlignment2's own fast/slow MA cross direction (H4) disagree with EACH OTHER, INVERT the already-decided finalDir (from the BB4/H1-override/M3-cross chain above) instead of running the UseHigherTFAlignment2 skip-gate below -- when true, SUPERSEDES UseHigherTFAlignment2 entirely regardless of its own value (TEST, untested, user-specified logic)
+input bool   UseH1H4DisagreeReversal = false; // if HigherTFAlignment's price-vs-20MA direction (H1) and HigherTFAlignment2's own fast/slow MA cross direction (H4) disagree with EACH OTHER, INVERT the already-decided finalDir (from the BB4/H1-override/M3-cross chain above) instead of running the UseHigherTFAlignment2 skip-gate below -- when true, SUPERSEDES UseHigherTFAlignment2 entirely regardless of its own value (REJECTED 2026-11-23: NET $26,890.70->$7,328.21, RF 2.636->0.644 -- H1/H4 disagreement was a low-conviction situation the old skip-gate correctly avoided; betting against both made it worse, not better. Default stays false, see dated backtest note)
 
 input group "=== Avoid zone #1: H1 기본비+장기이평 겹침 '상위저항' (NEW 2026-11-21, per checklist '피해야 할 구간 4가지': '상위 시간봉에서 기본비(박스)와 장기이평이 겹치는 자리. 뚫리면 한 방향으로 미친듯이 간다. 건드리면 손절 확정') ==="
 input bool   UseAvoidBB4MAOverlap    = true; // skip ANY entry (regardless of direction) if HigherTFAlignment's BB4(4,4) upper OR lower band sits within AvoidBB4MAOverlapPts of HigherTFAlignment's own 120-period MA -- a "loaded" confluence level (TEST, untested, user-specified logic)
