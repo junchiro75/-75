@@ -1,0 +1,16 @@
+MomentumWindowMs=500
+MomentumThresholdPoints=50
+UseFadeMode=false
+TrendWindowMs=60000
+TrendThresholdPoints=950
+RequireTrendAlignment=true
+TPPoints=140
+SLPoints=140
+MaxHoldSeconds=2
+MaxSpreadPoints=15
+MinReEntryGapMs=300
+MaxTradesPerMinute=0
+Lots=0.01
+MagicNumber=95020012
+MaxDeviationPts=20
+EnableLiveOrders=true
