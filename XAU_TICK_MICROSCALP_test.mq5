@@ -32,6 +32,34 @@
 //| MaxSpreadPoints exists to refuse entries when spread has widened.       |
 //| (3) Not yet backtested in any form -- every input below is a first-     |
 //| guess starting point, not a confirmed value.                           |
+//|                                                                         |
+//| V1 BACKTEST (2026-11-24, MomentumThresholdPoints=80, TPPoints/SLPoints  |
+//| =60, 2025.01-2026.10): NET -$8,071.55, PF 0.789, RF -0.386, Sharpe -5.0,|
+//| DD 20.90%, 103,610 trades, win rate 50.26%, avg hold ~1s (time stop     |
+//| confirmed working structurally). Raw price edge was actually slightly  |
+//| POSITIVE (~+$7,470 estimated), but the fixed ~$0.15/trade commission   |
+//| (0.01 lot) multiplied across 103,610 trades (~$15,540 total) overwhelmed|
+//| it -- commission, not spread, was the dominant structural cost at this  |
+//| trade frequency.                                                        |
+//|                                                                         |
+//| V2 BACKTEST (2026-11-24, MomentumThresholdPoints 80->180, TPPoints/     |
+//| SLPoints 60->140, per the V1 finding): NET flipped to +$103.40, PF      |
+//| 1.033, RF 0.068, Sharpe 3.40, DD 1.52%, trades 103,610->5,318 (-95%),   |
+//| win rate 52.03%. Confirms the commission hypothesis, but the edge is    |
+//| razor-thin (Expected Payoff $0.019/trade, RF only 0.068 -- NET is just  |
+//| 7% of max DD) -- not yet a dependable "steadily accumulate profit"      |
+//| engine; pure tick-momentum alone may not have enough real edge on this  |
+//| symbol/feed for a retail setup.                                         |
+//|                                                                         |
+//| REVISION (2026-11-24, per user request, "스캘핑용 상위 추세 필터"): added |
+//| TrendWindowMs/TrendThresholdPoints/RequireTrendAlignment -- a SECOND,   |
+//| longer (60s default) tick-based lookback reusing the same buffer/      |
+//| lookup as the short burst signal, instead of a bar-based M1/M2          |
+//| indicator (which would reintroduce bar-close lag into an otherwise      |
+//| tick-native EA). Only takes the burst entry if it agrees with this      |
+//| longer-term direction; skips entirely if the longer-term move is too    |
+//| flat to call a trend. TICKBUF_SIZE raised 4096->65536 to comfortably    |
+//| span the 60s window. Not yet backtested in this form.                   |
 //+------------------------------------------------------------------+
 #property strict
 #include <Trade/Trade.mqh>
@@ -41,6 +69,11 @@ input group "=== Signal: tick-level momentum burst (NEW, untested, user-specifie
 input int    MomentumWindowMs        = 500;  // lookback window, milliseconds, to measure recent price velocity (TEST, untested)
 input double MomentumThresholdPoints = 80;   // min |price change| over that window, in raw points (_Point, $0.01 each on this symbol -- 80 = $0.80), to count as a "burst" (TEST, untested)
 input bool   UseFadeMode             = false;// false: trade WITH the burst (momentum continuation); true: trade AGAINST it (mean-reversion fade) (TEST, untested)
+
+input group "=== Higher-timeframe trend filter (NEW 2026-11-24, per user request: 2초짜리 스캘프의 '상위 추세' 필터 -- a bar-based M1/M2 indicator would reintroduce bar-close lag into an otherwise tick-native EA, so this reuses the SAME tick buffer as the burst signal above with a longer window instead) ==="
+input int    TrendWindowMs           = 60000; // longer tick-based lookback window, milliseconds, for the higher-level trend direction (60000 = 60 seconds) -- same lookup mechanism as MomentumWindowMs, just a longer window (TEST, untested, user-specified logic)
+input double TrendThresholdPoints    = 150;   // min |price change| over TrendWindowMs, in raw points, to count as a real directional trend bias -- below this the trend is too flat/ambiguous and the entry is skipped entirely (TEST, untested)
+input bool   RequireTrendAlignment   = true;  // only take the momentum-burst entry if its direction agrees with the longer-term trend above; if the trend itself is too flat (see TrendThresholdPoints), no entry fires regardless of the short-window burst (TEST, untested, user-specified logic)
 
 input group "=== Exit: fixed tight TP/SL + HARD time stop (the time stop is what makes this '1~2초' by construction, NEW, untested) ==="
 input double TPPoints                = 60;   // take-profit distance, raw points ($0.01 each -- 60 = $0.60) (TEST, untested)
@@ -58,7 +91,7 @@ input ulong  MagicNumber             = 95020001;
 input int    MaxDeviationPts         = 20;
 input bool   EnableLiveOrders        = true;
 
-#define TICKBUF_SIZE 4096
+#define TICKBUF_SIZE 65536 // RAISED 2026-11-24 from 4096: must comfortably span TrendWindowMs (60s) of ticks, not just the old 500ms MomentumWindowMs
 double  g_tickBid[TICKBUF_SIZE];
 long    g_tickMsc[TICKBUF_SIZE];
 int     g_tickHead=0;   // next write slot
@@ -195,6 +228,16 @@ void OnTick()
 
    int dir=(movePts>0)?+1:-1;
    if(UseFadeMode) dir=-dir;
+
+   if(RequireTrendAlignment)
+   {
+      double refBidTrend;
+      if(!BidAtOrBefore(nowMsc-TrendWindowMs,refBidTrend)) return; // not enough history yet for the trend window
+      double trendPts=(bid-refBidTrend)/_Point;
+      if(MathAbs(trendPts)<TrendThresholdPoints) return; // trend too flat/ambiguous -- skip
+      int trendDir=(trendPts>0)?+1:-1;
+      if(dir!=trendDir) return; // burst disagrees with the higher-level trend -- skip
+   }
 
    if(!EnableLiveOrders)
    {
