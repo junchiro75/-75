@@ -79,11 +79,26 @@
 //| each trade still resolving in 1-2s. The sweep shows this is a real      |
 //| trade-off in THIS architecture, not a tuning miss: every attempt to     |
 //| raise frequency by loosening TrendThresholdPoints pulls NET down toward |
-//| the V1/V2 numbers. Next experiment to try: loosen MomentumThresholdPoints|
-//| (the short 500ms burst trigger, currently 180) independently while      |
-//| keeping TrendThresholdPoints=950 fixed -- the trend gate may be doing   |
-//| most of the real quality filtering, so the burst trigger itself might   |
-//| tolerate being less strict without giving back the quality gained here. |
+//| the V1/V2 numbers.                                                       |
+//|                                                                         |
+//| MomentumThresholdPoints SWEEP (2026-11-24, 10/15/20/25/50/100 with       |
+//| TrendThresholdPoints=950 held fixed): confirmed the hypothesis           |
+//| dramatically. NET 10:$15,622/37,629 trades, 15:$16,158/33,915,           |
+//| 20:$16,287(PEAK)/30,714, 25:$16,049/28,181, 50:$12,569/16,449,           |
+//| 100:$4,526/5,263 -- vs the old 180:$891/1,098. Win rate ROSE as trade    |
+//| count rose (74.4%->80.7% at 20), confirming the burst trigger at 180    |
+//| was mostly just missing good trend-confirmed windows while waiting for  |
+//| a rare violent half-second spike, not filtering for quality -- the 60s  |
+//| trend gate was already doing that job. Below 20 (e.g. 10) quality       |
+//| dilutes slightly as the trigger starts catching plain noise ticks.      |
+//|                                                                         |
+//| CONFIRMED (2026-11-24, per user): MomentumThresholdPoints default       |
+//| 180->20. Combined with TrendThresholdPoints=950/TrendWindowMs=60000,    |
+//| this is now the confirmed combo: NET $16,287.35, PF 2.943, RF 21.57,    |
+//| Sharpe 280.48, DD 0.75%, 30,714 trades/22mo (~47/day), win rate 80.74%. |
+//| Still subject to the KNOWN LIMITATIONS at the top of this header --     |
+//| these are backtest-ceiling numbers, not a live estimate, especially at  |
+//| this trade frequency and timescale.                                    |
 //+------------------------------------------------------------------+
 #property strict
 #include <Trade/Trade.mqh>
@@ -91,7 +106,7 @@ CTrade trade;
 
 input group "=== Signal: tick-level momentum burst (NEW, untested, user-specified: '1~2초만에 매매') ==="
 input int    MomentumWindowMs        = 500;  // lookback window, milliseconds, to measure recent price velocity (TEST, untested)
-input double MomentumThresholdPoints = 80;   // min |price change| over that window, in raw points (_Point, $0.01 each on this symbol -- 80 = $0.80), to count as a "burst" (TEST, untested)
+input double MomentumThresholdPoints = 20;   // min |price change| over that window, in raw points (_Point, $0.01 each on this symbol -- 20 = $0.20), to count as a "burst" (CONFIRMED 2026-11-24: with TrendThresholdPoints=950 fixed as the real quality gate, this is really just a timing trigger -- 10/15/20/25/50/100 sweep found NET peaks at 20 ($16,287.35, 30,714 trades, win rate 80.74%) vs the old 180's $891.15/1,098 trades. Loosening this let far more of the already-trend-confirmed windows actually fire instead of waiting for a rare violent half-second spike; below 20 (e.g. 10) quality dilutes slightly as it starts catching plain noise ticks. See header.)
 input bool   UseFadeMode             = false;// false: trade WITH the burst (momentum continuation); true: trade AGAINST it (mean-reversion fade) (TEST, untested)
 
 input group "=== Higher-timeframe trend filter (NEW 2026-11-24, per user request: 2초짜리 스캘프의 '상위 추세' 필터 -- a bar-based M1/M2 indicator would reintroduce bar-close lag into an otherwise tick-native EA, so this reuses the SAME tick buffer as the burst signal above with a longer window instead) ==="

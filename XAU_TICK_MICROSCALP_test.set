@@ -1,5 +1,5 @@
 MomentumWindowMs=500
-MomentumThresholdPoints=180
+MomentumThresholdPoints=20
 UseFadeMode=false
 TrendWindowMs=60000
 TrendThresholdPoints=950
