@@ -673,6 +673,28 @@
 //| unset. Previously such baskets ran with SL+UseRegimeFlipExit only, by    |
 //| design -- user asked for every basket to get a real TP range. Not yet    |
 //| backtested.                                                             |
+//|                                                                     |
+//| LIVE INCIDENT (2026-11-24, first live run, confirmed by user via MT5     |
+//| terminal screenshot): a P0 position (ticket 1246314026, slot 0) was      |
+//| found with BOTH SL and TP completely blank, while its basket's G1 leg    |
+//| had the correct shared SL/TP and later closed normally via that SL.      |
+//| The EA's own log showed NO GRID_SL_SET_FAIL for this basket -- PlaceGrid |
+//| believed its PositionModify on P0 succeeded. Suspected root cause: a     |
+//| position-list sync race right after the first-entry fill in LIVE        |
+//| trading (never observed in Strategy Tester, which is synchronous) --    |
+//| PositionsTotal() may not yet have included the brand-new position at    |
+//| the moment PlaceGrid's modify-loop ran, so the loop silently iterated   |
+//| zero times (no attempt made, hence no failure logged either).           |
+//|                                                                     |
+//| THIRTY-THIRD REVISION (2026-11-24, per user request, "한 바스켓 안의      |
+//| 거래들은 한 개의 TP/SL로 끝나야 된다"): added an SL/TP resync safety net   |
+//| at the top of UpdateBasketExits(), running every tick whenever          |
+//| EnableLiveOrders -- re-reads every open position under the slot's magic |
+//| and re-applies g_sl[slot]/g_tp[slot] via PositionModify if either one   |
+//| doesn't match (logged as SL_TP_RESYNC / SL_TP_RESYNC_FAIL on failure).  |
+//| Self-heals within one tick regardless of root cause (the race above,    |
+//| or anything else that might desync a position's SL/TP later). Not yet   |
+//| live- or backtested in this form.                                      |
 //+------------------------------------------------------------------+
 #property strict
 #include <Trade/Trade.mqh>
@@ -1376,6 +1398,37 @@ void PlaceGrid(int slot,double step,double tpCandidate)
 //+------------------------------------------------------------------+
 void UpdateBasketExits(int slot)
 {
+   //--- SL/TP resync safety net (NEW 2026-11-24, per live bug report: a P0
+   //    position was left with NO SL/NO TP at all even though PlaceGrid's
+   //    PositionModify call logged no failure -- suspected position-list
+   //    sync race right after the first-entry fill, where PositionsTotal()
+   //    didn't yet include the brand-new position at modify time, so the
+   //    loop silently found nothing to modify. Rather than chase the exact
+   //    race, this just re-asserts the invariant every tick: every open
+   //    position under this slot's magic MUST carry SL=g_sl[slot] (and
+   //    TP=g_tp[slot] when nonzero) -- fixes it within one tick regardless
+   //    of root cause, self-healing even if something else clears it later.
+   if(EnableLiveOrders && g_sl[slot]>0)
+   {
+      ulong expectedMagicRS=SlotMagic(slot);
+      for(int ri=PositionsTotal()-1;ri>=0;ri--)
+      {
+         ulong rt=PositionGetTicket(ri);
+         if(rt==0 || !PositionSelectByTicket(rt)) continue;
+         if(!IsMine((ulong)PositionGetInteger(POSITION_MAGIC),PositionGetString(POSITION_SYMBOL),expectedMagicRS)) continue;
+         double curSL=PositionGetDouble(POSITION_SL);
+         double curTP=PositionGetDouble(POSITION_TP);
+         bool slWrong=(MathAbs(curSL-g_sl[slot])>_Point);
+         bool tpWrong=(g_tp[slot]>0 && MathAbs(curTP-g_tp[slot])>_Point);
+         if(slWrong || tpWrong)
+         {
+            Log("SL_TP_RESYNC","slot="+IntegerToString(slot)+" ticket="+IntegerToString((long)rt)+" had SL="+DoubleToString(curSL,_Digits)+" TP="+DoubleToString(curTP,_Digits)+" -- reapplying SL="+DoubleToString(g_sl[slot],_Digits)+" TP="+DoubleToString(g_tp[slot],_Digits));
+            if(!trade.PositionModify(rt,g_sl[slot],g_tp[slot]))
+               Log("SL_TP_RESYNC_FAIL",IntegerToString((int)trade.ResultRetcode())+" | "+trade.ResultRetcodeDescription()+" #"+IntegerToString((long)rt));
+         }
+      }
+   }
+
    //--- Late-grid re-confirm (NEW 2026-11-21, per user request): right before
    //    the LAST grid leg would fill (P0 + GridCount-1 legs already filled,
    //    one pending leg left), re-check M3/H1/H4 still agree with g_dir.
