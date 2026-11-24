@@ -99,6 +99,25 @@
 //| Still subject to the KNOWN LIMITATIONS at the top of this header --     |
 //| these are backtest-ceiling numbers, not a live estimate, especially at  |
 //| this trade frequency and timescale.                                    |
+//|                                                                         |
+//| SLIPPAGE DIAGNOSTIC ADDED (2026-11-24, per user request -- motivated by |
+//| live slippage already observed on 012/BB4FADEFLIP, which needed         |
+//| MinCushionPoints floors added for the exact same reason on a far wider  |
+//| R-based exit structure than this EA's fixed 140-point TP/SL): every     |
+//| entry and exit now logs its intended price (the quoted ask/bid at the   |
+//| moment the decision fired) vs the actual fill price (trade.ResultPrice) |
+//| as ENTRY_SLIPPAGE/EXIT_SLIPPAGE, both to the Experts/Journal (Print) and|
+//| to XAU_TICK_MICROSCALP_test_LOG.csv (same Log() pattern as the grid     |
+//| EA's own log file). A running SLIPPAGE_SUMMARY (avg entry/exit/total    |
+//| slip in points) logs every 100 trades and once more at OnDeinit.        |
+//| Back-of-envelope math: NET $16,287.35 over 30,714 trades = $0.53/trade  |
+//| average edge -- if real average total slippage (entry+exit) exceeds    |
+//| ~53 points ($0.53), the edge is gone. Compare that number against this  |
+//| log's avgTotalSlipPts from a demo/small-live forward run before sizing  |
+//| up. Backtest itself still assumes zero slippage (Strategy Tester fills  |
+//| at the quoted price +/- MaxDeviationPts with no latency), so this       |
+//| diagnostic will read ~0 in Strategy Tester and only becomes meaningful  |
+//| on a real demo/live run.                                                |
 //+------------------------------------------------------------------+
 #property strict
 #include <Trade/Trade.mqh>
@@ -143,6 +162,25 @@ int     g_tradeTimesHead=0, g_tradeTimesCount=0;
 datetime g_posOpenTime=0;
 double   g_posOpenPrice=0;
 int      g_posDir=0; // +1 buy, -1 sell
+
+// Slippage diagnostic (NEW 2026-11-24, per user request, motivated by live
+// slippage already observed on 012/013): requested price vs actual fill
+// price, logged per trade plus a running average every SlippageSummaryEvery
+// trades, so real execution quality can be measured directly instead of
+// assumed from the (slippage-free) backtest.
+int    f_log=INVALID_HANDLE;
+long   g_entryCount=0; double g_entrySlipSum=0;
+long   g_exitCount=0;  double g_exitSlipSum=0;
+
+void Log(string event_,string detail)
+{
+   Print(event_," ",detail);
+   if(f_log!=INVALID_HANDLE)
+   {
+      FileWrite(f_log,TimeToString(TimeCurrent(),TIME_DATE|TIME_SECONDS),event_,detail);
+      FileFlush(f_log);
+   }
+}
 
 //+------------------------------------------------------------------+
 void PushTick(double bid,long msc)
@@ -206,8 +244,11 @@ bool HasOpenPosition()
    return false;
 }
 
-void CloseMyPosition()
+// Returns the actual fill price of the close (0 if nothing was closed or the
+// close failed), for slippage measurement by the caller.
+double CloseMyPosition()
 {
+   double fillPrice=0;
    for(int i=PositionsTotal()-1;i>=0;i--)
    {
       ulong t=PositionGetTicket(i);
@@ -215,7 +256,19 @@ void CloseMyPosition()
       if((ulong)PositionGetInteger(POSITION_MAGIC)!=MagicNumber || PositionGetString(POSITION_SYMBOL)!=_Symbol) continue;
       if(!trade.PositionClose(t))
          Print("MICROSCALP CLOSE_FAIL retcode=",trade.ResultRetcode()," #",t);
+      else
+         fillPrice=trade.ResultPrice();
    }
+   return fillPrice;
+}
+
+void LogSlippageSummary()
+{
+   double avgEntry=(g_entryCount>0)?g_entrySlipSum/g_entryCount:0;
+   double avgExit=(g_exitCount>0)?g_exitSlipSum/g_exitCount:0;
+   Log("SLIPPAGE_SUMMARY","entries="+IntegerToString(g_entryCount)+" avgEntrySlipPts="+DoubleToString(avgEntry,2)+
+       " exits="+IntegerToString(g_exitCount)+" avgExitSlipPts="+DoubleToString(avgExit,2)+
+       " avgTotalSlipPts="+DoubleToString(avgEntry+avgExit,2));
 }
 
 int OnInit()
@@ -225,7 +278,15 @@ int OnInit()
    ArrayInitialize(g_tickBid,0);
    ArrayInitialize(g_tickMsc,0);
    ArrayInitialize(g_tradeTimes,0);
+   f_log=FileOpen("XAU_TICK_MICROSCALP_test_LOG.csv",FILE_READ|FILE_WRITE|FILE_CSV|FILE_ANSI|FILE_SHARE_READ,',');
+   if(f_log!=INVALID_HANDLE) FileSeek(f_log,0,SEEK_END);
    return INIT_SUCCEEDED;
+}
+
+void OnDeinit(const int reason)
+{
+   if(g_entryCount>0 || g_exitCount>0) LogSlippageSummary();
+   if(f_log!=INVALID_HANDLE) FileClose(f_log);
 }
 
 void OnTick()
@@ -247,7 +308,20 @@ void OnTick()
       bool timeUp=(TimeCurrent()-g_posOpenTime>=MaxHoldSeconds);
       if(hitTP || hitSL || timeUp)
       {
-         if(EnableLiveOrders) CloseMyPosition();
+         if(EnableLiveOrders)
+         {
+            double intendedClose=(g_posDir>0)?bid:ask; // closing a BUY sells at bid; closing a SELL buys at ask
+            double actualClose=CloseMyPosition();
+            if(actualClose>0)
+            {
+               double slipPts=(g_posDir>0)?(intendedClose-actualClose)/_Point:(actualClose-intendedClose)/_Point;
+               g_exitCount++; g_exitSlipSum+=slipPts;
+               Log("EXIT_SLIPPAGE","dir="+(g_posDir>0?"BUY":"SELL")+" reason="+(hitTP?"TP":(hitSL?"SL":"TIME"))+
+                   " intended="+DoubleToString(intendedClose,_Digits)+" actual="+DoubleToString(actualClose,_Digits)+
+                   " slipPts="+DoubleToString(slipPts,2));
+               if(g_exitCount%100==0) LogSlippageSummary();
+            }
+         }
          g_lastCloseMsc=nowMsc;
          g_posDir=0;
       }
@@ -306,9 +380,15 @@ void OnTick()
       Print("MICROSCALP ENTRY_FAIL retcode=",trade.ResultRetcode()," | ",trade.ResultRetcodeDescription());
       return;
    }
+   double intendedEntry=(dir>0?ask:bid);
    g_posDir=dir;
-   g_posOpenPrice=trade.ResultPrice()>0?trade.ResultPrice():(dir>0?ask:bid);
+   g_posOpenPrice=trade.ResultPrice()>0?trade.ResultPrice():intendedEntry;
    g_posOpenTime=TimeCurrent();
    RecordTradeTime(nowMsc);
-   Print("MICROSCALP ENTRY dir=",(dir>0?"BUY":"SELL")," @",DoubleToString(g_posOpenPrice,_Digits)," movePts=",DoubleToString(movePts,1)," spread=",DoubleToString(spreadPts,1));
+   double entrySlipPts=(dir>0)?(g_posOpenPrice-intendedEntry)/_Point:(intendedEntry-g_posOpenPrice)/_Point;
+   g_entryCount++; g_entrySlipSum+=entrySlipPts;
+   Log("ENTRY_SLIPPAGE","dir="+(dir>0?"BUY":"SELL")+" intended="+DoubleToString(intendedEntry,_Digits)+
+       " actual="+DoubleToString(g_posOpenPrice,_Digits)+" slipPts="+DoubleToString(entrySlipPts,2)+
+       " movePts="+DoubleToString(movePts,1)+" spread="+DoubleToString(spreadPts,1));
+   if(g_entryCount%100==0) LogSlippageSummary();
 }
