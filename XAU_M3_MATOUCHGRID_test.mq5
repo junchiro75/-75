@@ -662,6 +662,17 @@
 //|                                                                     |
 //| THIRTY-FIRST REVISION (2026-11-24, per user confirmation): UseSkipHourKST|
 //| default true->false. This is now the confirmed default.                 |
+//|                                                                     |
+//| THIRTY-SECOND REVISION (2026-11-24, per user report while live-running   |
+//| the confirmed combo: a SELL basket had no TP because the lowest low of   |
+//| the last SwingLookbackBars(20) bars sat AT/ABOVE P0 -- no favorable swing|
+//| target existed at all, not just "too close"): added UseSwingTPFallbackRR |
+//| (default true) -- when UseSwingTP's target is rejected for ANY reason    |
+//| (too close/behind, or no valid extreme), TP now falls back to the        |
+//| UseFixedRRTp formula (SLMult*step*FixedRRRatio) instead of staying       |
+//| unset. Previously such baskets ran with SL+UseRegimeFlipExit only, by    |
+//| design -- user asked for every basket to get a real TP range. Not yet    |
+//| backtested.                                                             |
 //+------------------------------------------------------------------+
 #property strict
 #include <Trade/Trade.mqh>
@@ -696,9 +707,10 @@ input double SLMult               = 2.5;  // shared basket SL = P0 -/+ SLMult*st
 input group "=== Take-profit: nearby swing high/low (REVISED 2026-11-21: was cross-regime extreme, hit only 3.8% of baskets -- now a rolling lookback at entry time) ==="
 input bool   UseSwingTP           = true;  // BUY target = highest high over SwingLookbackBars bars at entry ("전고점 역전"); SELL target = lowest low over SwingLookbackBars bars at entry ("전저점 역전") (TEST, untested)
 input int    SwingLookbackBars    = 20;    // lookback window (signal-TF bars, ending at the bar before entry) for the swing extreme (REVERSED 2026-11-24: the old "50 stays" confirmation below was measured under the single-basket architecture; under concurrent baskets (MaxConcurrentBaskets=7) the faster-resolving 20-bar target wins decisively -- see THIRTIETH REVISION in header. Old note for reference: CONFIRMED-THEN over 20 under single-basket: NET $30,220->$25,870, RF 2.03->1.49, DD worse at 20)
-input double MinSwingTPStep       = 1.0;   // minimum favorable distance from P0 to the swing target, in steps -- if the swing level doesn't clear this (target too close/behind), skip the hard TP for this basket and rely on SL/breakeven-exit only (TEST, untested)
+input double MinSwingTPStep       = 1.0;   // minimum favorable distance from P0 to the swing target, in steps -- if the swing level doesn't clear this (target too close/behind), the hard TP falls back to UseSwingTPFallbackRR below instead of going unset (REVISED 2026-11-24, see that input's comment)
+input bool   UseSwingTPFallbackRR = true;  // NEW 2026-11-24, per user request: when UseSwingTP is on but the swing target is rejected (too close/behind P0, or no valid swing extreme at all -- e.g. a SELL entry where the lowest low of the last SwingLookbackBars bars sits AT or ABOVE P0, so there's no favorable low to target), set TP = P0 +/- SLMult*step*FixedRRRatio (the SAME formula as UseFixedRRTp) instead of leaving this basket with no hard TP at all. Logged as SWING_TP_FALLBACK_RR. Has no effect when UseFixedRRTp=true (that path never calls the swing branch) (TEST, untested, user-specified logic)
 input bool   UseFixedRRTp         = false; // NEW 2026-11-23, per user request: TP = P0 +/- SLMult*step*FixedRRRatio -- a hard multiple of the SAME SL distance, so risk:reward stays constant regardless of market conditions (unlike the bar-count-based swing target above, which doesn't reliably scale the actual price distance). SUPERSEDES UseSwingTP entirely when true; CounterTrendTPShrink does NOT apply to this path (TEST, untested, user-specified logic)
-input double FixedRRRatio         = 2.0;   // TP distance = SL distance * this ratio (e.g. SL=$12.5: 2.0->TP=$25, 1.5->TP=$18.75) (TEST, untested)
+input double FixedRRRatio         = 2.0;   // TP distance = SL distance * this ratio (e.g. SL=$12.5: 2.0->TP=$25, 1.5->TP=$18.75) -- ALSO used by UseSwingTPFallbackRR above (TEST, untested)
 
 input group "=== Profit trail: lock in gains after N steps favorable (NEW 2026-11-21, per user request -- UseSwingTP/UseRegimeFlipExit are UNCHANGED and can still fire; this is an ADDITIONAL protective layer so a big unrealized gain can't fully round-trip before either of those would otherwise catch it) ==="
 input bool   UseProfitTrail            = false; // once a basket's favorable move (avg entry to current price, in steps) reaches ProfitTrailActivateSteps, arm a trailing stop that follows the best favorable price by ProfitTrailDistanceSteps, FLOORED at breakeven (avg entry) so it can never lock in a loss once armed (REJECTED 2026-11-21: NET $26,890.70->$4,956.80, RF 2.636->0.386, max win $3,334->$1,059 -- cut the FLIP mechanism's big wins short just like the removed UseBreakevenExit; default now OFF, see dated backtest note)
@@ -1270,13 +1282,26 @@ void PlaceGrid(int slot,double step,double tpCandidate)
       }
       g_tp[slot]=NP(tpCand);
    }
-   else if(UseSwingTP && tpCandidate>0)
+   else if(UseSwingTP)
    {
-      double favDist=(g_dir[slot]>0) ? (tpCandidate-g_p0[slot]) : (g_p0[slot]-tpCandidate);
-      if(favDist>=MinSwingTPStep*step)
+      double favDist=(tpCandidate>0) ? ((g_dir[slot]>0) ? (tpCandidate-g_p0[slot]) : (g_p0[slot]-tpCandidate)) : -1000000;
+      bool swingValid=(tpCandidate>0 && favDist>=MinSwingTPStep*step);
+      double cushion=MinStopDistance()+_Point;
+      double tpCand;
+      if(swingValid)
+         tpCand=tpCandidate;
+      else
       {
-         double cushion=MinStopDistance()+_Point;
-         double tpCand=tpCandidate;
+         Log("SWING_TP_REJECTED","slot="+IntegerToString(slot)+" target="+(tpCandidate>0?DoubleToString(tpCandidate,_Digits):"none")+" too close/behind (or no valid swing extreme) P0="+DoubleToString(g_p0[slot],_Digits)+" (favDist<"+DoubleToString(MinSwingTPStep,2)+" steps) -- "+(UseSwingTPFallbackRR?"falling back to fixed R:R TP":"no hard TP this basket"));
+         if(!UseSwingTPFallbackRR) tpCand=0;
+         else
+         {
+            tpCand=g_p0[slot]+g_dir[slot]*SLMult*step*FixedRRRatio;
+            Log("SWING_TP_FALLBACK_RR","slot="+IntegerToString(slot)+" tp="+DoubleToString(tpCand,_Digits)+" ratio="+DoubleToString(FixedRRRatio,2));
+         }
+      }
+      if(tpCand>0)
+      {
          MqlTick qtp; if(SymbolInfoTick(_Symbol,qtp))
          {
             if(g_dir[slot]>0){ if(tpCand<qtp.ask+cushion) tpCand=qtp.ask+cushion; }
@@ -1284,8 +1309,6 @@ void PlaceGrid(int slot,double step,double tpCandidate)
          }
          g_tp[slot]=NP(tpCand);
       }
-      else
-         Log("SWING_TP_REJECTED","slot="+IntegerToString(slot)+" target="+DoubleToString(tpCandidate,_Digits)+" too close/behind P0="+DoubleToString(g_p0[slot],_Digits)+" (favDist<"+DoubleToString(MinSwingTPStep,2)+" steps) -- no hard TP this basket");
    }
 
    if(!EnableLiveOrders)
@@ -1569,7 +1592,8 @@ int OnInit()
        " StepATRMult="+DoubleToString(StepATRMult,2)+" GridStepPoints="+DoubleToString(GridStepPoints,1)+
        " | Lots="+DoubleToString(Lots,2)+" GridCount="+IntegerToString(GridCount)+" SLMult="+DoubleToString(SLMult,2)+
        " | UseSwingTP="+(UseSwingTP?"true":"false")+" SwingLookbackBars="+IntegerToString(SwingLookbackBars)+
-       " MinSwingTPStep="+DoubleToString(MinSwingTPStep,2)+" UseFixedRRTp="+(UseFixedRRTp?"true":"false")+" FixedRRRatio="+DoubleToString(FixedRRRatio,2)+
+       " MinSwingTPStep="+DoubleToString(MinSwingTPStep,2)+" UseSwingTPFallbackRR="+(UseSwingTPFallbackRR?"true":"false")+
+       " UseFixedRRTp="+(UseFixedRRTp?"true":"false")+" FixedRRRatio="+DoubleToString(FixedRRRatio,2)+
        " | UseProfitTrail="+(UseProfitTrail?"true":"false")+" ProfitTrailActivateSteps="+DoubleToString(ProfitTrailActivateSteps,2)+
        " ProfitTrailDistanceSteps="+DoubleToString(ProfitTrailDistanceSteps,2)+
        " | UseRegimeFlipExit="+(UseRegimeFlipExit?"true":"false")+" RegimeFlipMinProfitSteps="+DoubleToString(RegimeFlipMinProfitSteps,2)+

@@ -18,6 +18,7 @@ SLMult=2.5
 UseSwingTP=true
 SwingLookbackBars=20
 MinSwingTPStep=1.0
+UseSwingTPFallbackRR=true
 UseFixedRRTp=false
 FixedRRRatio=2.0
 UseProfitTrail=false
