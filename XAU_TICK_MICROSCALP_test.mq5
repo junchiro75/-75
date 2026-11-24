@@ -59,7 +59,31 @@
 //| tick-native EA). Only takes the burst entry if it agrees with this      |
 //| longer-term direction; skips entirely if the longer-term move is too    |
 //| flat to call a trend. TICKBUF_SIZE raised 4096->65536 to comfortably    |
-//| span the 60s window. Not yet backtested in this form.                   |
+//| span the 60s window.                                                    |
+//|                                                                         |
+//| TrendWindowMs SWEEP (2026-11-24, 30s/60s/120s, TrendThresholdPoints=150 |
+//| held fixed): 60s beat both -- NET $283.73 (60s) vs $277.80 (30s) vs     |
+//| $211.31 (120s), same ordering on every other metric. 30s is noisy, 120s |
+//| is too laggy. TrendWindowMs stays at 60000 (confirmed).                 |
+//|                                                                         |
+//| TrendThresholdPoints SWEEP (2026-11-24, 150->1000, TrendWindowMs=60000  |
+//| held fixed): monotonic improvement on PF/RF/Sharpe/win rate all the way |
+//| to 1000 (150: PF 1.155/RF 0.337/Sharpe 15.67/WR 53.4%, 1000: PF 2.773/  |
+//| RF 6.578/Sharpe 164.0/WR 75.0%), but NET plateaus 800-1000 (all         |
+//| $881-891, within noise -- 800:$884.91, 850:$881.06, 900:$889.58,        |
+//| 950:$891.15, 1000:$886.25). CONFIRMED at 950 (best NET on the plateau,  |
+//| 1,098 trades/22mo).                                                     |
+//|                                                                         |
+//| USER CONCERN (2026-11-24, valid): 950 means ~1.7 trades/day -- nowhere  |
+//| near the original "HFT-adjacent, stack many small gains" goal despite   |
+//| each trade still resolving in 1-2s. The sweep shows this is a real      |
+//| trade-off in THIS architecture, not a tuning miss: every attempt to     |
+//| raise frequency by loosening TrendThresholdPoints pulls NET down toward |
+//| the V1/V2 numbers. Next experiment to try: loosen MomentumThresholdPoints|
+//| (the short 500ms burst trigger, currently 180) independently while      |
+//| keeping TrendThresholdPoints=950 fixed -- the trend gate may be doing   |
+//| most of the real quality filtering, so the burst trigger itself might   |
+//| tolerate being less strict without giving back the quality gained here. |
 //+------------------------------------------------------------------+
 #property strict
 #include <Trade/Trade.mqh>
@@ -72,7 +96,7 @@ input bool   UseFadeMode             = false;// false: trade WITH the burst (mom
 
 input group "=== Higher-timeframe trend filter (NEW 2026-11-24, per user request: 2초짜리 스캘프의 '상위 추세' 필터 -- a bar-based M1/M2 indicator would reintroduce bar-close lag into an otherwise tick-native EA, so this reuses the SAME tick buffer as the burst signal above with a longer window instead) ==="
 input int    TrendWindowMs           = 60000; // longer tick-based lookback window, milliseconds, for the higher-level trend direction (60000 = 60 seconds) -- same lookup mechanism as MomentumWindowMs, just a longer window (TEST, untested, user-specified logic)
-input double TrendThresholdPoints    = 150;   // min |price change| over TrendWindowMs, in raw points, to count as a real directional trend bias -- below this the trend is too flat/ambiguous and the entry is skipped entirely (TEST, untested)
+input double TrendThresholdPoints    = 950;   // min |price change| over TrendWindowMs, in raw points, to count as a real directional trend bias -- below this the trend is too flat/ambiguous and the entry is skipped entirely (CONFIRMED 2026-11-24: 150->1000 sweep found NET plateaus 800-1000 (all $881-891, within noise) while PF/RF/Sharpe/win rate keep climbing through 1000 -- 950 picked as the best NET point on that plateau. NOTE: this trades frequency for quality -- 1,098 trades over 22mo (~1.7/day), far below the original "HFT-adjacent, stack many small gains" goal, see header)
 input bool   RequireTrendAlignment   = true;  // only take the momentum-burst entry if its direction agrees with the longer-term trend above; if the trend itself is too flat (see TrendThresholdPoints), no entry fires regardless of the short-window burst (TEST, untested, user-specified logic)
 
 input group "=== Exit: fixed tight TP/SL + HARD time stop (the time stop is what makes this '1~2초' by construction, NEW, untested) ==="

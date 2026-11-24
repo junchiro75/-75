@@ -1,8 +1,11 @@
 MomentumWindowMs=500
-MomentumThresholdPoints=80
+MomentumThresholdPoints=180
 UseFadeMode=false
-TPPoints=60
-SLPoints=60
+TrendWindowMs=60000
+TrendThresholdPoints=950
+RequireTrendAlignment=true
+TPPoints=140
+SLPoints=140
 MaxHoldSeconds=2
 MaxSpreadPoints=15
 MinReEntryGapMs=300
