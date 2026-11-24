@@ -134,8 +134,8 @@ input double TrendThresholdPoints    = 950;   // min |price change| over TrendWi
 input bool   RequireTrendAlignment   = true;  // only take the momentum-burst entry if its direction agrees with the longer-term trend above; if the trend itself is too flat (see TrendThresholdPoints), no entry fires regardless of the short-window burst (TEST, untested, user-specified logic)
 
 input group "=== Exit: fixed tight TP/SL + HARD time stop (the time stop is what makes this '1~2초' by construction, NEW, untested) ==="
-input double TPPoints                = 60;   // take-profit distance, raw points ($0.01 each -- 60 = $0.60) (TEST, untested)
-input double SLPoints                = 60;   // stop-loss distance, raw points (TEST, untested)
+input double TPPoints                = 140;  // take-profit distance, raw points ($0.01 each -- 140 = $1.40) (CONFIRMED 2026-11-24 alongside TrendThresholdPoints=950/MomentumThresholdPoints=20 -- raised from the original 60 when the V1 run showed commission dominated at the tight 60/60 size, see header)
+input double SLPoints                 = 140;  // stop-loss distance, raw points (CONFIRMED 2026-11-24, same as TPPoints above)
 input int    MaxHoldSeconds          = 2;    // force-close the position after this many seconds regardless of P&L -- the core "1~2초" guarantee (TEST, untested, user-specified logic)
 
 input group "=== Entry gating / cost control (NEW, untested) ==="
