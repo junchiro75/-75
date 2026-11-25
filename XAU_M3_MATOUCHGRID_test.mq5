@@ -908,11 +908,12 @@ void Log(string event,string detail="")
    if(f_log!=INVALID_HANDLE)
    {
       ResetLastError();
-      uint written=FileWrite(f_log,TS(TimeCurrent()),event,detail);
+      FileWrite(f_log,TS(TimeCurrent()),event,detail); // void return in MQL5 -- check GetLastError() instead
+      int writeErr=GetLastError();
       bool flushed=FileFlush(f_log);
-      if(written==0 || !flushed)
+      if(writeErr!=0 || !flushed)
       {
-         int err=GetLastError();
+         int err=(writeErr!=0)?writeErr:GetLastError();
          Print("XAU_M3_MATOUCHGRID_test | LOG_WRITE_FAIL | err=",err," -- log file write/flush failed, closing handle and will retry next event");
          FileClose(f_log);
          f_log=INVALID_HANDLE;
