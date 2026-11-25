@@ -155,6 +155,32 @@
 //| from what was set -- so the configured TPPoints/SLPoints distance is    |
 //| always what's really protecting the trade, regardless of entry         |
 //| slippage in either direction.                                          |
+//|                                                                         |
+//| BUGFIX #3 (2026-11-25, SERIOUS -- found from a live log the user        |
+//| shared): trade.ResultPrice()/trade.ResultOrder() turned out to be       |
+//| unreliable in live execution -- every single entry in that log showed   |
+//| slipPts=0.00 (not realistically possible across 60+ live market         |
+//| orders), meaning ResultPrice() was returning 0 and the code was quietly |
+//| falling back to the pre-trade quote as if it were the real fill. Worse: |
+//| g_posTicket was being set from trade.ResultOrder(), so when THAT was    |
+//| also unreliable, PositionSelectByTicket(g_posTicket) could read as      |
+//| "already closed" on the very next tick after a perfectly normal entry   |
+//| -- the EA would think it had no open position while one was genuinely   |
+//| still live, and re-enter again and again instead of managing it. This   |
+//| is almost certainly what produced the live burst the user saw (dozens   |
+//| of entries within seconds, far above the ~46/day the backtest predicts) |
+//| and very likely explains a live session showing 34 losses/10 wins       |
+//| against an 80%+ backtested win rate -- not slippage, a tracking bug     |
+//| letting positions silently stack beyond the intended one-at-a-time      |
+//| design. Fixed by removing the dependency on the trade result object     |
+//| entirely: FindMyPositionTicket() scans the broker's own position list   |
+//| by magic+symbol (the same pattern already proven in the grid EA         |
+//| elsewhere in this repo) for both "is my position still open" and "what  |
+//| was the real fill price" (via PositionGetDouble(POSITION_PRICE_OPEN)),  |
+//| used both at entry and on every management tick. Not yet live-verified  |
+//| in this form -- watch the next live run for ENTRY_SLIPPAGE now showing  |
+//| real (nonzero) values and entry frequency back near the backtested      |
+//| rate.                                                                   |
 //+------------------------------------------------------------------+
 #property strict
 #include <Trade/Trade.mqh>
@@ -271,6 +297,33 @@ void PruneTradeCap(long nowMsc)
    }
 }
 
+// NEW 2026-11-25, BUGFIX #3 (the serious one): trade.ResultOrder()/
+// ResultPrice() were found unreliable in live execution (returning 0 even on
+// a genuinely successful fill -- confirmed from a live log showing EVERY
+// single entry at exactly slipPts=0.00, which is not realistically possible
+// across 60+ live market orders). Relying on them for g_posTicket meant
+// PositionSelectByTicket(g_posTicket) could immediately read as "gone" on
+// the very next tick after a perfectly normal entry, causing the EA to
+// think it had no open position while one was actually still live --
+// letting it re-enter again and again (the "거래 엄청 많이" burst the user
+// saw, far above the ~46/day the backtest predicted) instead of managing
+// the real position. This replaces that dependency entirely: find our
+// position by scanning the broker's own position list (magic+symbol), the
+// same robust pattern already proven in the grid EA elsewhere in this repo.
+// Leaves the found position selected (PositionGetDouble/Integer read from
+// it) so callers don't need to re-select.
+ulong FindMyPositionTicket()
+{
+   for(int i=PositionsTotal()-1;i>=0;i--)
+   {
+      ulong t=PositionGetTicket(i);
+      if(t==0 || !PositionSelectByTicket(t)) continue;
+      if((ulong)PositionGetInteger(POSITION_MAGIC)==MagicNumber && PositionGetString(POSITION_SYMBOL)==_Symbol)
+         return t;
+   }
+   return 0;
+}
+
 // Returns the actual fill price of the close (0 if nothing was closed or the
 // close failed), for slippage measurement by the caller.
 double CloseMyPosition()
@@ -362,18 +415,21 @@ void OnTick()
    //--- manage an already-open position: TP/SL + hard time stop ---
    if(g_posDir!=0)
    {
-      if(EnableLiveOrders && !PositionSelectByTicket(g_posTicket))
+      if(EnableLiveOrders)
       {
-         // Gone already -- the broker's own native SL/TP almost certainly beat
-         // us to it (confirmed happening live, 2026-11-25: our CloseMyPosition
-         // lost a race to it). Recover the real exit from history instead of
-         // silently losing this trade's slippage measurement. (Guarded to
-         // live-only: in dry-run mode no real position ever exists, so this
-         // ticket lookup would always -- and wrongly -- read as "already closed".)
-         LogNativeCloseIfAny(g_posTicket,g_posDir,g_posSL,g_posTP,g_posOpenTime);
-         g_lastCloseMsc=nowMsc;
-         g_posDir=0;
-         return;
+         ulong liveTicket=FindMyPositionTicket(); // robust magic+symbol scan -- see BUGFIX #3
+         if(liveTicket==0)
+         {
+            // Gone already -- either the broker's own native SL/TP beat us to
+            // it, or our own close just below already landed. Recover the
+            // real exit from history instead of silently losing this trade's
+            // slippage measurement.
+            LogNativeCloseIfAny(g_posTicket,g_posDir,g_posSL,g_posTP,g_posOpenTime);
+            g_lastCloseMsc=nowMsc;
+            g_posDir=0;
+            return;
+         }
+         g_posTicket=liveTicket; // keep it fresh/correct regardless of what entry originally stored
       }
 
       double curPrice=(g_posDir>0)?bid:ask;
@@ -398,7 +454,7 @@ void OnTick()
                g_lastCloseMsc=nowMsc;
                g_posDir=0;
             }
-            else if(!PositionSelectByTicket(g_posTicket))
+            else if(FindMyPositionTicket()==0)
             {
                // Our request lost the race to the broker's own native SL/TP --
                // recover the real exit instead of leaving it unmeasured.
@@ -473,9 +529,26 @@ void OnTick()
    }
    double intendedEntry=(dir>0?ask:bid);
    g_posDir=dir;
-   g_posOpenPrice=trade.ResultPrice()>0?trade.ResultPrice():intendedEntry;
    g_posOpenTime=TimeCurrent();
-   g_posTicket=trade.ResultOrder(); // position ticket == opening order ticket for a new market-order position (hedging account)
+
+   // BUGFIX #3 (2026-11-25): trade.ResultPrice()/ResultOrder() were found
+   // unreliable live (returning 0 on genuinely successful fills -- see
+   // header). Get the real fill price and ticket from the position itself
+   // via a magic+symbol scan instead of trusting the trade result object.
+   ulong foundTicket=FindMyPositionTicket();
+   if(foundTicket!=0)
+   {
+      g_posTicket=foundTicket;
+      g_posOpenPrice=PositionGetDouble(POSITION_PRICE_OPEN);
+   }
+   else
+   {
+      // Rare race: position not yet visible this same tick. Best-effort
+      // fallback now; the management block re-scans fresh every tick
+      // regardless, so this self-heals as soon as it becomes visible.
+      g_posTicket=0;
+      g_posOpenPrice=trade.ResultPrice()>0?trade.ResultPrice():intendedEntry;
+   }
 
    // BUGFIX (2026-11-25, found from a live case): slPrice/tpPrice above were
    // computed from the PRE-TRADE quote (ask/bid), but the actual fill can
