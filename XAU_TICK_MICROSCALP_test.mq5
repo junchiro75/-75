@@ -181,6 +181,18 @@
 //| in this form -- watch the next live run for ENTRY_SLIPPAGE now showing  |
 //| real (nonzero) values and entry frequency back near the backtested      |
 //| rate.                                                                   |
+//|                                                                         |
+//| BUGFIX #4 (2026-11-25, found from a Strategy Tester journal with        |
+//| simulated order latency enabled, ~180ms/order): a close request can     |
+//| still be "in flight" (not yet confirmed) when the NEXT tick re-evaluates|
+//| hitTP/hitSL/timeUp as still true and fires ANOTHER close for the same   |
+//| ticket -- MT5 correctly rejected the redundant one ("Position doesn't   |
+//| exist") once the first landed, so no double-close/financial harm        |
+//| occurred, but it's wasted request spam and a real risk under live       |
+//| broker latency (the same family of race as BUGFIX #1). Added            |
+//| CLOSE_RETRY_GAP_MS (250ms): skips re-attempting a close within that      |
+//| window of a prior attempt on the same position, giving any in-flight    |
+//| request time to resolve before trying again.                            |
 //+------------------------------------------------------------------+
 #property strict
 #include <Trade/Trade.mqh>
@@ -219,8 +231,19 @@ int     g_tickHead=0;   // next write slot
 int     g_tickCount=0;  // how many valid slots filled (caps at TICKBUF_SIZE)
 
 long    g_lastCloseMsc=0;
+long    g_lastCloseAttemptMsc=0; // NEW 2026-11-25: throttles repeat close attempts on the SAME still-open ticket while a prior request may still be in flight (see CLOSE_RETRY_GAP_MS)
 long    g_tradeTimes[600]; // ring buffer of recent entry times (msc/1000 = sec) for the per-minute cap
 int     g_tradeTimesHead=0, g_tradeTimesCount=0;
+
+// NEW 2026-11-25, found from a Strategy Tester journal with simulated order
+// latency (~180ms) enabled: our own close request can still be "in flight"
+// (not yet confirmed) when the NEXT tick re-evaluates hitTP/hitSL/timeUp as
+// still true and fires ANOTHER close for the same ticket -- MT5 correctly
+// rejects the redundant one ("Position doesn't exist") once the first
+// lands, so no double-close/financial harm occurred, but it's wasted
+// request spam and a real risk under live broker latency. This gap skips
+// re-attempting a close for a short window after sending one.
+#define CLOSE_RETRY_GAP_MS 250
 
 datetime g_posOpenTime=0;
 double   g_posOpenPrice=0;
@@ -441,6 +464,8 @@ void OnTick()
       {
          if(EnableLiveOrders)
          {
+            if(nowMsc-g_lastCloseAttemptMsc<CLOSE_RETRY_GAP_MS) return; // a close request may still be in flight -- don't pile on another
+            g_lastCloseAttemptMsc=nowMsc;
             double intendedClose=(g_posDir>0)?bid:ask; // closing a BUY sells at bid; closing a SELL buys at ask
             double actualClose=CloseMyPosition();
             if(actualClose>0)
