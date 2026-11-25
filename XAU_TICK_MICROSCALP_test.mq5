@@ -193,6 +193,26 @@
 //| CLOSE_RETRY_GAP_MS (250ms): skips re-attempting a close within that      |
 //| window of a prior attempt on the same position, giving any in-flight    |
 //| request time to resolve before trying again.                            |
+//|                                                                         |
+//| BUGFIX #5 (2026-11-26, found from a live Journal screenshot: two        |
+//| different tickets, #1247338947 and #1247338957, both open at once and   |
+//| closed ~1.5s apart from what should be a single-position state          |
+//| machine, ending in a failed close "[Position doesn't exist]" and a net  |
+//| loss): root cause was OnInit() never checking the broker's own position |
+//| list -- g_posDir/g_posTicket are plain globals, reset to 0/0 on every   |
+//| EA reload (recompile, remove-and-reattach, terminal restart), so if a   |
+//| position was genuinely still open at that moment, the EA forgot about   |
+//| it and the entry gate reopened, letting the very next momentum/trend    |
+//| signal stack a second position on top of the orphaned first one. Made   |
+//| worse by CloseMyPosition() sweeping and closing EVERY position matching |
+//| magic+symbol in one call (not just the tracked ticket) -- once a close  |
+//| eventually fired it silently absorbed both positions at once, which is  |
+//| why the stacking was never visible as two separate EXIT_SLIPPAGE lines. |
+//| Fixed: OnInit() now adopts any already-open position matching our       |
+//| magic+symbol into g_posDir/g_posTicket/g_posOpenPrice/g_posOpenTime/    |
+//| g_posSL/g_posTP instead of assuming a clean slate (logged as            |
+//| ADOPTED_EXISTING_POSITION), and CloseMyPosition() now takes the exact   |
+//| ticket to close instead of sweeping the whole position list.            |
 //+------------------------------------------------------------------+
 #property strict
 #include <Trade/Trade.mqh>
@@ -349,20 +369,29 @@ ulong FindMyPositionTicket()
 
 // Returns the actual fill price of the close (0 if nothing was closed or the
 // close failed), for slippage measurement by the caller.
-double CloseMyPosition()
+//
+// BUGFIX #5 (2026-11-26): this used to sweep PositionsTotal() and close EVERY
+// position matching magic+symbol, not just the one ticket we're tracking. A
+// live case (user screenshot, 2026-11-25) showed TWO distinct tickets
+// (#1247338947 and #1247338957) both getting closed within ~1.5s of each
+// other from what should have been a single-position state machine -- traced
+// to OnInit never checking for an already-open position (see BUGFIX #5 in
+// OnInit below) causing a second position to stack on top of an orphaned
+// first one. Sweeping-and-closing-everything here didn't cause that
+// stacking, but it masked it (both vanish in one call, no trace that there
+// were ever two) and corrupted slippage logging (only the LAST fill's price
+// is kept, silently dropping the other's EXIT_SLIPPAGE). Now closes only the
+// specific ticket passed in, so each close is logged individually and any
+// future stacking stays visible instead of being silently swallowed.
+double CloseMyPosition(ulong ticket)
 {
-   double fillPrice=0;
-   for(int i=PositionsTotal()-1;i>=0;i--)
+   if(ticket==0 || !PositionSelectByTicket(ticket)) return 0;
+   if(!trade.PositionClose(ticket))
    {
-      ulong t=PositionGetTicket(i);
-      if(t==0 || !PositionSelectByTicket(t)) continue;
-      if((ulong)PositionGetInteger(POSITION_MAGIC)!=MagicNumber || PositionGetString(POSITION_SYMBOL)!=_Symbol) continue;
-      if(!trade.PositionClose(t))
-         Print("MICROSCALP CLOSE_FAIL retcode=",trade.ResultRetcode()," #",t);
-      else
-         fillPrice=trade.ResultPrice();
+      Print("MICROSCALP CLOSE_FAIL retcode=",trade.ResultRetcode()," #",ticket);
+      return 0;
    }
-   return fillPrice;
+   return trade.ResultPrice();
 }
 
 void LogSlippageSummary()
@@ -417,6 +446,31 @@ int OnInit()
    ArrayInitialize(g_tradeTimes,0);
    f_log=FileOpen("XAU_TICK_MICROSCALP_test_LOG.csv",FILE_READ|FILE_WRITE|FILE_CSV|FILE_ANSI|FILE_SHARE_READ,',');
    if(f_log!=INVALID_HANDLE) FileSeek(f_log,0,SEEK_END);
+
+   // BUGFIX #5 (2026-11-26, found from a live case): g_posDir/g_posTicket are
+   // plain globals, so every EA reload (recompile, remove-and-reattach,
+   // terminal restart) resets them to 0/0 regardless of what's actually open
+   // at the broker. If a position was genuinely still open at that moment,
+   // the entry gate (`if(g_posDir!=0) return;`) silently reopened, and the
+   // next momentum/trend signal stacked a SECOND position on top of the
+   // orphaned first one -- confirmed live (2026-11-25 screenshot: tickets
+   // #1247338947 and #1247338957 both open at once, closed ~1.5s apart from
+   // what should have been a single-position state machine). Now OnInit
+   // adopts any already-open position matching our magic+symbol instead of
+   // assuming a clean slate.
+   ulong existingTicket=FindMyPositionTicket();
+   if(existingTicket!=0)
+   {
+      long   posType=PositionGetInteger(POSITION_TYPE);
+      g_posDir=(posType==POSITION_TYPE_BUY)?+1:-1;
+      g_posTicket=existingTicket;
+      g_posOpenPrice=PositionGetDouble(POSITION_PRICE_OPEN);
+      g_posOpenTime=(datetime)PositionGetInteger(POSITION_TIME);
+      g_posSL=PositionGetDouble(POSITION_SL);
+      g_posTP=PositionGetDouble(POSITION_TP);
+      Log("ADOPTED_EXISTING_POSITION","ticket="+IntegerToString((long)existingTicket)+" dir="+(g_posDir>0?"BUY":"SELL")+
+          " openPrice="+DoubleToString(g_posOpenPrice,_Digits)+" sl="+DoubleToString(g_posSL,_Digits)+" tp="+DoubleToString(g_posTP,_Digits));
+   }
    return INIT_SUCCEEDED;
 }
 
@@ -467,7 +521,7 @@ void OnTick()
             if(nowMsc-g_lastCloseAttemptMsc<CLOSE_RETRY_GAP_MS) return; // a close request may still be in flight -- don't pile on another
             g_lastCloseAttemptMsc=nowMsc;
             double intendedClose=(g_posDir>0)?bid:ask; // closing a BUY sells at bid; closing a SELL buys at ask
-            double actualClose=CloseMyPosition();
+            double actualClose=CloseMyPosition(g_posTicket);
             if(actualClose>0)
             {
                double slipPts=(g_posDir>0)?(intendedClose-actualClose)/_Point:(actualClose-intendedClose)/_Point;
