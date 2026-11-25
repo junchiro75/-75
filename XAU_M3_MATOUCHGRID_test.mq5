@@ -877,10 +877,52 @@ double MinStopDistance()
 
 string TS(datetime t){ return TimeToString(t,TIME_DATE|TIME_MINUTES|TIME_SECONDS); }
 
+// BUGFIX (2026-11-26, found from a live case): a log file that was open and
+// writing fine could silently stop (confirmed live: the file's last line was
+// a normal START at 20:08:56, then NOTHING for hours afterward despite the
+// Experts tab clearly showing the EA still running and logging events to
+// Print() the whole time) -- neither FileWrite()'s nor FileFlush()'s return
+// value was ever checked, so a write failure (file locked by another
+// program, marked read-only, a sync conflict, disk full, ...) was silently
+// swallowed and never surfaced anywhere. Now checks both return values: on
+// failure, closes the stale handle, prints the error code, and shows a
+// persistent on-chart Comment() so this is visible immediately instead of
+// discovered hours later -- and retries reopening the file on every
+// subsequent Log() call (here, and also if f_log was never opened
+// successfully at all) rather than giving up for the rest of the session.
 void Log(string event,string detail="")
 {
    Print("XAU_M3_MATOUCHGRID_test | ",event," | ",detail);
-   if(f_log!=INVALID_HANDLE){ FileWrite(f_log,TS(TimeCurrent()),event,detail); FileFlush(f_log); }
+
+   if(f_log==INVALID_HANDLE)
+   {
+      f_log=FileOpen("XAU_M3_MATOUCHGRID_test_LOG.csv",FILE_READ|FILE_WRITE|FILE_CSV|FILE_ANSI|FILE_SHARE_READ,',');
+      if(f_log!=INVALID_HANDLE)
+      {
+         FileSeek(f_log,0,SEEK_END);
+         Print("XAU_M3_MATOUCHGRID_test | LOG_FILE_REOPENED | writing resumed");
+         Comment("");
+      }
+   }
+
+   if(f_log!=INVALID_HANDLE)
+   {
+      ResetLastError();
+      uint written=FileWrite(f_log,TS(TimeCurrent()),event,detail);
+      bool flushed=FileFlush(f_log);
+      if(written==0 || !flushed)
+      {
+         int err=GetLastError();
+         Print("XAU_M3_MATOUCHGRID_test | LOG_WRITE_FAIL | err=",err," -- log file write/flush failed, closing handle and will retry next event");
+         FileClose(f_log);
+         f_log=INVALID_HANDLE;
+         Comment("XAU_M3_MATOUCHGRID_test: LOG FILE WRITE FAILED (err="+IntegerToString(err)+") -- check if XAU_M3_MATOUCHGRID_test_LOG.csv is open in another program (e.g. Excel) or set read-only. Trading continues; only file logging is affected. Will keep retrying.");
+      }
+   }
+   else
+   {
+      Comment("XAU_M3_MATOUCHGRID_test: LOG FILE NOT OPEN -- check if XAU_M3_MATOUCHGRID_test_LOG.csv is open in another program or set read-only. Trading continues; only file logging is affected. Will keep retrying.");
+   }
 }
 
 bool GetMA(double &v)
