@@ -489,11 +489,16 @@ void OnTick()
    int dir=(movePts>0)?+1:-1;
    if(UseFadeMode) dir=-dir;
 
+   // NEW 2026-11-25, per user request: hoisted out of the block below so it
+   // can be logged at entry (ENTRY_SLIPPAGE/DRY_ENTRY) regardless -- lets a
+   // live entry be checked after the fact against TrendThresholdPoints
+   // instead of eyeballing the chart.
+   double trendPts=0;
    if(RequireTrendAlignment)
    {
       double refBidTrend;
       if(!BidAtOrBefore(nowMsc-TrendWindowMs,refBidTrend)) return; // not enough history yet for the trend window
-      double trendPts=(bid-refBidTrend)/_Point;
+      trendPts=(bid-refBidTrend)/_Point;
       if(MathAbs(trendPts)<TrendThresholdPoints) return; // trend too flat/ambiguous -- skip
       int trendDir=(trendPts>0)?+1:-1;
       if(dir!=trendDir) return; // burst disagrees with the higher-level trend -- skip
@@ -501,7 +506,7 @@ void OnTick()
 
    if(!EnableLiveOrders)
    {
-      Print("MICROSCALP DRY_ENTRY dir=",(dir>0?"BUY":"SELL")," movePts=",DoubleToString(movePts,1)," spread=",DoubleToString(spreadPts,1));
+      Print("MICROSCALP DRY_ENTRY dir=",(dir>0?"BUY":"SELL")," movePts=",DoubleToString(movePts,1)," trendPts=",DoubleToString(trendPts,1)," spread=",DoubleToString(spreadPts,1));
       g_posDir=dir; g_posOpenPrice=(dir>0?ask:bid); g_posOpenTime=TimeCurrent();
       RecordTradeTime(nowMsc);
       return;
@@ -579,6 +584,6 @@ void OnTick()
    g_entryCount++; g_entrySlipSum+=entrySlipPts;
    Log("ENTRY_SLIPPAGE","dir="+(dir>0?"BUY":"SELL")+" intended="+DoubleToString(intendedEntry,_Digits)+
        " actual="+DoubleToString(g_posOpenPrice,_Digits)+" slipPts="+DoubleToString(entrySlipPts,2)+
-       " movePts="+DoubleToString(movePts,1)+" spread="+DoubleToString(spreadPts,1));
+       " movePts="+DoubleToString(movePts,1)+" trendPts="+DoubleToString(trendPts,1)+" spread="+DoubleToString(spreadPts,1));
    if(g_entryCount%100==0) LogSlippageSummary();
 }
