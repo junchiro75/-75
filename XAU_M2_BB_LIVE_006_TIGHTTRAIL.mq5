@@ -411,7 +411,7 @@ input int    MaxPullbackHours     = 72; // Max hours waiting for pullback
 input int    MaxVirtualExitHours  = 168; // Max hours holding a position
 input ulong  MagicNumber          = 95012201; // Magic number (006's own, distinct from 005's 95012101, see header)
 input int    MaxDeviationPts      = 50; // Max price deviation (points)
-input bool   EnableLiveOrders     = false; // Enable live orders
+input bool   EnableLiveOrders     = true; // Enable live orders
 input bool   AllowShort           = false; // Allow SELL entries (default BUY-only, see header)
 
 input bool   UseStochFadeConfirm  = false; // Require Stochastic to confirm the fade direction at the signal candle (UNTESTED, see header)

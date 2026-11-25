@@ -268,7 +268,7 @@ input bool   UseBearFarFadeOnly  = false; // Restrict UseMADistanceDir to ONLY t
 input bool   UseMADistStochConfirm = false; // On top of UseMADistanceDir's FAR_FADE cases, also require Stochastic to confirm (same StochOverbought/StochOversold levels as FADE_BULL_OB/FADE_BEAR_OS) before entering (no effect on NEAR_TREND cases or if UseMADistanceDir=false)
 input ulong  MagicNumber        = 95016102; // Magic number
 input int    MaxDeviationPts    = 50; // Max price deviation (points)
-input bool   EnableLiveOrders   = false; // Enable live orders
+input bool   EnableLiveOrders   = true; // Enable live orders
 input bool   AllowSellFade      = false; // Allow bull+overbought SELL-fade case
 input bool   AllowTrendBull     = false; // Allow bull+not-overbought TREND-BUY case
 input bool   SkipFadeBearOSAsiaSession = false; // Skip FADE_BEAR_OS during Asia session (see header)

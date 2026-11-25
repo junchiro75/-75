@@ -66,7 +66,7 @@ input bool   AllowReentryAtBB     = true; // false = variant 1 (single first-tou
                                            // true  = variant 2 (MA_Long first; if stopped out, one
                                            //         re-entry chance at the outer Bollinger band)
 input double Lots                 = 0.01; // PER TIMEFRAME -- up to 3x this can be open at once (M1+M2+M3)
-input bool   EnableLiveOrders     = false; // SAFETY: set true only after checks
+input bool   EnableLiveOrders     = true; // SAFETY: set true only after checks
 input ulong  MagicNumber          = 95014101; // base magic; M1/M2/M3 use MagicNumber+0/+1/+2
 input int    MaxDeviationPts      = 50;
 input int    EmergencySL_Points    = 5000; // broker-side backstop SL, this many points from entry.

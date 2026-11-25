@@ -136,7 +136,7 @@ input double StochOversold      = 25.0; // Stoch oversold level, confirms BEAR_F
 input double StochOverbought     = 75.0; // Stoch overbought level, confirms BULL_FAR_FADE (SELL) -- symmetric extension, UNTESTED on 011
 input ulong  MagicNumber        = 95016133; // Magic number (changed from 013's 95016123 so this test build can coexist with live 013)
 input int    MaxDeviationPts    = 50; // Max price deviation (points)
-input bool   EnableLiveOrders   = false; // Enable live orders
+input bool   EnableLiveOrders   = true; // Enable live orders
 
 input int    SkipHourStartKST   = 14; // KST hour skip window start (ported from 001, UNTESTED on this signal)
 input int    SkipHourEndKST     = 16; // KST hour skip window end, exclusive

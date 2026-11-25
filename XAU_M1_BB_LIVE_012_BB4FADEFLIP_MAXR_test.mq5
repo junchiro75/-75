@@ -21,7 +21,7 @@ input double BB4OnlyMinR_Points = 300;  // Min signal-candle body (points) to tr
 input double MaxR_Points        = 1000; // TEST: Max signal-candle body (points) to trade -- 0 disables (NOT LIVE)
 input ulong  MagicNumber        = 95016132; // Magic number
 input int    MaxDeviationPts    = 50; // Max price deviation (points)
-input bool   EnableLiveOrders   = false; // Enable live orders
+input bool   EnableLiveOrders   = true; // Enable live orders
 
 input int    SkipHourStartKST   = 14; // KST hour skip window start (ported from 001, UNTESTED on this signal)
 input int    SkipHourEndKST     = 16; // KST hour skip window end, exclusive

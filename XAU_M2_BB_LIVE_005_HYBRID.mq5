@@ -50,7 +50,7 @@ input int    MaxVirtualExitHours  = 168;
 input ulong  MagicNumber          = 95012201; // distinct from original 005 (95012001) and BUYONLY 005
                                                // (95012101) so all three can run side by side
 input int    MaxDeviationPts      = 50;
-input bool   EnableLiveOrders     = false; // SAFETY: set true only after checks
+input bool   EnableLiveOrders     = true; // SAFETY: set true only after checks
 
 int hBB20=INVALID_HANDLE,hBB4=INVALID_HANDLE;
 datetime last_m2_bar=0;

@@ -22,7 +22,7 @@ input int MaxExtensionHours=72;
 input int MaxPullbackHours=72;
 input int MaxVirtualExitHours=168;
 input ulong MagicNumber=95011101; // distinct from original 004 (95011001) so both can run side by side
-input bool EnableLiveOrders=false;
+input bool EnableLiveOrders=true;
 input bool AllowShort=false; // Ground-truth MT5 tick backtest (2025.01-2026.09) showed SELL
                               // entries net -$514.35 vs BUY entries net -$174.55 (both negative,
                               // but SELL far worse) in a secular gold uptrend. Default false: BUY-only.

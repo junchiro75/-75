@@ -203,7 +203,7 @@ input double TP_R               = 0.45; // Take profit (R)
 input double MinR_Points        = 900;  // Min signal-candle body (points) to trade, 0=no filter
 input ulong  MagicNumber        = 95016103; // Magic number
 input int    MaxDeviationPts    = 50; // Max price deviation (points)
-input bool   EnableLiveOrders   = false; // Enable live orders
+input bool   EnableLiveOrders   = true; // Enable live orders
 input bool   AllowSellFade      = false; // Allow bull+overbought SELL-fade case
 input bool   TrendBearEuropeOnly = true;  // Restrict TREND_BEAR to Europe session (CONFIRMED, see header)
 input bool   ReverseTrendBearOutsideEurope = false; // Reverse TREND_BEAR outside Europe to BUY (UNTESTED, see header)

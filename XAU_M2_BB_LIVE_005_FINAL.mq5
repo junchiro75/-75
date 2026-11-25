@@ -21,7 +21,7 @@ input int    MaxPullbackHours     = 72;
 input int    MaxVirtualExitHours  = 168;
 input ulong  MagicNumber          = 95012001;
 input int    MaxDeviationPts      = 50;
-input bool   EnableLiveOrders     = false; // SAFETY: set true only after checks
+input bool   EnableLiveOrders     = true; // SAFETY: set true only after checks
 
 int hBB20=INVALID_HANDLE,hBB4=INVALID_HANDLE;
 datetime last_m2_bar=0;

@@ -786,7 +786,7 @@ input int    SkipHourEndKST       = 8;    // CONFIRMED by user (2026-11-21): blo
 input group "=== Misc ==="
 input ulong  MagicNumber          = 95016300; // Magic number (unused by any other model in this repo)
 input int    MaxDeviationPts      = 50;    // Max price deviation (points)
-input bool   EnableLiveOrders     = false; // Enable live orders
+input bool   EnableLiveOrders     = true; // Enable live orders
 
 //+------------------------------------------------------------------+
 //| State                                                              |

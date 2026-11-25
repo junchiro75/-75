@@ -15,7 +15,7 @@
 CTrade trade;
 
 input double Lots=0.02;
-input bool EnableLiveOrders=false;
+input bool EnableLiveOrders=true;
 input long MagicNumber=95011107; // distinct from original 007 (95011007) so both can run side by side
 input double ExtensionR=0.95;
 input double PullbackR=0.10;

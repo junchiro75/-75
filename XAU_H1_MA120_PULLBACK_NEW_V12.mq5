@@ -138,7 +138,7 @@ input double MinR_Points          = 0;    // skip entry if R (=|MA_Long-entry pr
                                            // reached MA_Long, which give a tiny R and are more likely just
                                            // noise. 0 = no filter (matches earlier behavior).
 input double Lots                 = 0.01; // PER TIMEFRAME -- up to 4x this can be open at once (M1+M2+M3+M5)
-input bool   EnableLiveOrders     = false; // SAFETY: set true only after checks
+input bool   EnableLiveOrders     = true; // SAFETY: set true only after checks
 input ulong  MagicNumber          = 95014101; // base magic; M1/M2/M3/M5 use MagicNumber+0/+1/+2/+3
 input int    MaxDeviationPts      = 50;
 

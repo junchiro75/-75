@@ -54,7 +54,7 @@ input int    MaxVirtualExitHours  = 168;
 input ulong  MagicNumber          = 95014401; // distinct from all gold 005 variants so both symbols can
                                                // run on the same account without collision
 input int    MaxDeviationPts      = 50;
-input bool   EnableLiveOrders     = false; // SAFETY: set true only after checks
+input bool   EnableLiveOrders     = true; // SAFETY: set true only after checks
 input bool   AllowShort           = false; // Carried over from GOLD's own finding (SELL net -$540.86 vs
                                             // BUY net +$1,697.03) -- NOT yet separately re-verified on
                                             // NAS100+. Re-check with a bucket breakdown before trusting this.

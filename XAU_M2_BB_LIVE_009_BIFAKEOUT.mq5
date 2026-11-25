@@ -125,7 +125,7 @@ input bool   AllowBuyEntry        = false; // Allow entries reversing a bear-더
 input bool   AllowSellEntry       = true; // Allow entries reversing a bull-더블비 (SELL) (CONFIRMED, see header)
 input ulong  MagicNumber          = 95016109; // Magic number
 input int    MaxDeviationPts      = 50; // Max price deviation (points)
-input bool   EnableLiveOrders     = false; // Enable live orders
+input bool   EnableLiveOrders     = true; // Enable live orders
 
 int hBB20=INVALID_HANDLE,hBB4=INVALID_HANDLE;
 datetime last_bar=0;

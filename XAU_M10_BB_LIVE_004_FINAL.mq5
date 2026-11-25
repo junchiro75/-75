@@ -17,7 +17,7 @@ input int MaxExtensionHours=72;
 input int MaxPullbackHours=72;
 input int MaxVirtualExitHours=168;
 input ulong MagicNumber=95011001;
-input bool EnableLiveOrders=false;
+input bool EnableLiveOrders=true;
 
 CTrade trade;
 int h20=INVALID_HANDLE,h4=INVALID_HANDLE;

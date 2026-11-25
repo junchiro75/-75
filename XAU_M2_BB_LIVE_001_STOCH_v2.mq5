@@ -842,7 +842,7 @@ input double TP_R               = 0.45; // Take profit (R)
 input double MinR_Points        = 350;  // Min signal-candle body (points) to trade, 0=no filter
 input ulong  MagicNumber        = 95016101; // Magic number
 input int    MaxDeviationPts    = 50; // Max price deviation (points)
-input bool   EnableLiveOrders   = false; // Enable live orders
+input bool   EnableLiveOrders   = true; // Enable live orders
 input bool   AllowSellFade      = false; // Allow bull+overbought SELL-fade case (CONFIRMED false, see header)
 input bool   SkipTrendBearAsiaSession = true; // Skip TREND_BEAR during Asia session (CONFIRMED, see header)
 input int    AsiaSessionStartHour = 6;   // Asia-session skip window start hour, Korea time

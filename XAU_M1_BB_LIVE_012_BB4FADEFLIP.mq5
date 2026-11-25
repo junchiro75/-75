@@ -159,7 +159,7 @@ input bool   UseMaxRFilter      = false; // Skip signals (BUY or SELL) whose R e
 input double MaxR_Points        = 1000;  // Max signal-candle body (points) to trade when UseMaxRFilter=true (NEW, ported from 006_TIGHTTRAIL, UNTESTED on this file)
 input ulong  MagicNumber        = 95016122; // Magic number
 input int    MaxDeviationPts    = 50; // Max price deviation (points)
-input bool   EnableLiveOrders   = false; // Enable live orders
+input bool   EnableLiveOrders   = true; // Enable live orders
 
 input int    SkipHourStartKST   = 14; // KST hour skip window start (ported from 001, UNTESTED on this signal)
 input int    SkipHourEndKST     = 16; // KST hour skip window end, exclusive

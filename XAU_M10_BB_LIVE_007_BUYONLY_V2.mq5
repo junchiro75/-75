@@ -372,7 +372,7 @@
 CTrade trade;
 
 input double Lots=0.1; // Lot size
-input bool EnableLiveOrders=false; // Enable live orders
+input bool EnableLiveOrders=true; // Enable live orders
 input long MagicNumber=95011207; // Magic number
 input double ExtensionR=0.95; // Extension (R) before pullback watch starts
 input double PullbackR=0.10; // Pullback (R) from extension extreme to trigger entry

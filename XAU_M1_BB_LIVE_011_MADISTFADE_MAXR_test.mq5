@@ -26,7 +26,7 @@ input int    MADistancePeriod   = 20;    // Moving average period (SMA on Close)
 input double MADistanceThresholdR = 0.5; // Distance (R) threshold: below this, NEAR (not traded here); at/above, FAR (CONFIRMED, see header)
 input ulong  MagicNumber        = 95016131; // Magic number
 input int    MaxDeviationPts    = 50; // Max price deviation (points)
-input bool   EnableLiveOrders   = false; // Enable live orders
+input bool   EnableLiveOrders   = true; // Enable live orders
 
 input int    SkipHourStartKST   = 14; // KST hour skip window start (ported from 001, UNTESTED on this signal)
 input int    SkipHourEndKST     = 16; // KST hour skip window end, exclusive

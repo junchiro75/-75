@@ -217,7 +217,7 @@ input bool   UseDoubleBAnchor     = false; // Also require pivot1 within BandAnc
 
 input ulong  MagicNumber          = 95016108; // Magic number
 input int    MaxDeviationPts      = 50; // Max price deviation (points)
-input bool   EnableLiveOrders     = false; // Enable live orders
+input bool   EnableLiveOrders     = true; // Enable live orders
 
 int hBB=INVALID_HANDLE, hStoch=INVALID_HANDLE, hATR=INVALID_HANDLE;
 int hWMA17=INVALID_HANDLE, hHTFFastMA=INVALID_HANDLE, hHTFSlowMA=INVALID_HANDLE, hMACD=INVALID_HANDLE;

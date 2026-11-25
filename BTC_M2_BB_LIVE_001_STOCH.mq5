@@ -63,7 +63,7 @@ input double MinR_Points        = 0;    // UNTUNED -- gold/NAS values do NOT tra
 input ulong  MagicNumber        = 97016101; // distinct from all gold (950161xx) and NAS (960161xx) 001
                                              // variants so all symbols can run on the same account without collision
 input int    MaxDeviationPts    = 50;
-input bool   EnableLiveOrders   = false; // SAFETY: set true only after checks
+input bool   EnableLiveOrders   = true; // SAFETY: set true only after checks
 input bool   AllowSellFade      = true;  // UNBIASED default -- gold's AllowSellFade=false came from its
                                           // own empirical finding (persistent uptrend bias); do not assume
                                           // it transfers to BTC without separately verifying by backtest

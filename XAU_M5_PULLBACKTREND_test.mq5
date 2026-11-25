@@ -60,7 +60,7 @@ input double SL_R                 = 1.0;  // Stop loss (R, in ATR units) (TEST, 
 input double TP_R                 = 2.0; // Take profit (R) -- structurally inert once UseTrailingTP arms (TEST, untested, nominal 2:1 target)
 input ulong  MagicNumber          = 95016200; // Magic number
 input int    MaxDeviationPts      = 50; // Max price deviation (points)
-input bool   EnableLiveOrders     = false; // Enable live orders
+input bool   EnableLiveOrders     = true; // Enable live orders
 
 input int    SkipHourStartKST     = 14; // KST hour skip window start (TEST, untested on this signal, default off)
 input int    SkipHourEndKST       = 16; // KST hour skip window end, exclusive

@@ -60,7 +60,7 @@ input double MinR_Points        = 0;    // skip signal if R (=|close-open| of th
                                          // points) is below this. 0 = no filter.
 input ulong  MagicNumber        = 95016101;
 input int    MaxDeviationPts    = 50;
-input bool   EnableLiveOrders   = false; // SAFETY: set true only after checks
+input bool   EnableLiveOrders   = true; // SAFETY: set true only after checks
 input bool   AllowSellFade      = true;  // false = skip the bull+overbought SELL-fade case entirely
                                           // (ground-truth backtest showed this is the one losing direction)
 input int    MaxConcurrentPositions = 1; // default 1 preserves V2's MAX1-position live behavior exactly.
