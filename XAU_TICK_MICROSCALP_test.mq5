@@ -208,11 +208,14 @@
 //| magic+symbol in one call (not just the tracked ticket) -- once a close  |
 //| eventually fired it silently absorbed both positions at once, which is  |
 //| why the stacking was never visible as two separate EXIT_SLIPPAGE lines. |
-//| Fixed: OnInit() now adopts any already-open position matching our       |
-//| magic+symbol into g_posDir/g_posTicket/g_posOpenPrice/g_posOpenTime/    |
-//| g_posSL/g_posTP instead of assuming a clean slate (logged as            |
-//| ADOPTED_EXISTING_POSITION), and CloseMyPosition() now takes the exact   |
-//| ticket to close instead of sweeping the whole position list.            |
+//| Fixed: OnInit() now collects EVERY position matching our magic+symbol   |
+//| (not just one, and not trusting that at most one exists) -- normally    |
+//| 0 or 1, but if more are found (a leftover from this exact bug, from     |
+//| before the fix), it self-heals: keeps the OLDEST as the position this   |
+//| EA manages going forward and closes every extra immediately (logged as |
+//| ORPHANED_POSITIONS_DETECTED / ORPHANED_POSITION_CLOSED), with no manual |
+//| check in the terminal required. CloseMyPosition() now also takes the    |
+//| exact ticket to close instead of sweeping the whole position list.      |
 //+------------------------------------------------------------------+
 #property strict
 #include <Trade/Trade.mqh>
@@ -455,21 +458,69 @@ int OnInit()
    // next momentum/trend signal stacked a SECOND position on top of the
    // orphaned first one -- confirmed live (2026-11-25 screenshot: tickets
    // #1247338947 and #1247338957 both open at once, closed ~1.5s apart from
-   // what should have been a single-position state machine). Now OnInit
-   // adopts any already-open position matching our magic+symbol instead of
-   // assuming a clean slate.
-   ulong existingTicket=FindMyPositionTicket();
-   if(existingTicket!=0)
+   // what should have been a single-position state machine).
+   //
+   // Rather than adopting a single FindMyPositionTicket() result and trusting
+   // that at most one exists (which just pushes the same assumption that
+   // caused the bug onto whoever reattaches the EA), this collects EVERY
+   // position matching our magic+symbol. Normally there's 0 or 1. If more
+   // than one is found -- i.e. a leftover from the stacking bug, from before
+   // this fix existed -- it is a self-contained state created entirely by
+   // this EA (same magic number, nothing else ever sets it), so it is safe
+   // and correct to self-heal here: keep the OLDEST as the one position this
+   // EA manages going forward, and close every extra immediately, logging
+   // each one. No manual check in the terminal required.
+   ulong matchedTickets[];
+   ArrayResize(matchedTickets,0);
+   for(int i=PositionsTotal()-1;i>=0;i--)
    {
-      long   posType=PositionGetInteger(POSITION_TYPE);
-      g_posDir=(posType==POSITION_TYPE_BUY)?+1:-1;
-      g_posTicket=existingTicket;
-      g_posOpenPrice=PositionGetDouble(POSITION_PRICE_OPEN);
-      g_posOpenTime=(datetime)PositionGetInteger(POSITION_TIME);
-      g_posSL=PositionGetDouble(POSITION_SL);
-      g_posTP=PositionGetDouble(POSITION_TP);
-      Log("ADOPTED_EXISTING_POSITION","ticket="+IntegerToString((long)existingTicket)+" dir="+(g_posDir>0?"BUY":"SELL")+
-          " openPrice="+DoubleToString(g_posOpenPrice,_Digits)+" sl="+DoubleToString(g_posSL,_Digits)+" tp="+DoubleToString(g_posTP,_Digits));
+      ulong t=PositionGetTicket(i);
+      if(t==0 || !PositionSelectByTicket(t)) continue;
+      if((ulong)PositionGetInteger(POSITION_MAGIC)!=MagicNumber || PositionGetString(POSITION_SYMBOL)!=_Symbol) continue;
+      int n=ArraySize(matchedTickets);
+      ArrayResize(matchedTickets,n+1);
+      matchedTickets[n]=t;
+   }
+
+   int nMatched=ArraySize(matchedTickets);
+   if(nMatched>0)
+   {
+      int      keepIdx=0;
+      datetime oldestTime=0;
+      for(int i=0;i<nMatched;i++)
+      {
+         if(!PositionSelectByTicket(matchedTickets[i])) continue;
+         datetime t=(datetime)PositionGetInteger(POSITION_TIME);
+         if(oldestTime==0 || t<oldestTime){ oldestTime=t; keepIdx=i; }
+      }
+      ulong keepTicket=matchedTickets[keepIdx];
+
+      if(nMatched>1) Log("ORPHANED_POSITIONS_DETECTED","count="+IntegerToString(nMatched)+" keeping ticket="+IntegerToString((long)keepTicket)+", closing the rest");
+
+      for(int i=0;i<nMatched;i++)
+      {
+         if(matchedTickets[i]==keepTicket) continue;
+         if(!PositionSelectByTicket(matchedTickets[i])) continue;
+         long   ptype=PositionGetInteger(POSITION_TYPE);
+         double popen=PositionGetDouble(POSITION_PRICE_OPEN);
+         if(!trade.PositionClose(matchedTickets[i]))
+            Log("ORPHANED_POSITION_CLOSE_FAIL","ticket="+IntegerToString((long)matchedTickets[i])+" retcode="+IntegerToString((int)trade.ResultRetcode())+" | "+trade.ResultRetcodeDescription());
+         else
+            Log("ORPHANED_POSITION_CLOSED","ticket="+IntegerToString((long)matchedTickets[i])+" dir="+(ptype==POSITION_TYPE_BUY?"BUY":"SELL")+" openPrice="+DoubleToString(popen,_Digits));
+      }
+
+      if(PositionSelectByTicket(keepTicket))
+      {
+         long posType=PositionGetInteger(POSITION_TYPE);
+         g_posDir=(posType==POSITION_TYPE_BUY)?+1:-1;
+         g_posTicket=keepTicket;
+         g_posOpenPrice=PositionGetDouble(POSITION_PRICE_OPEN);
+         g_posOpenTime=(datetime)PositionGetInteger(POSITION_TIME);
+         g_posSL=PositionGetDouble(POSITION_SL);
+         g_posTP=PositionGetDouble(POSITION_TP);
+         Log("ADOPTED_EXISTING_POSITION","ticket="+IntegerToString((long)keepTicket)+" dir="+(g_posDir>0?"BUY":"SELL")+
+             " openPrice="+DoubleToString(g_posOpenPrice,_Digits)+" sl="+DoubleToString(g_posSL,_Digits)+" tp="+DoubleToString(g_posTP,_Digits));
+      }
    }
    return INIT_SUCCEEDED;
 }
