@@ -139,6 +139,22 @@
 //| the fill landed closer to. Also: if a close attempt fails for a REAL    |
 //| reason (position still genuinely open), state is no longer discarded --|
 //| it retries next tick instead of losing track of a live position.        |
+//|                                                                         |
+//| BUGFIX #2 (2026-11-25, root cause of the race above): slPrice/tpPrice   |
+//| were computed from the PRE-TRADE quote (ask/bid) and sent as part of    |
+//| the SAME market-order request, so the broker's native SL/TP ended up    |
+//| anchored to that quote, not the real fill. In the observed live case,   |
+//| the entry itself slipped FAVORABLY (filled 0.61 better than the quoted  |
+//| ask), which silently shrank the real SL distance from the intended 140  |
+//| points to only 79 -- so the broker's native SL fired on a much smaller  |
+//| adverse move than our own internal hitSL check (which correctly        |
+//| measures from the real fill) ever expected, guaranteeing the broker     |
+//| would always win that race. Fixed: right after the fill, SL/TP are      |
+//| recomputed from g_posOpenPrice (the actual fill) and re-applied via     |
+//| PositionModify (logged as ENTRY_SLTP_CORRECTED) whenever they differ    |
+//| from what was set -- so the configured TPPoints/SLPoints distance is    |
+//| always what's really protecting the trade, regardless of entry         |
+//| slippage in either direction.                                          |
 //+------------------------------------------------------------------+
 #property strict
 #include <Trade/Trade.mqh>
@@ -460,6 +476,30 @@ void OnTick()
    g_posOpenPrice=trade.ResultPrice()>0?trade.ResultPrice():intendedEntry;
    g_posOpenTime=TimeCurrent();
    g_posTicket=trade.ResultOrder(); // position ticket == opening order ticket for a new market-order position (hedging account)
+
+   // BUGFIX (2026-11-25, found from a live case): slPrice/tpPrice above were
+   // computed from the PRE-TRADE quote (ask/bid), but the actual fill can
+   // differ (entry slippage) -- if so, the SL/TP actually protecting the
+   // position end up a DIFFERENT distance from TPPoints/SLPoints than
+   // intended, measured from where the position really opened. Recompute
+   // from the real fill and re-apply so the configured distance is always
+   // what's really protecting the trade, regardless of entry slippage.
+   double correctedSL=(dir>0)?NormalizeDouble(g_posOpenPrice-SLPoints*_Point,_Digits):NormalizeDouble(g_posOpenPrice+SLPoints*_Point,_Digits);
+   double correctedTP=(dir>0)?NormalizeDouble(g_posOpenPrice+TPPoints*_Point,_Digits):NormalizeDouble(g_posOpenPrice-TPPoints*_Point,_Digits);
+   if(MathAbs(correctedSL-slPrice)>_Point || MathAbs(correctedTP-tpPrice)>_Point)
+   {
+      if(PositionSelectByTicket(g_posTicket))
+      {
+         if(!trade.PositionModify(g_posTicket,correctedSL,correctedTP))
+            Log("ENTRY_SLTP_CORRECT_FAIL",IntegerToString((int)trade.ResultRetcode())+" | "+trade.ResultRetcodeDescription());
+         else
+         {
+            Log("ENTRY_SLTP_CORRECTED","dir="+(dir>0?"BUY":"SELL")+" old_sl="+DoubleToString(slPrice,_Digits)+" new_sl="+DoubleToString(correctedSL,_Digits)+
+                " old_tp="+DoubleToString(tpPrice,_Digits)+" new_tp="+DoubleToString(correctedTP,_Digits));
+            slPrice=correctedSL; tpPrice=correctedTP;
+         }
+      }
+   }
    g_posSL=slPrice; g_posTP=tpPrice;
    RecordTradeTime(nowMsc);
    double entrySlipPts=(dir>0)?(g_posOpenPrice-intendedEntry)/_Point:(intendedEntry-g_posOpenPrice)/_Point;
