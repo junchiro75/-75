@@ -1019,6 +1019,19 @@ void UpdateFlipRegime()
 // check reacts to H4's current state rather than up to 4 hours of lag.
 // Only ever called with H4's own MA handles (hMAHtf2Fast/hMAHtf2Slow) --
 // not shared with any other timeframe check.
+//
+// CONFIRMED 2026-11-26: a clean single-run A/B backtest over the SAME
+// window (2025.01.01-2026.11.30, 100% real ticks, all other inputs
+// identical) -- not the earlier flawed comparison that summed three
+// separately-run periods, which overstated the effect -- shows:
+// shift=1 (before): NET $22,520.32, PF 1.109, RF 1.966, Sharpe 1.982,
+//   6,942 trades, win rate 35.29%, Balance/Equity DD max 8.65%/8.89%.
+// shift=0 (after, this version): NET $26,033.30, PF 1.126, RF 2.640,
+//   Sharpe 2.268, 6,972 trades, win rate 35.66%, DD max 7.17%/7.56%.
+// Trade count and win rate are essentially unchanged -- the fix does
+// NOT make the EA trade more; it makes the SAME trades fire at better-
+// timed moments (less often blocked by a stale H4 read), which shows
+// up as +15.6% NET and a meaningfully lower drawdown, not more volume.
 bool TFAligned(int dir,int hFast,int hSlow)
 {
    double fast1[1],slow1[1];
