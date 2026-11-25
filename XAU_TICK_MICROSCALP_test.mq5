@@ -118,6 +118,27 @@
 //| at the quoted price +/- MaxDeviationPts with no latency), so this       |
 //| diagnostic will read ~0 in Strategy Tester and only becomes meaningful  |
 //| on a real demo/live run.                                                |
+//|                                                                         |
+//| BUGFIX (2026-11-25, found from a live Journal screenshot the user       |
+//| shared): a position closed via the broker's own NATIVE stop loss        |
+//| (visible in the Journal as "added order ... due stop loss" + a deal)    |
+//| at essentially the same moment our own exit logic (hitTP/hitSL/timeUp)  |
+//| tried to call CloseMyPosition() for the same reason -- our request was  |
+//| rejected ("Modification failed due to order or position being close to  |
+//| market") because the broker had already started closing it. The        |
+//| position DID close correctly either way, but since CloseMyPosition()    |
+//| returned 0 (nothing closed by US), no EXIT_SLIPPAGE was ever logged for |
+//| that trade -- its real slippage (80 points / $0.80 unfavorable in the   |
+//| observed case) silently vanished from the diagnostic above. Fixed by    |
+//| tracking the exact position ticket (g_posTicket) and its own SL/TP      |
+//| (g_posSL/g_posTP) from entry, so management can tell "gone because WE   |
+//| closed it" apart from "gone because the broker's native SL/TP won the   |
+//| race" -- the latter now recovers the real closing deal from history     |
+//| (LogNativeCloseIfAny()) and logs EXIT_SLIPPAGE with reason=NATIVE_SL/   |
+//| NATIVE_TP, measured against whichever of the entry's own SL/TP levels   |
+//| the fill landed closer to. Also: if a close attempt fails for a REAL    |
+//| reason (position still genuinely open), state is no longer discarded --|
+//| it retries next tick instead of losing track of a live position.        |
 //+------------------------------------------------------------------+
 #property strict
 #include <Trade/Trade.mqh>
@@ -162,6 +183,8 @@ int     g_tradeTimesHead=0, g_tradeTimesCount=0;
 datetime g_posOpenTime=0;
 double   g_posOpenPrice=0;
 int      g_posDir=0; // +1 buy, -1 sell
+ulong    g_posTicket=0;   // NEW 2026-11-25: exact position ticket, so a close can be verified/recovered by identity, not just by magic+symbol
+double   g_posSL=0, g_posTP=0; // NEW 2026-11-25: the SL/TP actually set at entry, used as the slippage reference when a NATIVE close is recovered from history
 
 // Slippage diagnostic (NEW 2026-11-24, per user request, motivated by live
 // slippage already observed on 012/013): requested price vs actual fill
@@ -232,18 +255,6 @@ void PruneTradeCap(long nowMsc)
    }
 }
 
-bool HasOpenPosition()
-{
-   for(int i=PositionsTotal()-1;i>=0;i--)
-   {
-      ulong t=PositionGetTicket(i);
-      if(t==0 || !PositionSelectByTicket(t)) continue;
-      if((ulong)PositionGetInteger(POSITION_MAGIC)==MagicNumber && PositionGetString(POSITION_SYMBOL)==_Symbol)
-         return true;
-   }
-   return false;
-}
-
 // Returns the actual fill price of the close (0 if nothing was closed or the
 // close failed), for slippage measurement by the caller.
 double CloseMyPosition()
@@ -269,6 +280,40 @@ void LogSlippageSummary()
    Log("SLIPPAGE_SUMMARY","entries="+IntegerToString(g_entryCount)+" avgEntrySlipPts="+DoubleToString(avgEntry,2)+
        " exits="+IntegerToString(g_exitCount)+" avgExitSlipPts="+DoubleToString(avgExit,2)+
        " avgTotalSlipPts="+DoubleToString(avgEntry+avgExit,2));
+}
+
+// NEW 2026-11-25: our own PositionClose() can be rejected ("close to market" /
+// position already gone) when the broker's own native SL/TP fires at
+// essentially the same moment we try to close for our own reason (hitTP/
+// hitSL/timeUp) -- confirmed happening live (user screenshot, 2026-11-25).
+// When that happens the position vanishes without ever going through
+// CloseMyPosition() successfully, so EXIT_SLIPPAGE would otherwise never be
+// logged for it. This recovers the real closing deal from history and logs
+// slippage against whichever of the entry's own SL/TP the fill landed near.
+void LogNativeCloseIfAny(ulong posTicket,int dir,double posSL,double posTP,datetime openTime)
+{
+   if(!HistorySelect(openTime-5,TimeCurrent())) return;
+   int total=HistoryDealsTotal();
+   for(int i=total-1;i>=0;i--)
+   {
+      ulong d=HistoryDealGetTicket(i);
+      if(d==0) continue;
+      if((ulong)HistoryDealGetInteger(d,DEAL_POSITION_ID)!=posTicket) continue;
+      if((ENUM_DEAL_ENTRY)HistoryDealGetInteger(d,DEAL_ENTRY)!=DEAL_ENTRY_OUT) continue;
+      double actual=HistoryDealGetDouble(d,DEAL_PRICE);
+      double distToSL=(posSL>0)?MathAbs(actual-posSL):1e9;
+      double distToTP=(posTP>0)?MathAbs(actual-posTP):1e9;
+      string reason; double reference;
+      if(distToSL<=distToTP){ reason="NATIVE_SL"; reference=posSL; }
+      else                  { reason="NATIVE_TP"; reference=posTP; }
+      double slipPts=(dir>0)?(reference-actual)/_Point:(actual-reference)/_Point;
+      g_exitCount++; g_exitSlipSum+=slipPts;
+      Log("EXIT_SLIPPAGE","dir="+(dir>0?"BUY":"SELL")+" reason="+reason+" (closed by broker before our own PositionClose landed)"+
+          " intended="+DoubleToString(reference,_Digits)+" actual="+DoubleToString(actual,_Digits)+" slipPts="+DoubleToString(slipPts,2));
+      if(g_exitCount%100==0) LogSlippageSummary();
+      return;
+   }
+   Log("EXIT_SLIPPAGE_UNRESOLVED","posTicket="+IntegerToString((long)posTicket)+" dir="+(dir>0?"BUY":"SELL")+" -- position gone but no matching closing deal found in history");
 }
 
 int OnInit()
@@ -299,8 +344,22 @@ void OnTick()
    PruneTradeCap(nowMsc);
 
    //--- manage an already-open position: TP/SL + hard time stop ---
-   if(HasOpenPosition())
+   if(g_posDir!=0)
    {
+      if(EnableLiveOrders && !PositionSelectByTicket(g_posTicket))
+      {
+         // Gone already -- the broker's own native SL/TP almost certainly beat
+         // us to it (confirmed happening live, 2026-11-25: our CloseMyPosition
+         // lost a race to it). Recover the real exit from history instead of
+         // silently losing this trade's slippage measurement. (Guarded to
+         // live-only: in dry-run mode no real position ever exists, so this
+         // ticket lookup would always -- and wrongly -- read as "already closed".)
+         LogNativeCloseIfAny(g_posTicket,g_posDir,g_posSL,g_posTP,g_posOpenTime);
+         g_lastCloseMsc=nowMsc;
+         g_posDir=0;
+         return;
+      }
+
       double curPrice=(g_posDir>0)?bid:ask;
       double favPoints=(g_posDir>0)?(curPrice-g_posOpenPrice)/_Point:(g_posOpenPrice-curPrice)/_Point;
       bool hitTP=(favPoints>=TPPoints);
@@ -320,10 +379,26 @@ void OnTick()
                    " intended="+DoubleToString(intendedClose,_Digits)+" actual="+DoubleToString(actualClose,_Digits)+
                    " slipPts="+DoubleToString(slipPts,2));
                if(g_exitCount%100==0) LogSlippageSummary();
+               g_lastCloseMsc=nowMsc;
+               g_posDir=0;
             }
+            else if(!PositionSelectByTicket(g_posTicket))
+            {
+               // Our request lost the race to the broker's own native SL/TP --
+               // recover the real exit instead of leaving it unmeasured.
+               LogNativeCloseIfAny(g_posTicket,g_posDir,g_posSL,g_posTP,g_posOpenTime);
+               g_lastCloseMsc=nowMsc;
+               g_posDir=0;
+            }
+            // else: genuinely still open and the close failed for some other
+            // reason -- keep state as-is and retry next tick rather than
+            // abandoning tracking of a position that's actually still live.
          }
-         g_lastCloseMsc=nowMsc;
-         g_posDir=0;
+         else
+         {
+            g_lastCloseMsc=nowMsc;
+            g_posDir=0;
+         }
       }
       return; // one position at a time -- never stack while one is open
    }
@@ -384,6 +459,8 @@ void OnTick()
    g_posDir=dir;
    g_posOpenPrice=trade.ResultPrice()>0?trade.ResultPrice():intendedEntry;
    g_posOpenTime=TimeCurrent();
+   g_posTicket=trade.ResultOrder(); // position ticket == opening order ticket for a new market-order position (hedging account)
+   g_posSL=slPrice; g_posTP=tpPrice;
    RecordTradeTime(nowMsc);
    double entrySlipPts=(dir>0)?(g_posOpenPrice-intendedEntry)/_Point:(intendedEntry-g_posOpenPrice)/_Point;
    g_entryCount++; g_entrySlipSum+=entrySlipPts;
