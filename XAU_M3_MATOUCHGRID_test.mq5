@@ -1009,11 +1009,21 @@ void UpdateFlipRegime()
 //| not every tick. Returns true iff the given fast/slow MA pair's        |
 //| (closed-bar) alignment matches dir (bullish for BUY, bearish SELL).   |
 //+------------------------------------------------------------------+
+// REVISED 2026-11-26, per user request: was reading the last CLOSED H4 bar
+// (shift=1), inconsistent with H1's DecideFinalDir() which reads the live,
+// still-forming bar (shift=0) -- found when tracing a case where an armed
+// cross episode sat blocked by this H4 check for 32 seconds of repeated
+// touches, then fired hours later on an unrelated touch once H4 had long
+// since moved on, because the stale closed-bar read kept disagreeing.
+// Now reads the forming bar (shift=0), same convention as H1, so this
+// check reacts to H4's current state rather than up to 4 hours of lag.
+// Only ever called with H4's own MA handles (hMAHtf2Fast/hMAHtf2Slow) --
+// not shared with any other timeframe check.
 bool TFAligned(int dir,int hFast,int hSlow)
 {
    double fast1[1],slow1[1];
-   if(CopyBuffer(hFast,0,1,1,fast1)<1) return false;
-   if(CopyBuffer(hSlow,0,1,1,slow1)<1) return false;
+   if(CopyBuffer(hFast,0,0,1,fast1)<1) return false;
+   if(CopyBuffer(hSlow,0,0,1,slow1)<1) return false;
    bool bullish=fast1[0]>slow1[0];
    return (dir>0) ? bullish : !bullish;
 }
