@@ -758,7 +758,10 @@ input bool   UseHtfBB4Exhaustion = true; // at a golden cross, if HigherTFAlignm
 
 input group "=== Second higher-timeframe alignment filter (NEW 2026-11-21, per user request -- UNCHANGED skip-gate semantics, now checked against the FINAL direction after the H1 override above) ==="
 input bool   UseHigherTFAlignment2  = true;      // a SECOND higher timeframe that must ALSO be aligned with the FINAL (post-H1-override) direction, else this touch is skipped (TEST, untested)
-input ENUM_TIMEFRAMES HigherTFAlignment2 = PERIOD_H4; // TEST 2026-11-26, per user request: isolating the two variables changed in the rejected H2+price-vs-MA test above -- this run keeps the timeframe at H4 (confirmed) and changes ONLY the check formula to price-vs-20MA (TFAlignedByPrice, H1's style), to see whether the formula change alone (vs the H2 timeframe change) was what hurt. Pending backtest.
+input ENUM_TIMEFRAMES HigherTFAlignment2 = PERIOD_H4; // CONFIRMED 2026-11-26: H4 + TFAlignedByMACross (20MA vs 120MA, real-time forming bar). Both an H2 timeframe swap AND an H4-with-price-vs-20MA-formula swap were isolated and tested separately -- the FORMULA (price-vs-MA) is what hurt (H4+price-vs-MA: NET -$4,415.33, worse than even the H2 test), not the timeframe. TFAlignedByMACross/H4 stays confirmed; see that function's header note.
+
+input group "=== Skip H4 filter on the day's first trade only (NEW 2026-11-26, per user request: test whether the FIRST M3 cross+touch entry of each KST day should bypass HigherTFAlignment2 entirely and rely on H1 alone, while every later entry that same day still requires the normal H4 check) ==="
+input bool   UseSkipH4OnFirstDailyTrade = false; // if true AND today's first entry hasn't happened yet, HigherTFAlignment2's check is bypassed for this touch (entry proceeds regardless of H4 alignment) -- H1 (BB4 exhaustion / price-vs-20MA override, both unchanged) still decides direction as before. Every subsequent entry the same KST day uses the normal H4 check. "Day" and "first entry" are tracked globally (shared across all MaxConcurrentBaskets slots), reset at KST midnight (TEST, untested)
 
 input group "=== H1/H4 disagreement reversal (NEW 2026-11-23, per user request: '1시간봉하고 4시간봉하고 일치하지 않을때 반대방향으로 진입하면') ==="
 input bool   UseH1H4DisagreeReversal = false; // if HigherTFAlignment's price-vs-20MA direction (H1) and HigherTFAlignment2's own fast/slow MA cross direction (H4) disagree with EACH OTHER, INVERT the already-decided finalDir (from the BB4/H1-override/M3-cross chain above) instead of running the UseHigherTFAlignment2 skip-gate below -- when true, SUPERSEDES UseHigherTFAlignment2 entirely regardless of its own value (REJECTED 2026-11-23: NET $26,890.70->$7,328.21, RF 2.636->0.644 -- H1/H4 disagreement was a low-conviction situation the old skip-gate correctly avoided; betting against both made it worse, not better. Default stays false, see dated backtest note)
@@ -835,6 +838,8 @@ bool     g_flipRegimeBullish=false;
 datetime g_lastFlipBarSeen=0;
 int      g_lastSessionIdx=-1;         // NEW 2026-11-23: which session (0=Asia,1=Europe,2=US, see SessionIndex()) as of the last tick
 bool     g_sessionEntryUsed=false;    // NEW 2026-11-23: consumed once an entry fires in the current session block (UseSessionGatedEntry) -- shared across slots, "one per session" means across ALL slots collectively
+int      g_lastKSTDateKey=-1;         // NEW 2026-11-26, for UseSkipH4OnFirstDailyTrade: KST calendar date (year*10000+month*100+day) as of the last tick, see KST_DateKey()
+bool     g_firstEntryDoneToday=false; // NEW 2026-11-26: consumed once ANY slot's entry fires on the current KST day -- shared across slots, "today's first trade" means across ALL slots collectively
 
 int hMA=INVALID_HANDLE, hMAFast=INVALID_HANDLE, hATR=INVALID_HANDLE;
 int hMAFlipSlow=INVALID_HANDLE, hMAFlipFast=INVALID_HANDLE;
@@ -1032,16 +1037,19 @@ void UpdateFlipRegime()
 // NOT make the EA trade more; it makes the SAME trades fire at better-
 // timed moments (less often blocked by a stale H4 read), which shows
 // up as +15.6% NET and a meaningfully lower drawdown, not more volume.
-// TESTED 2026-11-26, per user request, then REJECTED: tried HigherTFAlignment2
-// on H2 using this price-vs-20MA style (same convention as H1's
-// DecideFinalDir()) instead of comparing H2's own fast(20)/slow(120) MA to
-// each other. Clean A/B over the same 2025.01.01-2026.11.30 window: NET
-// $26,033.30->$5,129.42, PF 1.126->1.019, RF 2.640->0.268, Sharpe 2.268->
-// 0.384, trades 6,972->8,630, Balance/Equity DD max 7.17%/7.56%->15.79%/
-// 15.90%. More (noisier) entries passed the looser price-vs-MA filter on
-// the shorter H2 timeframe, and quality collapsed across the board --
-// kept here for reference only, NOT wired to HigherTFAlignment2 (see
-// TFAlignedByMACross below, which is).
+// TESTED 2026-11-26, per user request, then REJECTED twice -- this price-
+// vs-20MA style formula (same convention as H1's DecideFinalDir()) was the
+// problem, not the H2 timeframe swap it was first tested alongside:
+// (1) H2 + this formula (both changed together): NET $26,033.30->$5,129.42,
+//     PF 1.126->1.019, RF 2.640->0.268, Sharpe 2.268->0.384, trades
+//     6,972->8,630, DD max 7.17%/7.56%->15.79%/15.90%.
+// (2) H4 + this formula (timeframe isolated, kept at the confirmed H4):
+//     NET $26,033.30->-$4,415.33 (negative -- worse than (1)), PF ->0.976,
+//     RF ->-0.279, Sharpe ->-0.513, trades ->6,330, DD max ->14.46%/14.70%.
+// The formula itself (price-vs-single-MA) is unsuited to this SECOND
+// filter slot regardless of which timeframe it reads -- kept here for
+// reference only, NOT wired to HigherTFAlignment2 (see TFAlignedByMACross
+// below, which is).
 bool TFAlignedByPrice(int dir,int maHandle)
 {
    double ma[1];
@@ -1137,7 +1145,7 @@ bool BadSignalAgainstDir(int dir)
 {
    if(g_regimeKnown && (g_regimeBullish!=(dir>0))) return true;
    if(DecideFinalDir(dir)!=dir) return true;
-   if(!TFAlignedByPrice(dir,hMAHtf2Fast)) return true;
+   if(!TFAlignedByMACross(dir,hMAHtf2Fast,hMAHtf2Slow)) return true;
    return false;
 }
 
@@ -1251,6 +1259,16 @@ int KST_Hour(datetime server_now)
    int offsetHours=IsEUDST(server_now)?6:7;
    MqlDateTime t; TimeToStruct(server_now+offsetHours*3600,t);
    return t.hour;
+}
+
+// NEW 2026-11-26, for UseSkipH4OnFirstDailyTrade: the KST calendar date as a
+// single comparable integer (year*10000+month*100+day), so "today" can be
+// detected without worrying about month/year rollover.
+int KST_DateKey(datetime server_now)
+{
+   int offsetHours=IsEUDST(server_now)?6:7;
+   MqlDateTime t; TimeToStruct(server_now+offsetHours*3600,t);
+   return t.year*10000+t.mon*100+t.day;
 }
 
 //+------------------------------------------------------------------+
@@ -1842,6 +1860,16 @@ void OnTick()
       g_sessionEntryUsed=false;
    }
 
+   //--- day bookkeeping (NEW 2026-11-26, for UseSkipH4OnFirstDailyTrade):
+   //    re-arms g_firstEntryDoneToday whenever the KST calendar date rolls
+   //    over, regardless of whether that feature is even on (cheap check).
+   int curDateKey=KST_DateKey(TimeCurrent());
+   if(curDateKey!=g_lastKSTDateKey)
+   {
+      g_lastKSTDateKey=curDateKey;
+      g_firstEntryDoneToday=false;
+   }
+
    //--- per-slot maintenance (NEW 2026-11-23): every slot that currently has
    //    a basket open gets its exits checked/finalized, every tick,
    //    regardless of whether any OTHER slot is free or busy.
@@ -1913,10 +1941,21 @@ void OnTick()
          isCounterTrend=(finalDir!=g_awaitDir);
       }
    }
-   else if(UseHigherTFAlignment2 && !TFAlignedByPrice(finalDir,hMAHtf2Fast))
+   else if(UseHigherTFAlignment2 && !TFAlignedByMACross(finalDir,hMAHtf2Fast,hMAHtf2Slow))
    {
-      Log("ENTRY_SKIPPED","HigherTFAlignment2 ("+EnumToString(HigherTFAlignment2)+") not aligned with "+(finalDir>0?"BUY":"SELL")+" -- episode stays armed, retry on a later touch");
-      return;
+      // NEW 2026-11-26, per user request: on the day's first entry only,
+      // bypass this H4 skip-gate entirely (enter anyway, H1 alone decided
+      // the direction) -- every later entry the same KST day still requires
+      // the normal H4 check.
+      if(UseSkipH4OnFirstDailyTrade && !g_firstEntryDoneToday)
+      {
+         Log("H4_SKIPPED_FIRST_DAILY_TRADE","HigherTFAlignment2 ("+EnumToString(HigherTFAlignment2)+") disagreed with "+(finalDir>0?"BUY":"SELL")+" but this is today's first trade -- entering anyway on H1 alone");
+      }
+      else
+      {
+         Log("ENTRY_SKIPPED","HigherTFAlignment2 ("+EnumToString(HigherTFAlignment2)+") not aligned with "+(finalDir>0?"BUY":"SELL")+" -- episode stays armed, retry on a later touch");
+         return;
+      }
    }
 
    if(UseAvoidBB4MAOverlap && InAvoidZoneBB4MAOverlap())
@@ -1944,6 +1983,7 @@ void OnTick()
       return;
    }
    if(UseSessionGatedEntry) g_sessionEntryUsed=true; // NEW 2026-11-23: consumed only on a SUCCESSFUL entry, for this session block
+   if(UseSkipH4OnFirstDailyTrade) g_firstEntryDoneToday=true; // NEW 2026-11-26: consumed only on a SUCCESSFUL entry, for today's KST date -- counts regardless of whether H4 agreed or the bypass fired
    double step=GetStep();
    double tpCandidate=0;
    if(UseSwingTP)
