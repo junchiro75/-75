@@ -758,7 +758,7 @@ input bool   UseHtfBB4Exhaustion = true; // at a golden cross, if HigherTFAlignm
 
 input group "=== Second higher-timeframe alignment filter (NEW 2026-11-21, per user request -- UNCHANGED skip-gate semantics, now checked against the FINAL direction after the H1 override above) ==="
 input bool   UseHigherTFAlignment2  = true;      // a SECOND higher timeframe that must ALSO be aligned with the FINAL (post-H1-override) direction, else this touch is skipped (TEST, untested)
-input ENUM_TIMEFRAMES HigherTFAlignment2 = PERIOD_H4; // first guess for the second required timeframe (TEST, untested)
+input ENUM_TIMEFRAMES HigherTFAlignment2 = PERIOD_H2; // CHANGED 2026-11-26 per user request: H4 -> H2, together with switching the check itself to price-vs-20MA (TFAlignedByPrice) instead of 20MA-vs-120MA (TEST, untested, pending backtest)
 
 input group "=== H1/H4 disagreement reversal (NEW 2026-11-23, per user request: '1시간봉하고 4시간봉하고 일치하지 않을때 반대방향으로 진입하면') ==="
 input bool   UseH1H4DisagreeReversal = false; // if HigherTFAlignment's price-vs-20MA direction (H1) and HigherTFAlignment2's own fast/slow MA cross direction (H4) disagree with EACH OTHER, INVERT the already-decided finalDir (from the BB4/H1-override/M3-cross chain above) instead of running the UseHigherTFAlignment2 skip-gate below -- when true, SUPERSEDES UseHigherTFAlignment2 entirely regardless of its own value (REJECTED 2026-11-23: NET $26,890.70->$7,328.21, RF 2.636->0.644 -- H1/H4 disagreement was a low-conviction situation the old skip-gate correctly avoided; betting against both made it worse, not better. Default stays false, see dated backtest note)
@@ -1032,7 +1032,26 @@ void UpdateFlipRegime()
 // NOT make the EA trade more; it makes the SAME trades fire at better-
 // timed moments (less often blocked by a stale H4 read), which shows
 // up as +15.6% NET and a meaningfully lower drawdown, not more volume.
-bool TFAligned(int dir,int hFast,int hSlow)
+// CHANGED 2026-11-26, per user request (TEST, untested, pending backtest):
+// HigherTFAlignment2 switched from H4 to H2, and this check switched from
+// comparing H2's own fast(20)/slow(120) MA to each other, to the SAME
+// convention as H1's DecideFinalDir() -- current price vs this timeframe's
+// live 20MA (forming bar). Kept the old fast/slow version below (now named
+// TFAlignedByMACross) in case the MA-cross style is ever wanted again on
+// some other timeframe; this is the one actually wired to HigherTFAlignment2
+// via hMAHtf2Fast below.
+bool TFAlignedByPrice(int dir,int maHandle)
+{
+   double ma[1];
+   if(CopyBuffer(maHandle,0,0,1,ma)<1) return false;
+   double bid=SymbolInfoDouble(_Symbol,SYMBOL_BID);
+   bool bullish=(bid>ma[0]);
+   return (dir>0) ? bullish : !bullish;
+}
+
+// Unused as of the 2026-11-26 change above (kept for reference / in case
+// MA-cross style alignment is wanted again on some timeframe).
+bool TFAlignedByMACross(int dir,int hFast,int hSlow)
 {
    double fast1[1],slow1[1];
    if(CopyBuffer(hFast,0,0,1,fast1)<1) return false;
@@ -1113,7 +1132,7 @@ bool BadSignalAgainstDir(int dir)
 {
    if(g_regimeKnown && (g_regimeBullish!=(dir>0))) return true;
    if(DecideFinalDir(dir)!=dir) return true;
-   if(!TFAligned(dir,hMAHtf2Fast,hMAHtf2Slow)) return true;
+   if(!TFAlignedByPrice(dir,hMAHtf2Fast)) return true;
    return false;
 }
 
@@ -1889,7 +1908,7 @@ void OnTick()
          isCounterTrend=(finalDir!=g_awaitDir);
       }
    }
-   else if(UseHigherTFAlignment2 && !TFAligned(finalDir,hMAHtf2Fast,hMAHtf2Slow))
+   else if(UseHigherTFAlignment2 && !TFAlignedByPrice(finalDir,hMAHtf2Fast))
    {
       Log("ENTRY_SKIPPED","HigherTFAlignment2 ("+EnumToString(HigherTFAlignment2)+") not aligned with "+(finalDir>0?"BUY":"SELL")+" -- episode stays armed, retry on a later touch");
       return;
