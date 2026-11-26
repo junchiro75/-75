@@ -701,6 +701,15 @@
 CTrade trade;
 #define MAX_BASKET_SLOTS 10 // RAISED 2026-11-23 from 5, per user request, after the 1-5 sweep showed NET/PF/RF/Sharpe still rising with no peak at the old cap
 
+// BUILD TAG (NEW 2026-11-26): a short, unmistakable version string printed
+// on every OnInit (see the START log line) and on the chart via Comment()
+// for a few seconds at startup. Bump this string every time the file
+// changes, so after compiling+attaching, the Experts/Journal tab (or the
+// chart itself, briefly) tells you directly which version actually loaded
+// -- no need to go hunting through the code to check. If what you see
+// doesn't match what you expect, you have the wrong file compiled.
+#define EA_BUILD_TAG "BUILD 2026-11-26-f (UseSkipH4OnFirstDailyTrade added, H4/MACross confirmed restored)"
+
 input group "=== Signal: 20/120 cross + first 120MA pullback touch (REVISED 2026-11-21, TEST/untested) ==="
 input ENUM_TIMEFRAMES Timeframe  = PERIOD_M3; // signal timeframe (manual tool was fixed M3) (TEST, untested)
 input int    MAFastPeriod         = 20;   // fast SMA, used ONLY to detect golden/dead cross against MAPeriod -- NEW, not in manual tool (TEST, untested)
@@ -1715,6 +1724,8 @@ void RecoverState()
 //+------------------------------------------------------------------+
 int OnInit()
 {
+   Print("XAU_M3_MATOUCHGRID_test | BUILD | ",EA_BUILD_TAG);
+   Alert("XAU_M3_MATOUCHGRID_test loaded: ",EA_BUILD_TAG);
    g_maxSlots=(int)MathMax(1,MathMin(MAX_BASKET_SLOTS,MaxConcurrentBaskets)); // NEW 2026-11-23
    hMA    =iMA(_Symbol,Timeframe,MAPeriod,0,MODE_SMA,PRICE_CLOSE);
    hMAFast=iMA(_Symbol,Timeframe,MAFastPeriod,0,MODE_SMA,PRICE_CLOSE);
@@ -1743,7 +1754,7 @@ int OnInit()
    trade.SetDeviationInPoints(MaxDeviationPts);
    trade.SetTypeFillingBySymbol(_Symbol);
 
-   Log("START",string("TF=")+EnumToString(Timeframe)+" | MAFastPeriod="+IntegerToString(MAFastPeriod)+
+   Log("START",string(EA_BUILD_TAG)+" | TF="+EnumToString(Timeframe)+" | MAFastPeriod="+IntegerToString(MAFastPeriod)+
        " MAPeriod="+IntegerToString(MAPeriod)+" MaxWaitBars="+IntegerToString(MaxWaitBars)+
        " | UseSessionGatedEntry="+(UseSessionGatedEntry?"true":"false")+" AsiaSessionStartKST="+IntegerToString(AsiaSessionStartKST)+
        " EuropeSessionStartKST="+IntegerToString(EuropeSessionStartKST)+" USSessionStartKST="+IntegerToString(USSessionStartKST)+
