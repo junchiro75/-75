@@ -708,7 +708,7 @@ CTrade trade;
 // chart itself, briefly) tells you directly which version actually loaded
 // -- no need to go hunting through the code to check. If what you see
 // doesn't match what you expect, you have the wrong file compiled.
-#define EA_BUILD_TAG "BUILD 2026-11-26-h (TestUseFormulaVsMA added, sweep with UseSkipH4OnFirstDailyTrade in one Optimizer pass)"
+#define EA_BUILD_TAG "BUILD 2026-11-26-i (TFAlignedByPrice diagnostic logging added -- investigating identical-result anomaly)"
 
 input group "=== Signal: 20/120 cross + first 120MA pullback touch (REVISED 2026-11-21, TEST/untested) ==="
 input ENUM_TIMEFRAMES Timeframe  = PERIOD_M3; // signal timeframe (manual tool was fixed M3) (TEST, untested)
@@ -1068,6 +1068,23 @@ bool TFAlignedByPrice(int dir,int maHandle)
    if(CopyBuffer(maHandle,0,0,1,ma)<1) return false;
    double bid=SymbolInfoDouble(_Symbol,SYMBOL_BID);
    bool bullish=(bid>ma[0]);
+
+   // DIAGNOSTIC (2026-11-26, TEMPORARY -- remove once resolved): logs the
+   // first 20 calls' raw values. Added after TestUseFormulaVsMA=true gave
+   // the EXACT same aggregate result (NET $5,129.42, 8,630 trades) across
+   // four different configs that should NOT match (HigherTFAlignment2=H2
+   // vs H4, UseHigherTFAlignment=false vs true) -- need to see the real
+   // maHandle/ma value/bid being read to find out why.
+   static int s_tfAlignedByPriceDiagCount=0;
+   if(s_tfAlignedByPriceDiagCount<20)
+   {
+      s_tfAlignedByPriceDiagCount++;
+      Log("TFALIGNEDBYPRICE_DIAG","call="+IntegerToString(s_tfAlignedByPriceDiagCount)+
+          " maHandle="+IntegerToString(maHandle)+" HigherTFAlignment2="+EnumToString(HigherTFAlignment2)+
+          " ma="+DoubleToString(ma[0],_Digits)+" bid="+DoubleToString(bid,_Digits)+
+          " dir="+(dir>0?"BUY":"SELL")+" bullish="+(bullish?"true":"false"));
+   }
+
    return (dir>0) ? bullish : !bullish;
 }
 
