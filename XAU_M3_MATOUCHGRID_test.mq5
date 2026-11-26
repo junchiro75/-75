@@ -708,7 +708,7 @@ CTrade trade;
 // chart itself, briefly) tells you directly which version actually loaded
 // -- no need to go hunting through the code to check. If what you see
 // doesn't match what you expect, you have the wrong file compiled.
-#define EA_BUILD_TAG "BUILD 2026-11-26-g (UseHigherTFAlignment comment now explicitly marked CONFIRMED true)"
+#define EA_BUILD_TAG "BUILD 2026-11-26-h (TestUseFormulaVsMA added, sweep with UseSkipH4OnFirstDailyTrade in one Optimizer pass)"
 
 input group "=== Signal: 20/120 cross + first 120MA pullback touch (REVISED 2026-11-21, TEST/untested) ==="
 input ENUM_TIMEFRAMES Timeframe  = PERIOD_M3; // signal timeframe (manual tool was fixed M3) (TEST, untested)
@@ -767,10 +767,13 @@ input bool   UseHtfBB4Exhaustion = true; // at a golden cross, if HigherTFAlignm
 
 input group "=== Second higher-timeframe alignment filter (NEW 2026-11-21, per user request -- UNCHANGED skip-gate semantics, now checked against the FINAL direction after the H1 override above) ==="
 input bool   UseHigherTFAlignment2  = true;      // a SECOND higher timeframe that must ALSO be aligned with the FINAL (post-H1-override) direction, else this touch is skipped (TEST, untested)
-input ENUM_TIMEFRAMES HigherTFAlignment2 = PERIOD_H4; // CONFIRMED 2026-11-26: H4 + TFAlignedByMACross (20MA vs 120MA, real-time forming bar). Both an H2 timeframe swap AND an H4-with-price-vs-20MA-formula swap were isolated and tested separately -- the FORMULA (price-vs-MA) is what hurt (H4+price-vs-MA: NET -$4,415.33, worse than even the H2 test), not the timeframe. TFAlignedByMACross/H4 stays confirmed; see that function's header note.
+input ENUM_TIMEFRAMES HigherTFAlignment2 = PERIOD_H4; // CONFIRMED 2026-11-26: H4 + TFAlignedByMACross (20MA vs 120MA, real-time forming bar). An H2 timeframe swap was cleanly isolated and rejected (NET $26,033.30->$5,129.42). An H4-with-price-vs-20MA-formula swap was ALSO tested and looked even worse (NET ->-$4,415.33), but that specific run is UNRELIABLE -- found afterward to have accidentally had UseHigherTFAlignment=false (a stale Strategy Tester input, not this file's default), so it wasn't a clean isolation; see TestUseFormulaVsMA below to re-run it properly. TFAlignedByMACross/H4 stays confirmed regardless.
 
 input group "=== Skip H4 filter on the day's first trade only (NEW 2026-11-26, per user request: test whether the FIRST M3 cross+touch entry of each KST day should bypass HigherTFAlignment2 entirely and rely on H1 alone, while every later entry that same day still requires the normal H4 check) ==="
-input bool   UseSkipH4OnFirstDailyTrade = false; // if true AND today's first entry hasn't happened yet, HigherTFAlignment2's check is bypassed for this touch (entry proceeds regardless of H4 alignment) -- H1 (BB4 exhaustion / price-vs-20MA override, both unchanged) still decides direction as before. Every subsequent entry the same KST day uses the normal H4 check. "Day" and "first entry" are tracked globally (shared across all MaxConcurrentBaskets slots), reset at KST midnight (TEST, untested)
+input bool   UseSkipH4OnFirstDailyTrade = false; // if true AND today's first entry hasn't happened yet, HigherTFAlignment2's check is bypassed for this touch (entry proceeds regardless of H4 alignment) -- H1 (BB4 exhaustion / price-vs-20MA override, both unchanged) still decides direction as before. Every subsequent entry the same KST day uses the normal H4 check. "Day" and "first entry" are tracked globally (shared across all MaxConcurrentBaskets slots), reset at KST midnight (TEST, untested). NOTE: an earlier run of this test was ALSO contaminated by the same stale UseHigherTFAlignment=false input -- re-test with UseHigherTFAlignment=true confirmed
+
+input group "=== Formula test, for combining with the above in one MT5 Optimizer pass (NEW 2026-11-26, per user request: 'can both pending re-tests run in one go?') ==="
+input bool   TestUseFormulaVsMA = false; // if true, HigherTFAlignment2's check uses TFAlignedByPrice (price-vs-20MA, H1's style) instead of the CONFIRMED TFAlignedByMACross -- re-tests the earlier contaminated H4+price-vs-MA comparison properly. Check BOTH this and UseSkipH4OnFirstDailyTrade in the Strategy Tester's Optimization tab (each swept false->true, step 1) and run ONE optimization pass to get all 4 combinations (baseline/formula-only/skip-first-daily-only/both) in a single results table, instead of four separate manual backtests (TEST, untested)
 
 input group "=== H1/H4 disagreement reversal (NEW 2026-11-23, per user request: '1시간봉하고 4시간봉하고 일치하지 않을때 반대방향으로 진입하면') ==="
 input bool   UseH1H4DisagreeReversal = false; // if HigherTFAlignment's price-vs-20MA direction (H1) and HigherTFAlignment2's own fast/slow MA cross direction (H4) disagree with EACH OTHER, INVERT the already-decided finalDir (from the BB4/H1-override/M3-cross chain above) instead of running the UseHigherTFAlignment2 skip-gate below -- when true, SUPERSEDES UseHigherTFAlignment2 entirely regardless of its own value (REJECTED 2026-11-23: NET $26,890.70->$7,328.21, RF 2.636->0.644 -- H1/H4 disagreement was a low-conviction situation the old skip-gate correctly avoided; betting against both made it worse, not better. Default stays false, see dated backtest note)
@@ -1154,7 +1157,7 @@ bool BadSignalAgainstDir(int dir)
 {
    if(g_regimeKnown && (g_regimeBullish!=(dir>0))) return true;
    if(DecideFinalDir(dir)!=dir) return true;
-   if(!TFAlignedByMACross(dir,hMAHtf2Fast,hMAHtf2Slow)) return true;
+   if(!(TestUseFormulaVsMA ? TFAlignedByPrice(dir,hMAHtf2Fast) : TFAlignedByMACross(dir,hMAHtf2Fast,hMAHtf2Slow))) return true;
    return false;
 }
 
@@ -1952,7 +1955,7 @@ void OnTick()
          isCounterTrend=(finalDir!=g_awaitDir);
       }
    }
-   else if(UseHigherTFAlignment2 && !TFAlignedByMACross(finalDir,hMAHtf2Fast,hMAHtf2Slow))
+   else if(UseHigherTFAlignment2 && !(TestUseFormulaVsMA ? TFAlignedByPrice(finalDir,hMAHtf2Fast) : TFAlignedByMACross(finalDir,hMAHtf2Fast,hMAHtf2Slow)))
    {
       // NEW 2026-11-26, per user request: on the day's first entry only,
       // bypass this H4 skip-gate entirely (enter anyway, H1 alone decided
