@@ -708,7 +708,7 @@ CTrade trade;
 // chart itself, briefly) tells you directly which version actually loaded
 // -- no need to go hunting through the code to check. If what you see
 // doesn't match what you expect, you have the wrong file compiled.
-#define EA_BUILD_TAG "BUILD 2026-11-26-f (UseSkipH4OnFirstDailyTrade added, H4/MACross confirmed restored)"
+#define EA_BUILD_TAG "BUILD 2026-11-26-g (UseHigherTFAlignment comment now explicitly marked CONFIRMED true)"
 
 input group "=== Signal: 20/120 cross + first 120MA pullback touch (REVISED 2026-11-21, TEST/untested) ==="
 input ENUM_TIMEFRAMES Timeframe  = PERIOD_M3; // signal timeframe (manual tool was fixed M3) (TEST, untested)
@@ -758,8 +758,8 @@ input bool   UseLastLegConfirm        = true; // right before the LAST grid leg 
 input bool   UseFullDepthBadSignalExit = false; // once the basket reaches FULL depth (every grid leg filled) AND the SAME M3/H1/H4 bad-signal check fires, arm the SAME breakeven-or-better close as UseRegimeFlipExit (reuses g_regimeFlippedAgainstBasket + RegimeFlipMinProfitSteps) -- an ADDITIONAL, faster-reacting trigger source alongside RegimeFlipTimeframe's own cross, not a replacement for it (REJECTED 2026-11-21: isolated A/B showed this ALONE is worse than the no-filter baseline on every metric except Equity DD; default now OFF, see dated backtest note)
 
 input group "=== H1 price-vs-MA direction override (REVISED 2026-11-21, REPLACES the 7th revision's H1 skip-gate per user's own strategy description) ==="
-input bool   UseHigherTFAlignment   = true;      // at the moment of entry, HigherTFAlignment's CURRENT price vs its own MAFastPeriod(20) MA DETERMINES the final trade direction -- overrides the M3 cross's direction when they disagree, rather than skipping (TEST, untested, user-specified logic)
-input ENUM_TIMEFRAMES HigherTFAlignment = PERIOD_H1; // the timeframe read for this override (TEST, CONFIRMED as a cross-alignment skip-gate in the 7th backtest at NET $18,986/PF 1.089; now repurposed, not yet backtested in this new form)
+input bool   UseHigherTFAlignment   = true;      // CONFIRMED (2026-11-26, flagged explicitly after a live test was found running with this accidentally set to false in the Strategy Tester's input dialog -- a stale leftover from an earlier unrelated test, not a code default change): at the moment of entry, HigherTFAlignment's CURRENT price vs its own MAFastPeriod(20) MA DETERMINES the final trade direction -- overrides the M3 cross's direction when they disagree, rather than skipping. Has been true/active in every confirmed backtest since the 9th revision (see header) -- if you see this as false in a test's input dialog, that is NOT the confirmed setting
+input ENUM_TIMEFRAMES HigherTFAlignment = PERIOD_H1; // the timeframe read for this override -- H1, unchanged and CONFIRMED since the 7th revision (TEST, untested as a direction-override specifically, but the timeframe choice itself has never been revisited)
 input double CounterTrendTPShrink   = 0.5;       // when the override disagrees with the M3 cross direction (counter-trend trade), shrink the swing-TP favorable distance from P0 by this fraction ("기존보다 다소 적은 범위로 익절") (TEST, untested, user-specified logic)
 
 input group "=== H1 BB4(4,4) exhaustion override (NEW 2026-11-21, per user request -- TAKES PRIORITY over the price-vs-20MA override above when it fires; theory confirmed by user: '기본비를 맞으면 보통 반대방향으로 간다' -- touching the band is itself a fade signal) ==="
