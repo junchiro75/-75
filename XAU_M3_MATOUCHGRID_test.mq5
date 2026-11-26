@@ -758,7 +758,7 @@ input bool   UseHtfBB4Exhaustion = true; // at a golden cross, if HigherTFAlignm
 
 input group "=== Second higher-timeframe alignment filter (NEW 2026-11-21, per user request -- UNCHANGED skip-gate semantics, now checked against the FINAL direction after the H1 override above) ==="
 input bool   UseHigherTFAlignment2  = true;      // a SECOND higher timeframe that must ALSO be aligned with the FINAL (post-H1-override) direction, else this touch is skipped (TEST, untested)
-input ENUM_TIMEFRAMES HigherTFAlignment2 = PERIOD_H4; // CONFIRMED 2026-11-26: H2 + price-vs-20MA (TFAlignedByPrice) tested and REJECTED (NET $26,033.30->$5,129.42, RF 2.640->0.268, DD 7.17%->15.79% -- see TFAlignedByMACross's header note). Reverted to H4 + TFAlignedByMACross, the confirmed version.
+input ENUM_TIMEFRAMES HigherTFAlignment2 = PERIOD_H4; // TEST 2026-11-26, per user request: isolating the two variables changed in the rejected H2+price-vs-MA test above -- this run keeps the timeframe at H4 (confirmed) and changes ONLY the check formula to price-vs-20MA (TFAlignedByPrice, H1's style), to see whether the formula change alone (vs the H2 timeframe change) was what hurt. Pending backtest.
 
 input group "=== H1/H4 disagreement reversal (NEW 2026-11-23, per user request: '1시간봉하고 4시간봉하고 일치하지 않을때 반대방향으로 진입하면') ==="
 input bool   UseH1H4DisagreeReversal = false; // if HigherTFAlignment's price-vs-20MA direction (H1) and HigherTFAlignment2's own fast/slow MA cross direction (H4) disagree with EACH OTHER, INVERT the already-decided finalDir (from the BB4/H1-override/M3-cross chain above) instead of running the UseHigherTFAlignment2 skip-gate below -- when true, SUPERSEDES UseHigherTFAlignment2 entirely regardless of its own value (REJECTED 2026-11-23: NET $26,890.70->$7,328.21, RF 2.636->0.644 -- H1/H4 disagreement was a low-conviction situation the old skip-gate correctly avoided; betting against both made it worse, not better. Default stays false, see dated backtest note)
@@ -1137,7 +1137,7 @@ bool BadSignalAgainstDir(int dir)
 {
    if(g_regimeKnown && (g_regimeBullish!=(dir>0))) return true;
    if(DecideFinalDir(dir)!=dir) return true;
-   if(!TFAlignedByMACross(dir,hMAHtf2Fast,hMAHtf2Slow)) return true;
+   if(!TFAlignedByPrice(dir,hMAHtf2Fast)) return true;
    return false;
 }
 
@@ -1913,7 +1913,7 @@ void OnTick()
          isCounterTrend=(finalDir!=g_awaitDir);
       }
    }
-   else if(UseHigherTFAlignment2 && !TFAlignedByMACross(finalDir,hMAHtf2Fast,hMAHtf2Slow))
+   else if(UseHigherTFAlignment2 && !TFAlignedByPrice(finalDir,hMAHtf2Fast))
    {
       Log("ENTRY_SKIPPED","HigherTFAlignment2 ("+EnumToString(HigherTFAlignment2)+") not aligned with "+(finalDir>0?"BUY":"SELL")+" -- episode stays armed, retry on a later touch");
       return;
