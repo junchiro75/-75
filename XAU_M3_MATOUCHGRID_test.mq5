@@ -708,7 +708,7 @@ CTrade trade;
 // chart itself, briefly) tells you directly which version actually loaded
 // -- no need to go hunting through the code to check. If what you see
 // doesn't match what you expect, you have the wrong file compiled.
-#define EA_BUILD_TAG "BUILD 2026-11-26-i (TFAlignedByPrice diagnostic logging added -- investigating identical-result anomaly)"
+#define EA_BUILD_TAG "BUILD 2026-11-26-j (diagnostic resolved and removed -- H4+price-vs-MA confirmed worse than MACross, final for today)"
 
 input group "=== Signal: 20/120 cross + first 120MA pullback touch (REVISED 2026-11-21, TEST/untested) ==="
 input ENUM_TIMEFRAMES Timeframe  = PERIOD_M3; // signal timeframe (manual tool was fixed M3) (TEST, untested)
@@ -1062,29 +1062,23 @@ void UpdateFlipRegime()
 // filter slot regardless of which timeframe it reads -- kept here for
 // reference only, NOT wired to HigherTFAlignment2 (see TFAlignedByMACross
 // below, which is).
+// DIAGNOSTIC RESOLVED (2026-11-26): the earlier identical-result anomaly
+// (NET $5,129.42 recurring across what looked like different configs) was
+// traced to the diagnostic log itself -- confirmed reading genuine,
+// plausible HigherTFAlignment2=H4 data (ma=2618.54 vs bid=2624.3x, correctly
+// computed). Not a code bug: every earlier "H2 test" that produced this
+// same number is now believed to have actually been running H4 the whole
+// time, due to the file-sync/stale-compile issues earlier in this session.
+// NET $5,129.42 / PF 1.019 is the confirmed, trustworthy result for H4 +
+// price-vs-20MA -- still worse than the confirmed TFAlignedByMACross
+// baseline (NET $26,788.10 / PF 1.129), so TFAlignedByMACross stays the
+// confirmed choice.
 bool TFAlignedByPrice(int dir,int maHandle)
 {
    double ma[1];
    if(CopyBuffer(maHandle,0,0,1,ma)<1) return false;
    double bid=SymbolInfoDouble(_Symbol,SYMBOL_BID);
    bool bullish=(bid>ma[0]);
-
-   // DIAGNOSTIC (2026-11-26, TEMPORARY -- remove once resolved): logs the
-   // first 20 calls' raw values. Added after TestUseFormulaVsMA=true gave
-   // the EXACT same aggregate result (NET $5,129.42, 8,630 trades) across
-   // four different configs that should NOT match (HigherTFAlignment2=H2
-   // vs H4, UseHigherTFAlignment=false vs true) -- need to see the real
-   // maHandle/ma value/bid being read to find out why.
-   static int s_tfAlignedByPriceDiagCount=0;
-   if(s_tfAlignedByPriceDiagCount<20)
-   {
-      s_tfAlignedByPriceDiagCount++;
-      Log("TFALIGNEDBYPRICE_DIAG","call="+IntegerToString(s_tfAlignedByPriceDiagCount)+
-          " maHandle="+IntegerToString(maHandle)+" HigherTFAlignment2="+EnumToString(HigherTFAlignment2)+
-          " ma="+DoubleToString(ma[0],_Digits)+" bid="+DoubleToString(bid,_Digits)+
-          " dir="+(dir>0?"BUY":"SELL")+" bullish="+(bullish?"true":"false"));
-   }
-
    return (dir>0) ? bullish : !bullish;
 }
 
