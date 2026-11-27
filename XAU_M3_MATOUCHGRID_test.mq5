@@ -708,7 +708,7 @@ CTrade trade;
 // chart itself, briefly) tells you directly which version actually loaded
 // -- no need to go hunting through the code to check. If what you see
 // doesn't match what you expect, you have the wrong file compiled.
-#define EA_BUILD_TAG "BUILD 2026-11-26-j (diagnostic resolved and removed -- H4+price-vs-MA confirmed worse than MACross, final for today)"
+#define EA_BUILD_TAG "BUILD 2026-11-27-a (Avoid zone #5: UseAvoidExtremeTrend added, untested)"
 
 input group "=== Signal: 20/120 cross + first 120MA pullback touch (REVISED 2026-11-21, TEST/untested) ==="
 input ENUM_TIMEFRAMES Timeframe  = PERIOD_M3; // signal timeframe (manual tool was fixed M3) (TEST, untested)
@@ -792,6 +792,12 @@ input int    AvoidEconCalendarMinutesBefore  = 30;    // minutes BEFORE a qualif
 input int    AvoidEconCalendarMinutesAfter   = 30;    // minutes AFTER a qualifying event's release time to keep blocking new entries (TEST, untested)
 input string AvoidEconCalendarCurrency       = "USD"; // only count calendar events for this currency -- gold's primary macro driver, used as a proxy for "5대 경제지표" since MT5's calendar isn't easily filtered to 5 specific named indicators (TEST, untested)
 input ENUM_CALENDAR_EVENT_IMPORTANCE AvoidEconCalendarMinImportance = CALENDAR_IMPORTANCE_HIGH; // minimum calendar importance to count as a qualifying event (TEST, untested)
+
+input group "=== Avoid zone #5: extreme no-pullback trend (NEW 2026-11-27, per user request, motivated by the 4-period M3 re-check: 2026 Q1's loss coincided with two back-to-back |drift/range|>=0.89 months then an extreme reversal, while 2025's best-ever year had extreme single months mixed with choppy ones, never that specific pattern) ==="
+input bool   UseAvoidExtremeTrend          = false; // skip ANY entry (regardless of direction) if the recent |drift/range| ratio (see below) is at or above ExtremeTrendRatioThreshold -- a near-zero-pullback trend run, the condition M3's grid/DCA legs (which bet an adverse move retraces) seem to lose the most in (TEST, untested, user-specified logic)
+input ENUM_TIMEFRAMES ExtremeTrendTimeframe = PERIOD_D1; // timeframe the ratio is measured on -- daily bars so the read reflects a "this month's character" trend, not M3-bar noise (TEST, untested)
+input int    ExtremeTrendLookbackBars      = 20;    // lookback window in ExtremeTrendTimeframe bars (20 daily bars =~ 1 trading month, matching the monthly analysis this filter is based on) (TEST, untested)
+input double ExtremeTrendRatioThreshold    = 0.80;  // |close[now]-close[N bars ago]| / (highest high - lowest low) over the window -- 1.0 = a dead-straight run with zero pullback, 0 = pure chop/no net progress. 2026 Q1's losing months measured 0.835-0.985; 0.80 is a first-guess threshold below that range (TEST, untested)
 
 input group "=== Time filter (NEW 2026-11-21, per checklist '새벽 2시 이후 신규 금지'; window CONFIRMED by user as KST 02:00-08:00) ==="
 input bool   UseSkipHourKST       = false; // block NEW entries in [SkipHourStartKST,SkipHourEndKST) KST; does not affect baskets already open (REVERSED 2026-11-24: on the MaxConcurrentBaskets=7+TIGHTSWING combo, turning this OFF raised NET $70,950->$83,538, RF 3.055->3.720, Sharpe 2.746->2.807, and LOWERED both DD%s -- per-basket reconstruction showed the 02-08 KST window contributes proportionally (19.8% of baskets, 19.6% of profit, avg profit/basket $44.92 vs $45.64 elsewhere), so the ban was pure opportunity cost with no real risk-avoidance benefit under this architecture. CONFIRMED false.)
@@ -1236,6 +1242,40 @@ bool InAvoidZoneEconCalendar()
       if(ev.importance>=AvoidEconCalendarMinImportance) return true;
    }
    return false;
+}
+
+//+------------------------------------------------------------------+
+//| Avoid zone #5 (NEW 2026-11-27, per user request, motivated by a   |
+//| monthly drift/range analysis of the 4-period M3 re-check: 2026 Q1  |
+//| (M3 NET -$811, the worst of 4 clean periods) had back-to-back      |
+//| months at |drift/range|=0.98/0.89 (Jan/Feb, clean multi-week rally) |
+//| then 0.84 the OTHER way (Mar, clean reversal) -- near-zero pullback |
+//| either way. 2025 (M3's best period) had some equally extreme single|
+//| months (Aug 0.94, Sep 0.99) mixed with choppy ones, never two      |
+//| extreme months in a row followed by an extreme reversal. M3's      |
+//| grid/DCA legs bet that an adverse move will retrace -- a real-time, |
+//| rolling version of that same ratio, computed on a slower timeframe  |
+//| (so it reflects a "this month's" character, not noise), should      |
+//| flag the conditions this coincided with. Non-directional, applies   |
+//| to ANY entry regardless of dir, same skip-gate pattern as the other |
+//| avoid zones (episode stays armed, retried on a later touch).        |
+//+------------------------------------------------------------------+
+bool InAvoidZoneExtremeTrend()
+{
+   int idxHigh=iHighest(_Symbol,ExtremeTrendTimeframe,MODE_HIGH,ExtremeTrendLookbackBars,1);
+   int idxLow =iLowest (_Symbol,ExtremeTrendTimeframe,MODE_LOW, ExtremeTrendLookbackBars,1);
+   if(idxHigh<0 || idxLow<0) return false;
+   double hi=iHigh(_Symbol,ExtremeTrendTimeframe,idxHigh);
+   double lo=iLow(_Symbol,ExtremeTrendTimeframe,idxLow);
+   double rng=hi-lo;
+   if(rng<=0) return false;
+
+   double closeStart=iClose(_Symbol,ExtremeTrendTimeframe,ExtremeTrendLookbackBars);
+   double closeEnd  =iClose(_Symbol,ExtremeTrendTimeframe,1);
+   if(closeStart==0 || closeEnd==0) return false;
+   double drift=closeEnd-closeStart;
+   double ratio=drift/rng;
+   return (MathAbs(ratio)>=ExtremeTrendRatioThreshold);
 }
 
 //+------------------------------------------------------------------+
@@ -1794,6 +1834,8 @@ int OnInit()
        " | UseAvoidEconCalendar="+(UseAvoidEconCalendar?"true":"false")+" AvoidEconCalendarMinutesBefore="+IntegerToString(AvoidEconCalendarMinutesBefore)+
        " AvoidEconCalendarMinutesAfter="+IntegerToString(AvoidEconCalendarMinutesAfter)+" AvoidEconCalendarCurrency="+AvoidEconCalendarCurrency+
        " AvoidEconCalendarMinImportance="+EnumToString(AvoidEconCalendarMinImportance)+
+       " | UseAvoidExtremeTrend="+(UseAvoidExtremeTrend?"true":"false")+" ExtremeTrendTimeframe="+EnumToString(ExtremeTrendTimeframe)+
+       " ExtremeTrendLookbackBars="+IntegerToString(ExtremeTrendLookbackBars)+" ExtremeTrendRatioThreshold="+DoubleToString(ExtremeTrendRatioThreshold,2)+
        " | UseSkipHourKST="+(UseSkipHourKST?"true":"false")+" SkipHourStartKST="+IntegerToString(SkipHourStartKST)+
        " SkipHourEndKST="+IntegerToString(SkipHourEndKST)+
        " | Magic="+IntegerToString((int)MagicNumber)+" | orders="+(EnableLiveOrders?"ENABLED":"DRY"));
@@ -1996,6 +2038,11 @@ void OnTick()
    if(UseAvoidEconCalendar && InAvoidZoneEconCalendar())
    {
       Log("ENTRY_SKIPPED","Avoid zone #4: "+AvoidEconCalendarCurrency+" high-importance calendar event within -"+IntegerToString(AvoidEconCalendarMinutesBefore)+"/+"+IntegerToString(AvoidEconCalendarMinutesAfter)+" min -- episode stays armed, retry on a later touch");
+      return;
+   }
+   if(UseAvoidExtremeTrend && InAvoidZoneExtremeTrend())
+   {
+      Log("ENTRY_SKIPPED","Avoid zone #5: extreme no-pullback trend ("+EnumToString(ExtremeTrendTimeframe)+", |drift/range|>="+DoubleToString(ExtremeTrendRatioThreshold,2)+") -- episode stays armed, retry on a later touch");
       return;
    }
 
