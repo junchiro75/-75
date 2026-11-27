@@ -708,7 +708,7 @@ CTrade trade;
 // chart itself, briefly) tells you directly which version actually loaded
 // -- no need to go hunting through the code to check. If what you see
 // doesn't match what you expect, you have the wrong file compiled.
-#define EA_BUILD_TAG "BUILD 2026-11-27-a (Avoid zone #5: UseAvoidExtremeTrend added, untested)"
+#define EA_BUILD_TAG "BUILD 2026-11-27-b (Avoid zone #5: UseAvoidExtremeTrend CONFIRMED true, ratio=0.90)"
 
 input group "=== Signal: 20/120 cross + first 120MA pullback touch (REVISED 2026-11-21, TEST/untested) ==="
 input ENUM_TIMEFRAMES Timeframe  = PERIOD_M3; // signal timeframe (manual tool was fixed M3) (TEST, untested)
@@ -794,10 +794,10 @@ input string AvoidEconCalendarCurrency       = "USD"; // only count calendar eve
 input ENUM_CALENDAR_EVENT_IMPORTANCE AvoidEconCalendarMinImportance = CALENDAR_IMPORTANCE_HIGH; // minimum calendar importance to count as a qualifying event (TEST, untested)
 
 input group "=== Avoid zone #5: extreme no-pullback trend (NEW 2026-11-27, per user request, motivated by the 4-period M3 re-check: 2026 Q1's loss coincided with two back-to-back |drift/range|>=0.89 months then an extreme reversal, while 2025's best-ever year had extreme single months mixed with choppy ones, never that specific pattern) ==="
-input bool   UseAvoidExtremeTrend          = false; // skip ANY entry (regardless of direction) if the recent |drift/range| ratio (see below) is at or above ExtremeTrendRatioThreshold -- a near-zero-pullback trend run, the condition M3's grid/DCA legs (which bet an adverse move retraces) seem to lose the most in (TEST, untested, user-specified logic)
-input ENUM_TIMEFRAMES ExtremeTrendTimeframe = PERIOD_D1; // timeframe the ratio is measured on -- daily bars so the read reflects a "this month's character" trend, not M3-bar noise (TEST, untested)
-input int    ExtremeTrendLookbackBars      = 20;    // lookback window in ExtremeTrendTimeframe bars (20 daily bars =~ 1 trading month, matching the monthly analysis this filter is based on) (TEST, untested)
-input double ExtremeTrendRatioThreshold    = 0.80;  // |close[now]-close[N bars ago]| / (highest high - lowest low) over the window -- 1.0 = a dead-straight run with zero pullback, 0 = pure chop/no net progress. 2026 Q1's losing months measured 0.835-0.985; 0.80 is a first-guess threshold below that range (TEST, untested)
+input bool   UseAvoidExtremeTrend          = true;  // CONFIRMED (2026-11-27, 4-period re-test at ratio=0.80/0.85/0.90): skip ANY entry (regardless of direction) if the recent |drift/range| ratio (see below) is at or above ExtremeTrendRatioThreshold -- a near-zero-pullback trend run, the condition M3's grid/DCA legs (which bet an adverse move retraces) seem to lose the most in. At threshold=0.90, 2026 Q1 flips from -$811 to +$259 (PF 0.975->1.008) AND the 4-period total NET rises +6.2% vs filter-off ($27,141->$28,824) -- confirmed net-positive, not just a Q1 fix
+input ENUM_TIMEFRAMES ExtremeTrendTimeframe = PERIOD_D1; // CONFIRMED: timeframe the ratio is measured on -- daily bars so the read reflects a "this month's character" trend, not M3-bar noise
+input int    ExtremeTrendLookbackBars      = 20;    // CONFIRMED: lookback window in ExtremeTrendTimeframe bars (20 daily bars =~ 1 trading month, matching the monthly analysis this filter is based on)
+input double ExtremeTrendRatioThreshold    = 0.90;  // CONFIRMED (2026-11-27): |close[now]-close[N bars ago]| / (highest high - lowest low) over the window -- 1.0 = a dead-straight run with zero pullback, 0 = pure chop/no net progress. Swept 0.80/0.85/0.90 across the 4-period set; 0.90 was the only one where total NET beat filter-off while Q1 2026 stayed positive (0.80 overcut 2025/Nov profit, net -9.6% total; 0.85 was roughly neutral, +0.7%)
 
 input group "=== Time filter (NEW 2026-11-21, per checklist '새벽 2시 이후 신규 금지'; window CONFIRMED by user as KST 02:00-08:00) ==="
 input bool   UseSkipHourKST       = false; // block NEW entries in [SkipHourStartKST,SkipHourEndKST) KST; does not affect baskets already open (REVERSED 2026-11-24: on the MaxConcurrentBaskets=7+TIGHTSWING combo, turning this OFF raised NET $70,950->$83,538, RF 3.055->3.720, Sharpe 2.746->2.807, and LOWERED both DD%s -- per-basket reconstruction showed the 02-08 KST window contributes proportionally (19.8% of baskets, 19.6% of profit, avg profit/basket $44.92 vs $45.64 elsewhere), so the ban was pure opportunity cost with no real risk-avoidance benefit under this architecture. CONFIRMED false.)
