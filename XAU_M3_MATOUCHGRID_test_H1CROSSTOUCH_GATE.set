@@ -34,6 +34,7 @@ HigherTFAlignment=16385
 CounterTrendTPShrink=0.5
 UseH1CrossTouchGate=true
 UseH1CrossTouchReplace=false
+UseH1CrossTouchOnlyInExtremeTrend=false
 UseHtfBB4Exhaustion=true
 UseHigherTFAlignment2=true
 HigherTFAlignment2=16388

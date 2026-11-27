@@ -708,7 +708,7 @@ CTrade trade;
 // chart itself, briefly) tells you directly which version actually loaded
 // -- no need to go hunting through the code to check. If what you see
 // doesn't match what you expect, you have the wrong file compiled.
-#define EA_BUILD_TAG "BUILD 2026-11-27-c (H1 cross+touch confirm: UseH1CrossTouchGate/Replace added, untested)"
+#define EA_BUILD_TAG "BUILD 2026-11-27-d (H1 cross+touch confirm: Gate/Replace REJECTED unconditioned, UseH1CrossTouchOnlyInExtremeTrend added, untested)"
 
 input group "=== Signal: 20/120 cross + first 120MA pullback touch (REVISED 2026-11-21, TEST/untested) ==="
 input ENUM_TIMEFRAMES Timeframe  = PERIOD_M3; // signal timeframe (manual tool was fixed M3) (TEST, untested)
@@ -765,6 +765,7 @@ input double CounterTrendTPShrink   = 0.5;       // when the override disagrees 
 input group "=== H1 cross+touch direction confirm (NEW 2026-11-27, per user request: at M3's entry, read whether HigherTFAlignment's OWN 20/120 MA has had a golden/dead cross and price has SINCE touched its 20MA -- golden+touched means BUY, dead+touched means SELL -- mirroring the M3 signal's own cross+pullback-touch structure, but on H1. Two independent, mutually-exclusive test variants below; before H1 has touched its 20MA since the last cross, BOTH fall back to the existing UseHigherTFAlignment price-vs-20MA behavior (user-specified fallback) ==="
 input bool   UseH1CrossTouchGate    = false; // ADDITIONAL requirement on top of the existing BB4/H1-override/H4 chain: once H1 has touched its 20MA since its last cross (g_h1Touched=true), skip the entry (episode stays armed) if that confirmed direction disagrees with finalDir. Does nothing while untouched (falls back to the existing chain's own finalDir, per user request) (TEST, untested, user-specified logic)
 input bool   UseH1CrossTouchReplace = false; // REPLACES UseHigherTFAlignment's DecideFinalDir (current price vs 20MA) with this cross+touch read instead: once touched, finalDir is FORCED to the confirmed cross direction. Falls back to the ORIGINAL DecideFinalDir (current price vs 20MA) while untouched (TEST, untested, user-specified logic). Test ONE of these two at a time -- combining both is not a meaningful extra combination (Replace already forces DecideFinalDir to the same state Gate would then just re-check)
+input bool   UseH1CrossTouchOnlyInExtremeTrend = false; // REJECTED unconditioned (2026-11-27): Gate/Replace each improved Q1 2026 sharply (+137%/+1180%) but hurt 4-10월/11월 2026 (both flipped to losses), net -25~27% across the 4-period total. This restricts BOTH to only take effect while InAvoidZoneExtremeTrend() (Avoid zone #5's own |drift/range|>=ExtremeTrendRatioThreshold read) is true -- outside an extreme-trend window, Gate/Replace fall back to the existing UseHigherTFAlignment behavior regardless of their own settings (TEST, untested, user-specified logic)
 
 input group "=== H1 BB4(4,4) exhaustion override (NEW 2026-11-21, per user request -- TAKES PRIORITY over the price-vs-20MA override above when it fires; theory confirmed by user: '기본비를 맞으면 보통 반대방향으로 간다' -- touching the band is itself a fade signal) ==="
 input bool   UseHtfBB4Exhaustion = true; // at a golden cross, if HigherTFAlignment's last CLOSED candle is bullish AND its high touches the upper BB4(4,4,PRICE_OPEN) band ("상단 기본비"), override to SELL; at a dead cross, a bearish candle touching the lower band overrides to BUY. Same "기본비" construct as 010-013 in this repo. Counts as counter-trend (CounterTrendTPShrink applies) whenever it disagrees with the M3 cross direction (TEST, untested, user-specified logic)
@@ -1141,9 +1142,11 @@ int CrossDir(int hFast,int hSlow,int fallback)
 //| (the M3 cross's own direction). Falls back to fallbackDir only if the |
 //| MA value can't be read.                                               |
 //+------------------------------------------------------------------+
+bool InAvoidZoneExtremeTrend(); // forward declaration -- full definition below (Avoid zone #5), needed here for UseH1CrossTouchOnlyInExtremeTrend
 int DecideFinalDir(int fallbackDir)
 {
-   if(UseH1CrossTouchReplace && g_h1CrossDir!=0 && g_h1Touched) return g_h1CrossDir;
+   bool h1CrossTouchActive=UseH1CrossTouchReplace && (!UseH1CrossTouchOnlyInExtremeTrend || InAvoidZoneExtremeTrend());
+   if(h1CrossTouchActive && g_h1CrossDir!=0 && g_h1Touched) return g_h1CrossDir;
    double ma[1];
    if(CopyBuffer(hMAHtfFast,0,0,1,ma)<1) return fallbackDir;
    double bid=SymbolInfoDouble(_Symbol,SYMBOL_BID);
@@ -1890,6 +1893,7 @@ int OnInit()
        " | UseHigherTFAlignment="+(UseHigherTFAlignment?"true":"false")+" HigherTFAlignment="+EnumToString(HigherTFAlignment)+
        " CounterTrendTPShrink="+DoubleToString(CounterTrendTPShrink,2)+
        " | UseH1CrossTouchGate="+(UseH1CrossTouchGate?"true":"false")+" UseH1CrossTouchReplace="+(UseH1CrossTouchReplace?"true":"false")+
+       " UseH1CrossTouchOnlyInExtremeTrend="+(UseH1CrossTouchOnlyInExtremeTrend?"true":"false")+
        " UseHtfBB4Exhaustion="+(UseHtfBB4Exhaustion?"true":"false")+
        " UseHigherTFAlignment2="+(UseHigherTFAlignment2?"true":"false")+" HigherTFAlignment2="+EnumToString(HigherTFAlignment2)+
        " | UseH1H4DisagreeReversal="+(UseH1H4DisagreeReversal?"true":"false")+
@@ -2100,7 +2104,8 @@ void OnTick()
       }
    }
 
-   if(UseH1CrossTouchGate && g_h1CrossDir!=0 && g_h1Touched && g_h1CrossDir!=finalDir)
+   bool h1GateActive=UseH1CrossTouchGate && (!UseH1CrossTouchOnlyInExtremeTrend || InAvoidZoneExtremeTrend());
+   if(h1GateActive && g_h1CrossDir!=0 && g_h1Touched && g_h1CrossDir!=finalDir)
    {
       Log("ENTRY_SKIPPED","H1 cross+touch gate: confirmed H1 post-cross 20MA touch dir="+(g_h1CrossDir>0?"BUY":"SELL")+" disagrees with finalDir="+(finalDir>0?"BUY":"SELL")+" -- episode stays armed, retry on a later touch");
       return;
